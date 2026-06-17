@@ -64,71 +64,267 @@ router.post('/:projectId/profiles/:profileId/mappings', authenticate, async (req
   } catch { res.status(500).json({ error: 'Internal server error' }); }
 });
 
+// ── Modules (global per project) ──────────────────────────────────────────────
+
+router.get('/:projectId/modules', authenticate, async (req, res) => {
+  try {
+    const r = await pool.query(
+      'SELECT * FROM training_modules WHERE project_id=$1 ORDER BY title',
+      [req.params.projectId]
+    );
+    res.json(r.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/:projectId/modules', authenticate, async (req, res) => {
+  const { title, content_id, duration_min } = req.body;
+  if (!title) return res.status(400).json({ error: 'title is required' });
+  try {
+    const r = await pool.query(
+      `INSERT INTO training_modules (project_id, title, content_id, duration_min)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (project_id, title) DO UPDATE
+         SET content_id=EXCLUDED.content_id, duration_min=EXCLUDED.duration_min, updated_at=NOW()
+       RETURNING *`,
+      [req.params.projectId, title, content_id || null, duration_min || 0]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.put('/:projectId/modules/:moduleId', authenticate, async (req, res) => {
+  const { title, content_id, duration_min } = req.body;
+  try {
+    const r = await pool.query(
+      `UPDATE training_modules SET title=$1, content_id=$2, duration_min=$3, updated_at=NOW()
+       WHERE id=$4 AND project_id=$5 RETURNING *`,
+      [title, content_id || null, duration_min || 0, req.params.moduleId, req.params.projectId]
+    );
+    res.json(r.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.delete('/:projectId/modules/:moduleId', authenticate, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM training_modules WHERE id=$1 AND project_id=$2', [req.params.moduleId, req.params.projectId]);
+    res.json({ message: 'Deleted' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Curricula (global per project) ────────────────────────────────────────────
+
+router.get('/:projectId/curricula', authenticate, async (req, res) => {
+  try {
+    const curricula = (await pool.query(
+      'SELECT * FROM training_curricula WHERE project_id=$1 ORDER BY title',
+      [req.params.projectId]
+    )).rows;
+
+    const items = (await pool.query(
+      `SELECT cmi.*, tm.title AS module_title, tm.content_id AS module_content_id, tm.duration_min
+       FROM curriculum_module_items cmi
+       JOIN training_modules tm ON tm.id = cmi.module_id
+       WHERE cmi.curriculum_id = ANY($1::int[])
+       ORDER BY cmi.sequence_order`,
+      [curricula.map(c => c.id)]
+    )).rows;
+
+    const result = curricula.map(c => ({
+      ...c,
+      modules: items.filter(i => i.curriculum_id === c.id),
+    }));
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.get('/:projectId/curricula/:curriculumId', authenticate, async (req, res) => {
+  try {
+    const cur = (await pool.query(
+      'SELECT * FROM training_curricula WHERE id=$1 AND project_id=$2',
+      [req.params.curriculumId, req.params.projectId]
+    )).rows[0];
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+
+    const modules = (await pool.query(
+      `SELECT cmi.*, tm.title AS module_title, tm.content_id AS module_content_id, tm.duration_min
+       FROM curriculum_module_items cmi
+       JOIN training_modules tm ON tm.id = cmi.module_id
+       WHERE cmi.curriculum_id=$1
+       ORDER BY cmi.sequence_order`,
+      [cur.id]
+    )).rows;
+
+    res.json({ ...cur, modules });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/:projectId/curricula', authenticate, async (req, res) => {
+  const { title, content_id } = req.body;
+  if (!title) return res.status(400).json({ error: 'title is required' });
+  try {
+    const r = await pool.query(
+      `INSERT INTO training_curricula (project_id, title, content_id)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (project_id, title) DO UPDATE SET content_id=EXCLUDED.content_id, updated_at=NOW()
+       RETURNING *`,
+      [req.params.projectId, title, content_id || null]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Add or update a module inside a curriculum
+router.post('/:projectId/curricula/:curriculumId/modules', authenticate, async (req, res) => {
+  const { module_id, requirement, sequence_order } = req.body;
+  if (!module_id) return res.status(400).json({ error: 'module_id is required' });
+  try {
+    const r = await pool.query(
+      `INSERT INTO curriculum_module_items (curriculum_id, module_id, requirement, sequence_order)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (curriculum_id, module_id) DO UPDATE
+         SET requirement=EXCLUDED.requirement, sequence_order=EXCLUDED.sequence_order
+       RETURNING *`,
+      [req.params.curriculumId, module_id, requirement || 'mandatory', sequence_order || 0]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.delete('/:projectId/curricula/:curriculumId/modules/:moduleId', authenticate, async (req, res) => {
+  try {
+    await pool.query(
+      'DELETE FROM curriculum_module_items WHERE curriculum_id=$1 AND module_id=$2',
+      [req.params.curriculumId, req.params.moduleId]
+    );
+    res.json({ message: 'Deleted' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.delete('/:projectId/curricula/:curriculumId', authenticate, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM training_curricula WHERE id=$1 AND project_id=$2', [req.params.curriculumId, req.params.projectId]);
+    res.json({ message: 'Deleted' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Playlists ─────────────────────────────────────────────────────────────────
 
 router.get('/:projectId/playlists', authenticate, async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT * FROM playlists WHERE project_id=$1 ORDER BY title',
+    const r = await pool.query(
+      'SELECT * FROM playlists WHERE project_id=$1 ORDER BY is_complementary, title',
       [req.params.projectId]
     );
-    res.json(result.rows);
+    res.json(r.rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.get('/:projectId/playlists/:playlistId', authenticate, async (req, res) => {
   try {
-    const plRes = await pool.query('SELECT * FROM playlists WHERE id=$1 AND project_id=$2', [req.params.playlistId, req.params.projectId]);
+    const plRes = await pool.query(
+      'SELECT * FROM playlists WHERE id=$1 AND project_id=$2',
+      [req.params.playlistId, req.params.projectId]
+    );
     if (plRes.rows.length === 0) return res.status(404).json({ error: 'Not found' });
     const playlist = plRes.rows[0];
 
-    const curricula = (await pool.query(
-      'SELECT * FROM playlist_curricula WHERE playlist_id=$1 ORDER BY sequence_order, id',
+    // playlist_items with resolved curriculum or module
+    const items = (await pool.query(
+      `SELECT pi.*,
+              tc.title AS curriculum_title, tc.content_id AS curriculum_content_id,
+              tm.title AS module_title, tm.content_id AS module_content_id, tm.duration_min
+       FROM playlist_items pi
+       LEFT JOIN training_curricula tc ON tc.id = pi.curriculum_id
+       LEFT JOIN training_modules   tm ON tm.id = pi.module_id
+       WHERE pi.playlist_id=$1
+       ORDER BY pi.sequence_order`,
       [playlist.id]
     )).rows;
 
-    const modules = (await pool.query(
-      'SELECT * FROM playlist_modules WHERE playlist_id=$1 ORDER BY sequence_order, id',
+    // For each curriculum item, also fetch its ordered modules
+    const curriculumIds = [...new Set(items.filter(i => i.curriculum_id).map(i => i.curriculum_id))];
+    let curriculumModules = [];
+    if (curriculumIds.length > 0) {
+      curriculumModules = (await pool.query(
+        `SELECT cmi.*, tm.title AS module_title, tm.content_id AS module_content_id, tm.duration_min
+         FROM curriculum_module_items cmi
+         JOIN training_modules tm ON tm.id = cmi.module_id
+         WHERE cmi.curriculum_id = ANY($1::int[])
+         ORDER BY cmi.sequence_order`,
+        [curriculumIds]
+      )).rows;
+    }
+
+    const curricula = items
+      .filter(i => i.curriculum_id)
+      .map(i => ({
+        playlist_item_id: i.id,
+        curriculum_id:    i.curriculum_id,
+        title:            i.curriculum_title,
+        content_id:       i.curriculum_content_id,
+        sequence_order:   i.sequence_order,
+        modules:          curriculumModules.filter(m => m.curriculum_id === i.curriculum_id),
+      }));
+
+    const standalone_modules = items
+      .filter(i => i.module_id && !i.curriculum_id)
+      .map(i => ({
+        playlist_item_id: i.id,
+        module_id:        i.module_id,
+        title:            i.module_title,
+        content_id:       i.module_content_id,
+        duration_min:     i.duration_min,
+        sequence_order:   i.sequence_order,
+      }));
+
+    // Complementary refs
+    const refs = (await pool.query(
+      'SELECT * FROM playlist_complementary_refs WHERE playlist_id=$1',
       [playlist.id]
     )).rows;
 
-    const curriculaWithModules = curricula.map(c => ({
-      ...c,
-      modules: modules.filter(m => m.curriculum_id === c.id)
-    }));
-    const standaloneModules = modules.filter(m => m.curriculum_id === null);
+    // Total mandatory minutes
+    const allModules = [
+      ...curricula.flatMap(c => c.modules),
+      ...standalone_modules,
+    ];
+    const total_minutes = allModules
+      .filter(m => (m.requirement || 'mandatory') === 'mandatory')
+      .reduce((s, m) => s + (m.duration_min || 0), 0);
 
-    const mandatoryMinutes = modules
-      .filter(m => m.requirement === 'mandatory')
-      .reduce((sum, m) => sum + (m.duration_min || 0), 0);
-    const hours = Math.floor(mandatoryMinutes / 60);
-    const mins = mandatoryMinutes % 60;
-    const duration_computed = `${String(hours).padStart(2,'0')}:${String(mins).padStart(2,'0')}`;
-
-    res.json({ ...playlist, curricula: curriculaWithModules, standalone_modules: standaloneModules, duration_computed, total_minutes: mandatoryMinutes });
+    res.json({ ...playlist, curricula, standalone_modules, complementary_refs: refs, total_minutes });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.post('/:projectId/playlists', authenticate, async (req, res) => {
-  const { title, description, link, content_id } = req.body;
+  const { title, description, link, content_id, is_complementary } = req.body;
   if (!title) return res.status(400).json({ error: 'title is required' });
   try {
-    const result = await pool.query(
-      'INSERT INTO playlists (project_id, title, description, link, content_id) VALUES ($1,$2,$3,$4,$5) RETURNING *',
-      [req.params.projectId, title, description, link, content_id]
+    const r = await pool.query(
+      `INSERT INTO playlists (project_id, title, description, link, content_id, is_complementary)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (project_id, title) DO UPDATE
+         SET description=EXCLUDED.description, link=EXCLUDED.link,
+             content_id=EXCLUDED.content_id, is_complementary=EXCLUDED.is_complementary,
+             updated_at=NOW()
+       RETURNING *`,
+      [req.params.projectId, title, description || null, link || null, content_id || null, is_complementary || false]
     );
-    res.status(201).json(result.rows[0]);
+    res.status(201).json(r.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.put('/:projectId/playlists/:playlistId', authenticate, async (req, res) => {
-  const { title, description, link, content_id } = req.body;
+  const { title, description, link, content_id, is_complementary } = req.body;
   try {
-    const result = await pool.query(
-      'UPDATE playlists SET title=$1, description=$2, link=$3, content_id=$4, updated_at=NOW() WHERE id=$5 AND project_id=$6 RETURNING *',
-      [title, description, link, content_id, req.params.playlistId, req.params.projectId]
+    const r = await pool.query(
+      `UPDATE playlists SET title=$1, description=$2, link=$3, content_id=$4,
+        is_complementary=$5, updated_at=NOW()
+       WHERE id=$6 AND project_id=$7 RETURNING *`,
+      [title, description || null, link || null, content_id || null, is_complementary || false,
+       req.params.playlistId, req.params.projectId]
     );
-    res.json(result.rows[0]);
+    res.json(r.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -139,171 +335,163 @@ router.delete('/:projectId/playlists/:playlistId', authenticate, async (req, res
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── Import playlists from Training Path Flat xlsx ─────────────────────────────
+// Add item (curriculum or standalone module) to a playlist
+router.post('/:projectId/playlists/:playlistId/items', authenticate, async (req, res) => {
+  const { curriculum_id, module_id, sequence_order } = req.body;
+  if (!curriculum_id && !module_id) return res.status(400).json({ error: 'curriculum_id or module_id is required' });
+  try {
+    const r = await pool.query(
+      `INSERT INTO playlist_items (playlist_id, curriculum_id, module_id, sequence_order)
+       VALUES ($1,$2,$3,$4) RETURNING *`,
+      [req.params.playlistId, curriculum_id || null, module_id || null, sequence_order || 0]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.delete('/:projectId/playlists/:playlistId/items/:itemId', authenticate, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM playlist_items WHERE id=$1 AND playlist_id=$2', [req.params.itemId, req.params.playlistId]);
+    res.json({ message: 'Deleted' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Import ─────────────────────────────────────────────────────────────────────
 // POST /:projectId/playlists/import
-// Body: JSON produced by the frontend xlsx parser
-// Shape:
-// [
-//   {
-//     title: string,
-//     description: string,
-//     link: string,
-//     content_id: string,
-//     curricula: [
-//       {
-//         title: string, content_id: string, requirement: 'mandatory'|'optional',
-//         sequence_order: number,
-//         modules: [
-//           { title, content_id, duration_min, requirement, sequence_order }
-//         ]
-//       }
-//     ],
-//     standalone_modules: [
-//       { title, content_id, duration_min, requirement, sequence_order }
-//     ]
-//   }
-// ]
-// Behaviour: upsert by title within the project (update if exists, insert if not).
+// Body: output of parseTrainingPathFlat
+// {
+//   modules:                 [{ title, content_id, duration_min }]
+//   curricula:               [{ title, content_id, modules: [{ title, requirement, sequence_order }] }]
+//   primary_trainings:       [{ title, description, link, content_id, curricula: [{title, sequence_order, modules}], standalone_modules: [{title, sequence_order}] }]
+//   complementary_trainings: [{ title, description, references: [{ title, content_id, link }] }]
+// }
 router.post('/:projectId/playlists/import', authenticate, async (req, res) => {
   const projectId = parseInt(req.params.projectId, 10);
-  const playlists = req.body;
-  if (!Array.isArray(playlists) || playlists.length === 0) {
-    return res.status(400).json({ error: 'Body must be a non-empty array of playlists' });
-  }
+  const { modules = [], curricula = [], primary_trainings = [], complementary_trainings = [] } = req.body;
 
-  const client = await pool.connect();
+  const db = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await db.query('BEGIN');
 
-    const summary = [];
-
-    for (const pl of playlists) {
-      if (!pl.title) continue;
-
-      // Upsert playlist
-      const existing = await client.query(
-        'SELECT id FROM playlists WHERE project_id=$1 AND title=$2',
-        [projectId, pl.title]
+    // ── Step 1: upsert all modules ──────────────────────────────────────────
+    const moduleIdByTitle = new Map(); // title_lower -> id
+    for (const mod of modules) {
+      if (!mod.title) continue;
+      const r = await db.query(
+        `INSERT INTO training_modules (project_id, title, content_id, duration_min)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (project_id, title) DO UPDATE
+           SET content_id=EXCLUDED.content_id, duration_min=EXCLUDED.duration_min, updated_at=NOW()
+         RETURNING id, title`,
+        [projectId, mod.title, mod.content_id || null, mod.duration_min || 0]
       );
-
-      let playlistId;
-      if (existing.rows.length > 0) {
-        playlistId = existing.rows[0].id;
-        await client.query(
-          'UPDATE playlists SET description=$1, link=$2, content_id=$3, updated_at=NOW() WHERE id=$4',
-          [pl.description || null, pl.link || null, pl.content_id || null, playlistId]
-        );
-        // Remove existing curricula and modules so we rebuild cleanly
-        await client.query('DELETE FROM playlist_modules WHERE playlist_id=$1 AND curriculum_id IN (SELECT id FROM playlist_curricula WHERE playlist_id=$1)', [playlistId]);
-        await client.query('DELETE FROM playlist_curricula WHERE playlist_id=$1', [playlistId]);
-        await client.query('DELETE FROM playlist_modules WHERE playlist_id=$1 AND curriculum_id IS NULL', [playlistId]);
-      } else {
-        const ins = await client.query(
-          'INSERT INTO playlists (project_id, title, description, link, content_id) VALUES ($1,$2,$3,$4,$5) RETURNING id',
-          [projectId, pl.title, pl.description || null, pl.link || null, pl.content_id || null]
-        );
-        playlistId = ins.rows[0].id;
-      }
-
-      // Insert curricula with their modules
-      for (const cur of (pl.curricula || [])) {
-        const curRes = await client.query(
-          'INSERT INTO playlist_curricula (playlist_id, title, content_id, requirement, sequence_order) VALUES ($1,$2,$3,$4,$5) RETURNING id',
-          [playlistId, cur.title, cur.content_id || null, cur.requirement || 'mandatory', cur.sequence_order || 0]
-        );
-        const curriculumId = curRes.rows[0].id;
-
-        for (const mod of (cur.modules || [])) {
-          await client.query(
-            'INSERT INTO playlist_modules (playlist_id, curriculum_id, title, content_id, duration_min, requirement, sequence_order) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-            [playlistId, curriculumId, mod.title, mod.content_id || null, mod.duration_min || 0, mod.requirement || 'mandatory', mod.sequence_order || 0]
-          );
-        }
-      }
-
-      // Insert standalone modules
-      for (const mod of (pl.standalone_modules || [])) {
-        await client.query(
-          'INSERT INTO playlist_modules (playlist_id, curriculum_id, title, content_id, duration_min, requirement, sequence_order) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-          [playlistId, null, mod.title, mod.content_id || null, mod.duration_min || 0, mod.requirement || 'mandatory', mod.sequence_order || 0]
-        );
-      }
-
-      summary.push({ title: pl.title, id: playlistId });
+      moduleIdByTitle.set(r.rows[0].title.toLowerCase(), r.rows[0].id);
     }
 
-    await client.query('COMMIT');
-    res.status(201).json({ imported: summary.length, playlists: summary });
+    // ── Step 2: upsert all curricula + their module items ───────────────────
+    const curriculumIdByTitle = new Map(); // title_lower -> id
+    for (const cur of curricula) {
+      if (!cur.title) continue;
+      const r = await db.query(
+        `INSERT INTO training_curricula (project_id, title, content_id)
+         VALUES ($1,$2,$3)
+         ON CONFLICT (project_id, title) DO UPDATE SET content_id=EXCLUDED.content_id, updated_at=NOW()
+         RETURNING id, title`,
+        [projectId, cur.title, cur.content_id || null]
+      );
+      const curId = r.rows[0].id;
+      curriculumIdByTitle.set(r.rows[0].title.toLowerCase(), curId);
+
+      // Rebuild module items for this curriculum
+      await db.query('DELETE FROM curriculum_module_items WHERE curriculum_id=$1', [curId]);
+      for (const item of (cur.modules || [])) {
+        const modId = moduleIdByTitle.get(item.title.toLowerCase());
+        if (!modId) continue;
+        await db.query(
+          `INSERT INTO curriculum_module_items (curriculum_id, module_id, requirement, sequence_order)
+           VALUES ($1,$2,$3,$4)
+           ON CONFLICT (curriculum_id, module_id) DO UPDATE
+             SET requirement=EXCLUDED.requirement, sequence_order=EXCLUDED.sequence_order`,
+          [curId, modId, item.requirement || 'mandatory', item.sequence_order || 0]
+        );
+      }
+    }
+
+    // ── Step 3: upsert primary trainings ───────────────────────────────────
+    let importedPlaylists = 0;
+    for (const pt of primary_trainings) {
+      if (!pt.title) continue;
+      const r = await db.query(
+        `INSERT INTO playlists (project_id, title, description, link, content_id, is_complementary)
+         VALUES ($1,$2,$3,$4,$5,false)
+         ON CONFLICT (project_id, title) DO UPDATE
+           SET description=EXCLUDED.description, link=EXCLUDED.link,
+               content_id=EXCLUDED.content_id, is_complementary=false, updated_at=NOW()
+         RETURNING id`,
+        [projectId, pt.title, pt.description || null, pt.link || null, pt.content_id || null]
+      );
+      const playlistId = r.rows[0].id;
+
+      // Rebuild playlist items
+      await db.query('DELETE FROM playlist_items WHERE playlist_id=$1', [playlistId]);
+
+      for (const cur of (pt.curricula || [])) {
+        const curId = curriculumIdByTitle.get(cur.title.toLowerCase());
+        if (!curId) continue;
+        await db.query(
+          'INSERT INTO playlist_items (playlist_id, curriculum_id, module_id, sequence_order) VALUES ($1,$2,NULL,$3)',
+          [playlistId, curId, cur.sequence_order || 0]
+        );
+      }
+
+      for (const mod of (pt.standalone_modules || [])) {
+        const modId = moduleIdByTitle.get(mod.title.toLowerCase());
+        if (!modId) continue;
+        await db.query(
+          'INSERT INTO playlist_items (playlist_id, curriculum_id, module_id, sequence_order) VALUES ($1,NULL,$2,$3)',
+          [playlistId, modId, mod.sequence_order || 0]
+        );
+      }
+
+      importedPlaylists++;
+    }
+
+    // ── Step 4: upsert complementary trainings ─────────────────────────────
+    for (const ct of complementary_trainings) {
+      if (!ct.title) continue;
+      const r = await db.query(
+        `INSERT INTO playlists (project_id, title, description, link, content_id, is_complementary)
+         VALUES ($1,$2,$3,NULL,NULL,true)
+         ON CONFLICT (project_id, title) DO UPDATE
+           SET description=EXCLUDED.description, is_complementary=true, updated_at=NOW()
+         RETURNING id`,
+        [projectId, ct.title, ct.description || null]
+      );
+      const playlistId = r.rows[0].id;
+
+      await db.query('DELETE FROM playlist_complementary_refs WHERE playlist_id=$1', [playlistId]);
+      for (const ref of (ct.references || [])) {
+        await db.query(
+          'INSERT INTO playlist_complementary_refs (playlist_id, title, content_id, link) VALUES ($1,$2,$3,$4)',
+          [playlistId, ref.title || null, ref.content_id || null, ref.link || null]
+        );
+      }
+
+      importedPlaylists++;
+    }
+
+    await db.query('COMMIT');
+    res.status(201).json({
+      imported_modules:   modules.length,
+      imported_curricula: curricula.length,
+      imported_playlists: importedPlaylists,
+    });
   } catch (err) {
-    await client.query('ROLLBACK');
+    await db.query('ROLLBACK');
     res.status(500).json({ error: err.message });
   } finally {
-    client.release();
+    db.release();
   }
-});
-
-// ── Curricula ─────────────────────────────────────────────────────────────────
-
-router.post('/:projectId/playlists/:playlistId/curricula', authenticate, async (req, res) => {
-  const { title, content_id, requirement, sequence_order } = req.body;
-  if (!title) return res.status(400).json({ error: 'title is required' });
-  try {
-    const result = await pool.query(
-      'INSERT INTO playlist_curricula (playlist_id, title, content_id, requirement, sequence_order) VALUES ($1,$2,$3,$4,$5) RETURNING *',
-      [req.params.playlistId, title, content_id, requirement || 'mandatory', sequence_order || 0]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-router.put('/:projectId/playlists/:playlistId/curricula/:curriculumId', authenticate, async (req, res) => {
-  const { title, content_id, requirement, sequence_order } = req.body;
-  try {
-    const result = await pool.query(
-      'UPDATE playlist_curricula SET title=$1, content_id=$2, requirement=$3, sequence_order=$4 WHERE id=$5 AND playlist_id=$6 RETURNING *',
-      [title, content_id, requirement, sequence_order, req.params.curriculumId, req.params.playlistId]
-    );
-    res.json(result.rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-router.delete('/:projectId/playlists/:playlistId/curricula/:curriculumId', authenticate, async (req, res) => {
-  try {
-    await pool.query('DELETE FROM playlist_curricula WHERE id=$1 AND playlist_id=$2', [req.params.curriculumId, req.params.playlistId]);
-    res.json({ message: 'Deleted' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// ── Modules ───────────────────────────────────────────────────────────────────
-
-router.post('/:projectId/playlists/:playlistId/modules', authenticate, async (req, res) => {
-  const { title, content_id, duration_min, requirement, sequence_order, curriculum_id } = req.body;
-  if (!title) return res.status(400).json({ error: 'title is required' });
-  try {
-    const result = await pool.query(
-      'INSERT INTO playlist_modules (playlist_id, curriculum_id, title, content_id, duration_min, requirement, sequence_order) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-      [req.params.playlistId, curriculum_id || null, title, content_id, duration_min || 0, requirement || 'mandatory', sequence_order || 0]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-router.put('/:projectId/playlists/:playlistId/modules/:moduleId', authenticate, async (req, res) => {
-  const { title, content_id, duration_min, requirement, sequence_order, curriculum_id } = req.body;
-  try {
-    const result = await pool.query(
-      'UPDATE playlist_modules SET title=$1, content_id=$2, duration_min=$3, requirement=$4, sequence_order=$5, curriculum_id=$6 WHERE id=$7 AND playlist_id=$8 RETURNING *',
-      [title, content_id, duration_min, requirement, sequence_order, curriculum_id || null, req.params.moduleId, req.params.playlistId]
-    );
-    res.json(result.rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-router.delete('/:projectId/playlists/:playlistId/modules/:moduleId', authenticate, async (req, res) => {
-  try {
-    await pool.query('DELETE FROM playlist_modules WHERE id=$1 AND playlist_id=$2', [req.params.moduleId, req.params.playlistId]);
-    res.json({ message: 'Deleted' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 module.exports = router;

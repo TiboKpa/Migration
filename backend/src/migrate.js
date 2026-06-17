@@ -144,7 +144,42 @@ async function migrate() {
         UNIQUE(project_id, concatenate)
       );
 
-      -- Playlists: primary trainings with official name, description, link, content id
+      -- ── Normalized training entities ──────────────────────────────────────
+
+      -- Global modules (per project, deduped by title)
+      CREATE TABLE IF NOT EXISTS training_modules (
+        id SERIAL PRIMARY KEY,
+        project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        content_id TEXT,
+        duration_min INT DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(project_id, title)
+      );
+
+      -- Global curricula (per project, deduped by title)
+      CREATE TABLE IF NOT EXISTS training_curricula (
+        id SERIAL PRIMARY KEY,
+        project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        content_id TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(project_id, title)
+      );
+
+      -- Ordered modules inside a curriculum (requirement is per-curriculum)
+      CREATE TABLE IF NOT EXISTS curriculum_module_items (
+        id SERIAL PRIMARY KEY,
+        curriculum_id INT REFERENCES training_curricula(id) ON DELETE CASCADE,
+        module_id INT REFERENCES training_modules(id) ON DELETE CASCADE,
+        requirement TEXT DEFAULT 'mandatory',
+        sequence_order INT DEFAULT 0,
+        UNIQUE(curriculum_id, module_id)
+      );
+
+      -- Playlists (primary or complementary trainings)
       CREATE TABLE IF NOT EXISTS playlists (
         id SERIAL PRIMARY KEY,
         project_id INT REFERENCES projects(id) ON DELETE CASCADE,
@@ -152,14 +187,36 @@ async function migrate() {
         description TEXT,
         link TEXT,
         content_id TEXT,
+        is_complementary BOOLEAN DEFAULT false,
         created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(project_id, title)
       );
 
-      -- Curricula: groupings inside a playlist
-      CREATE TABLE IF NOT EXISTS playlist_curricula (
+      -- Items inside a playlist: either a curriculum or a standalone module
+      -- Exactly one of curriculum_id / module_id is non-null per row.
+      CREATE TABLE IF NOT EXISTS playlist_items (
         id SERIAL PRIMARY KEY,
         playlist_id INT REFERENCES playlists(id) ON DELETE CASCADE,
+        curriculum_id INT REFERENCES training_curricula(id) ON DELETE SET NULL,
+        module_id INT REFERENCES training_modules(id) ON DELETE SET NULL,
+        sequence_order INT DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      -- Complementary training references (X cells)
+      CREATE TABLE IF NOT EXISTS playlist_complementary_refs (
+        id SERIAL PRIMARY KEY,
+        playlist_id INT REFERENCES playlists(id) ON DELETE CASCADE,
+        title TEXT,
+        content_id TEXT,
+        link TEXT
+      );
+
+      -- Legacy playlist tables kept to avoid breaking existing data
+      CREATE TABLE IF NOT EXISTS playlist_curricula (
+        id SERIAL PRIMARY KEY,
+        playlist_id INT,
         title TEXT NOT NULL,
         content_id TEXT,
         requirement TEXT DEFAULT 'mandatory',
@@ -167,11 +224,10 @@ async function migrate() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
-      -- Modules: belong to a curriculum OR standalone on a playlist (curriculum_id nullable)
       CREATE TABLE IF NOT EXISTS playlist_modules (
         id SERIAL PRIMARY KEY,
-        playlist_id INT REFERENCES playlists(id) ON DELETE CASCADE,
-        curriculum_id INT REFERENCES playlist_curricula(id) ON DELETE CASCADE,
+        playlist_id INT,
+        curriculum_id INT,
         title TEXT NOT NULL,
         content_id TEXT,
         duration_min INT DEFAULT 0,
