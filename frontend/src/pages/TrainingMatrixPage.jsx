@@ -3,13 +3,12 @@ import { useParams } from 'react-router-dom';
 import client from '../api/client';
 import { parseTrainingPathFlat } from '../utils/parseTrainingPathFlat';
 
-// ── Reorder confirmation preference stored in localStorage ───────────────────
 const REORDER_SKIP_KEY = 'reorder_confirm_skip';
 function getSkipReorderConfirm() { return localStorage.getItem(REORDER_SKIP_KEY) === 'true'; }
 function setSkipReorderConfirm() { localStorage.setItem(REORDER_SKIP_KEY, 'true'); }
 
 function durationLabel(minutes) {
-  if (!minutes) return '0 min';
+  if (!minutes) return null;
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
   if (h === 0) return `${m} min`;
@@ -62,10 +61,8 @@ function FormBox({ title, children, onSave, onCancel, saveDisabled }) {
 }
 
 // ── Reorder toast ─────────────────────────────────────────────────────────────
-// Shows a bottom-right toast asking the user to confirm a reorder.
-// If the user previously ticked "don't ask again", the callback fires immediately.
 function useReorderToast() {
-  const [toast, setToast] = useState(null); // { label, onConfirm, skipChecked }
+  const [toast, setToast] = useState(null);
 
   function requestReorder(label, onConfirm) {
     if (getSkipReorderConfirm()) { onConfirm(); return; }
@@ -107,22 +104,14 @@ function useReorderToast() {
 }
 
 // ── Drag-to-reorder list ──────────────────────────────────────────────────────
-// Generic component. items: [{ id, label, sublabel? }]
-// onReorder(id, newIndex0based) called after drop.
 function DraggableList({ items, onReorder, renderItem }) {
-  const [dragIdx, setDragIdx]   = useState(null);
-  const [overIdx, setOverIdx]   = useState(null);
-  const listRef                 = useRef();
+  const [dragIdx, setDragIdx] = useState(null);
+  const [overIdx, setOverIdx] = useState(null);
 
   function handleDragStart(e, idx) {
     setDragIdx(idx);
     e.dataTransfer.effectAllowed = 'move';
-    // Minimal ghost
     e.dataTransfer.setDragImage(e.currentTarget, 12, 12);
-  }
-
-  function handleDragEnter(idx) {
-    if (idx !== dragIdx) setOverIdx(idx);
   }
 
   function handleDrop(e, idx) {
@@ -135,24 +124,39 @@ function DraggableList({ items, onReorder, renderItem }) {
   function reset() { setDragIdx(null); setOverIdx(null); }
 
   return (
-    <div ref={listRef} onDragOver={e => e.preventDefault()}>
+    <div onDragOver={e => e.preventDefault()}>
       {items.map((item, idx) => (
         <div
           key={item.id}
           draggable
           onDragStart={e => handleDragStart(e, idx)}
-          onDragEnter={() => handleDragEnter(idx)}
+          onDragEnter={() => { if (idx !== dragIdx) setOverIdx(idx); }}
           onDrop={e => handleDrop(e, idx)}
           onDragEnd={reset}
           className={`transition-all ${
-            overIdx === idx && dragIdx !== idx
-              ? 'border-t-2 border-blue-400'
-              : ''
+            overIdx === idx && dragIdx !== idx ? 'border-t-2 border-blue-400' : ''
           } ${dragIdx === idx ? 'opacity-40' : ''}`}
         >
           {renderItem(item, idx)}
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── Duration totals helper ────────────────────────────────────────────────────
+function CurriculumDurationBar({ modules }) {
+  const mandatory = modules
+    .filter(m => (m.requirement || 'mandatory') === 'mandatory')
+    .reduce((s, m) => s + (m.duration_min || 0), 0);
+  const total = modules.reduce((s, m) => s + (m.duration_min || 0), 0);
+  const mandLabel  = durationLabel(mandatory);
+  const totalLabel = durationLabel(total);
+  if (!mandLabel && !totalLabel) return null;
+  return (
+    <div className="flex gap-3 mt-1">
+      {mandLabel  && <span className="text-xs text-green-600">{mandLabel} mandatory</span>}
+      {totalLabel && total !== mandatory && <span className="text-xs text-slate-400">{totalLabel} total</span>}
     </div>
   );
 }
@@ -360,9 +364,9 @@ function CurriculaTab({ projectId }) {
   }
 
   function handleCurriculumModuleReorder(cur, fromIdx, toIdx) {
-    const modules = [...(cur.modules || [])].sort((a, b) => a.sequence_order - b.sequence_order);
-    const item    = modules[fromIdx];
-    const target  = modules[toIdx];
+    const modules  = [...(cur.modules || [])].sort((a, b) => a.sequence_order - b.sequence_order);
+    const item     = modules[fromIdx];
+    const target   = modules[toIdx];
     const oldOrder = item.sequence_order;
     const newOrder = target.sequence_order;
     const title    = item.module_title || item.title || 'module';
@@ -414,11 +418,11 @@ function CurriculaTab({ projectId }) {
 
       <div className="flex flex-col gap-2">
         {curricula.map(cur => {
-          const isOpen    = openId === cur.id;
-          const addState  = addModState[cur.id] || {};
-          const usedIds   = new Set((cur.modules || []).map(m => m.module_id));
-          const available = allModules.filter(m => !usedIds.has(m.id));
-          const maxOrder  = (cur.modules || []).reduce((mx, m) => Math.max(mx, m.sequence_order || 0), 0);
+          const isOpen     = openId === cur.id;
+          const addState   = addModState[cur.id] || {};
+          const usedIds    = new Set((cur.modules || []).map(m => m.module_id));
+          const available  = allModules.filter(m => !usedIds.has(m.id));
+          const maxOrder   = (cur.modules || []).reduce((mx, m) => Math.max(mx, m.sequence_order || 0), 0);
           const sortedMods = [...(cur.modules || [])].sort((a, b) => a.sequence_order - b.sequence_order);
 
           return (
@@ -445,10 +449,13 @@ function CurriculaTab({ projectId }) {
                 ) : (
                   <>
                     <button onClick={() => setOpenId(isOpen ? null : cur.id)}
-                      className="flex items-center gap-2 flex-1 text-left min-w-0">
-                      <span className="text-sm font-semibold text-slate-800 truncate">{cur.title}</span>
-                      {cur.content_id && <Badge color="blue">{cur.content_id}</Badge>}
-                      <Badge color="slate">{(cur.modules || []).length} module{(cur.modules || []).length !== 1 ? 's' : ''}</Badge>
+                      className="flex flex-col items-start gap-0.5 flex-1 text-left min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-slate-800 truncate">{cur.title}</span>
+                        {cur.content_id && <Badge color="blue">{cur.content_id}</Badge>}
+                        <Badge color="slate">{sortedMods.length} module{sortedMods.length !== 1 ? 's' : ''}</Badge>
+                      </div>
+                      <CurriculumDurationBar modules={sortedMods} />
                     </button>
                     <div className="flex gap-2 items-center shrink-0">
                       <button onClick={() => { setEditingId(cur.id); setEditForm({ title: cur.title, content_id: cur.content_id || '' }); }}
@@ -477,8 +484,12 @@ function CurriculaTab({ projectId }) {
                           <span className="text-slate-300 cursor-grab select-none px-1" title="Drag to reorder">&#8597;</span>
                           <span className="text-xs text-slate-400 w-5 text-right shrink-0">{item.sequence_order}</span>
                           <span className="text-sm text-slate-700 truncate">{item.module_title || item.title}</span>
+                          {item.module_content_id && <Badge color="blue">{item.module_content_id}</Badge>}
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
+                          {item.duration_min > 0 && (
+                            <span className="text-xs text-slate-400">{durationLabel(item.duration_min)}</span>
+                          )}
                           <Badge color={item.requirement === 'mandatory' ? 'green' : 'amber'}>{item.requirement}</Badge>
                           <button onClick={() => removeModuleFromCurriculum(cur.id, item.module_id)}
                             className="text-xs text-red-300 hover:text-red-500">Remove</button>
@@ -644,7 +655,6 @@ function TrainingsTab({ projectId }) {
     );
   }
 
-  // Reorder modules inside a curriculum that is shown expanded inside the playlist detail
   function handleCurriculumModuleReorderInPlaylist(cur, fromIdx, toIdx) {
     const mods     = [...(cur.modules || [])].sort((a, b) => a.sequence_order - b.sequence_order);
     const item     = mods[fromIdx];
@@ -670,7 +680,6 @@ function TrainingsTab({ projectId }) {
   const orderedItems      = detail?.ordered_items || [];
   const usedCurriculumIds = new Set(orderedItems.filter(i => i.kind === 'curriculum').map(i => i.curriculum_id));
   const usedModuleIds     = new Set(orderedItems.filter(i => i.kind === 'module').map(i => i.module_id));
-  const maxOrder          = orderedItems.reduce((mx, i) => Math.max(mx, i.sequence_order || 0), 0);
 
   const availableForAdd = newItem.type === 'curriculum'
     ? allCurricula.filter(c => !usedCurriculumIds.has(c.id))
@@ -748,7 +757,6 @@ function TrainingsTab({ projectId }) {
 
         {selected && !loadingDetail && detail && (
           <div className="flex flex-col gap-6">
-            {/* Header */}
             {editMode ? (
               <FormBox title="Edit training" onSave={update} onCancel={() => setEditMode(false)} saveDisabled={!editForm.title?.trim()}>
                 <div className="grid grid-cols-2 gap-3">
@@ -786,7 +794,6 @@ function TrainingsTab({ projectId }) {
               </div>
             )}
 
-            {/* Content */}
             {detail.is_complementary ? (
               <div>
                 <p className="text-sm font-semibold text-slate-700 mb-3">References</p>
@@ -845,7 +852,6 @@ function TrainingsTab({ projectId }) {
                   <p className="text-xs text-slate-400">No items yet.</p>
                 )}
 
-                {/* Unified drag-to-reorder list of playlist items */}
                 <DraggableList
                   items={orderedItems.map(i => ({ id: i.playlist_item_id, ...i }))}
                   onReorder={handlePlaylistItemReorder}
@@ -860,7 +866,7 @@ function TrainingsTab({ projectId }) {
                               <span className="text-xs text-slate-400 w-5 text-right shrink-0">{item.sequence_order}</span>
                               <span className="text-sm font-semibold text-slate-700">{item.title}</span>
                               {item.content_id && <Badge color="blue">{item.content_id}</Badge>}
-                              <Badge color="slate">{(item.modules || []).length} module{(item.modules || []).length !== 1 ? 's' : ''}</Badge>
+                              <Badge color="slate">{sortedMods.length} module{sortedMods.length !== 1 ? 's' : ''}</Badge>
                             </div>
                             <button onClick={e => { e.preventDefault(); removeItem(item.playlist_item_id); }}
                               className="text-xs text-red-300 hover:text-red-500">Remove</button>
@@ -891,7 +897,6 @@ function TrainingsTab({ projectId }) {
                         </details>
                       );
                     }
-                    // Standalone module
                     return (
                       <div className="border rounded-xl bg-white flex items-center justify-between px-4 py-2.5 mb-1">
                         <div className="flex items-center gap-2 flex-1 min-w-0">

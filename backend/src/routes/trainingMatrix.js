@@ -39,6 +39,35 @@ async function shiftAndInsertPlaylistItem(db, playlistId, curriculumId, moduleId
   );
 }
 
+// After a delete, close gaps in sequence_order so numbers stay contiguous.
+async function renumberCurriculumModules(db, curriculumId) {
+  await db.query(
+    `UPDATE curriculum_module_items cmi
+     SET sequence_order = sub.rn
+     FROM (
+       SELECT id, ROW_NUMBER() OVER (ORDER BY sequence_order) AS rn
+       FROM curriculum_module_items
+       WHERE curriculum_id = $1
+     ) sub
+     WHERE cmi.id = sub.id`,
+    [curriculumId]
+  );
+}
+
+async function renumberPlaylistItems(db, playlistId) {
+  await db.query(
+    `UPDATE playlist_items pi
+     SET sequence_order = sub.rn
+     FROM (
+       SELECT id, ROW_NUMBER() OVER (ORDER BY sequence_order) AS rn
+       FROM playlist_items
+       WHERE playlist_id = $1
+     ) sub
+     WHERE pi.id = sub.id`,
+    [playlistId]
+  );
+}
+
 // ── Legacy routes ─────────────────────────────────────────────────────────────
 router.get('/:projectId/profiles', authenticate, async (req, res) => {
   try {
@@ -244,7 +273,7 @@ router.post('/:projectId/curricula/:curriculumId/modules', authenticate, async (
   } finally { db.release(); }
 });
 
-// Reorder a module inside a curriculum (move to new sequence_order, shift others)
+// Reorder a module inside a curriculum
 router.patch('/:projectId/curricula/:curriculumId/modules/:moduleId/reorder', authenticate, async (req, res) => {
   const { new_order } = req.body;
   if (!new_order || new_order < 1) return res.status(400).json({ error: 'new_order >= 1 is required' });
@@ -285,11 +314,22 @@ router.patch('/:projectId/curricula/:curriculumId/modules/:moduleId/reorder', au
   } finally { db.release(); }
 });
 
+// Remove a module from a curriculum and renumber remaining items
 router.delete('/:projectId/curricula/:curriculumId/modules/:moduleId', authenticate, async (req, res) => {
+  const db = await pool.connect();
   try {
-    await pool.query('DELETE FROM curriculum_module_items WHERE curriculum_id=$1 AND module_id=$2', [req.params.curriculumId, req.params.moduleId]);
+    await db.query('BEGIN');
+    await db.query(
+      'DELETE FROM curriculum_module_items WHERE curriculum_id=$1 AND module_id=$2',
+      [req.params.curriculumId, req.params.moduleId]
+    );
+    await renumberCurriculumModules(db, req.params.curriculumId);
+    await db.query('COMMIT');
     res.json({ message: 'Deleted' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    await db.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally { db.release(); }
 });
 
 router.delete('/:projectId/curricula/:curriculumId', authenticate, async (req, res) => {
@@ -372,7 +412,7 @@ router.get('/:projectId/playlists/:playlistId', authenticate, async (req, res) =
       };
     });
 
-    const curricula         = orderedItems.filter(x => x.kind === 'curriculum');
+    const curricula          = orderedItems.filter(x => x.kind === 'curriculum');
     const standalone_modules = orderedItems.filter(x => x.kind === 'module');
 
     const refs = (await pool.query(
@@ -458,7 +498,7 @@ router.post('/:projectId/playlists/:playlistId/items', authenticate, async (req,
   } finally { db.release(); }
 });
 
-// Reorder a playlist item (move to new sequence_order, shift others)
+// Reorder a playlist item
 router.patch('/:projectId/playlists/:playlistId/items/:itemId/reorder', authenticate, async (req, res) => {
   const { new_order } = req.body;
   if (!new_order || new_order < 1) return res.status(400).json({ error: 'new_order >= 1 is required' });
@@ -499,11 +539,22 @@ router.patch('/:projectId/playlists/:playlistId/items/:itemId/reorder', authenti
   } finally { db.release(); }
 });
 
+// Remove a playlist item and renumber remaining items
 router.delete('/:projectId/playlists/:playlistId/items/:itemId', authenticate, async (req, res) => {
+  const db = await pool.connect();
   try {
-    await pool.query('DELETE FROM playlist_items WHERE id=$1 AND playlist_id=$2', [req.params.itemId, req.params.playlistId]);
+    await db.query('BEGIN');
+    await db.query(
+      'DELETE FROM playlist_items WHERE id=$1 AND playlist_id=$2',
+      [req.params.itemId, req.params.playlistId]
+    );
+    await renumberPlaylistItems(db, req.params.playlistId);
+    await db.query('COMMIT');
     res.json({ message: 'Deleted' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    await db.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally { db.release(); }
 });
 
 // ── Import ────────────────────────────────────────────────────────────────────
