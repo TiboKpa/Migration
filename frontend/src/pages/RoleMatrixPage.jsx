@@ -35,6 +35,18 @@ const EMPTY_FORM = {
   tlg_group: '',
 };
 
+const EMPTY_FILTERS = {
+  function: '',
+  role: '',
+  pbom_champion: '',
+  boc_admin: '',
+  boc_member: '',
+  eto_user: '',
+  team_manager: '',
+  pdm_role: '',
+  tlg_group: '',
+};
+
 function normalizeYesNo(val) {
   if (val === true || val === 1) return true;
   if (typeof val === 'string') return val.trim().toLowerCase() === 'yes';
@@ -43,12 +55,8 @@ function normalizeYesNo(val) {
 
 function parseMatrixExcel(buffer) {
   const wb = XLSX.read(buffer, { type: 'array' });
-
-  // Find the sheet whose first populated row contains Function + Role + Concatenate.
-  // This handles both the old "Construction" sheet and the new "Feuil1" sheet.
   let targetSheet = null;
   let headerIdx = -1;
-
   for (const sheetName of wb.SheetNames) {
     const ws = wb.Sheets[sheetName];
     const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
@@ -62,22 +70,17 @@ function parseMatrixExcel(buffer) {
     }
     if (targetSheet) break;
   }
-
-  if (!targetSheet || headerIdx === -1) {
-    throw new Error('Could not find a header row with Function / Role / Concatenate in any sheet.');
-  }
-
+  if (!targetSheet || headerIdx === -1) throw new Error('Could not find a header row with Function / Role / Concatenate in any sheet.');
   const headers = targetSheet[headerIdx].map(c => String(c).trim());
-  const fnIdx      = headers.indexOf('Function');
-  const roleIdx    = headers.indexOf('Role');
-  const pbomIdx    = headers.findIndex(h => h.includes('PBOM'));
-  const bocAdminIdx= headers.findIndex(h => h.includes('BOC Admin'));
+  const fnIdx       = headers.indexOf('Function');
+  const roleIdx     = headers.indexOf('Role');
+  const pbomIdx     = headers.findIndex(h => h.includes('PBOM'));
+  const bocAdminIdx = headers.findIndex(h => h.includes('BOC Admin'));
   const bocMemberIdx= headers.findIndex(h => h.includes('BOC Member'));
-  const etoIdx     = headers.findIndex(h => h.includes('ETO'));
-  const tmIdx      = headers.findIndex(h => h.includes('Team Manager'));
-  const pdmIdx     = headers.findIndex(h => h.includes('PDM Role'));
-  const tlgIdx     = headers.findIndex(h => h.includes('TLG'));
-
+  const etoIdx      = headers.findIndex(h => h.includes('ETO'));
+  const tmIdx       = headers.findIndex(h => h.includes('Team Manager'));
+  const pdmIdx      = headers.findIndex(h => h.includes('PDM Role'));
+  const tlgIdx      = headers.findIndex(h => h.includes('TLG'));
   const entries = [];
   for (let i = headerIdx + 1; i < targetSheet.length; i++) {
     const row = targetSheet[i];
@@ -96,7 +99,6 @@ function parseMatrixExcel(buffer) {
       tlg_group:     String(row[tlgIdx]  || '').trim(),
     });
   }
-
   if (entries.length === 0) throw new Error('No data rows found after the header row.');
   return entries;
 }
@@ -105,8 +107,7 @@ export default function RoleMatrixPage() {
   const { projectId } = useParams();
   const qc = useQueryClient();
   const fileRef = useRef();
-  const [filterFn, setFilterFn] = useState('');
-  const [filterRole, setFilterRole] = useState('');
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
   const [editValues, setEditValues] = useState({ pdm_role: '', tlg_group: '' });
@@ -137,6 +138,10 @@ export default function RoleMatrixPage() {
     mutationFn: (id) => client.delete(`/projects/${projectId}/role-matrix/${id}`),
     onSuccess: () => qc.invalidateQueries(['role-matrix', projectId])
   });
+
+  function setFilter(key, val) {
+    setFilters(f => ({ ...f, [key]: val }));
+  }
 
   function handleFileChange(e) {
     const file = e.target.files[0];
@@ -171,19 +176,35 @@ export default function RoleMatrixPage() {
     XLSX.writeFile(wb, 'role-matrix-export.xlsx');
   }
 
-  const filtered = entries.filter(e =>
-    (!filterFn || e.function === filterFn) &&
-    (!filterRole || e.role.toLowerCase().includes(filterRole.toLowerCase()))
-  );
+  const uniqueFunctions = [...new Set(entries.map(e => e.function))].sort();
 
-  const uniqueFunctions = [...new Set(entries.map(e => e.function))];
+  const filtered = entries.filter(e => {
+    if (filters.function && e.function !== filters.function) return false;
+    if (filters.role && !e.role.toLowerCase().includes(filters.role.toLowerCase())) return false;
+    if (filters.pbom_champion !== '' && e.pbom_champion !== (filters.pbom_champion === 'yes')) return false;
+    if (filters.boc_admin !== '' && e.boc_admin !== (filters.boc_admin === 'yes')) return false;
+    if (filters.boc_member !== '' && e.boc_member !== (filters.boc_member === 'yes')) return false;
+    if (filters.eto_user !== '' && e.eto_user !== (filters.eto_user === 'yes')) return false;
+    if (filters.team_manager !== '' && e.team_manager !== (filters.team_manager === 'yes')) return false;
+    if (filters.pdm_role && !e.pdm_role?.toLowerCase().includes(filters.pdm_role.toLowerCase())) return false;
+    if (filters.tlg_group && !e.tlg_group?.toLowerCase().includes(filters.tlg_group.toLowerCase())) return false;
+    return true;
+  });
+
+  const hasActiveFilters = Object.values(filters).some(v => v !== '');
+
+  const thClass = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
+  const filterInputClass = 'w-full border rounded px-1.5 py-1 text-xs text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-blue-300';
 
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between mb-4 shrink-0">
         <div>
           <h1 className="text-xl font-bold text-slate-800">Role Matrix</h1>
-          <p className="text-sm text-slate-500">{entries.length} rules - defines auto-filled training and TLG group per role combination</p>
+          <p className="text-sm text-slate-500">
+            {filtered.length} / {entries.length} rules
+            {hasActiveFilters && <button onClick={() => setFilters(EMPTY_FILTERS)} className="ml-2 text-blue-500 hover:underline">clear filters</button>}
+          </p>
         </div>
         <div className="flex gap-2 items-center">
           <button
@@ -211,7 +232,7 @@ export default function RoleMatrixPage() {
 
       {importError && <p className="text-sm text-red-500 mb-2">{importError}</p>}
       {importMutation.isPending && <p className="text-sm text-blue-600 mb-2">Importing...</p>}
-      {importMutation.isSuccess && <p className="text-sm text-green-600 mb-2">Imported {entries.length} rules</p>}
+      {importMutation.isSuccess && <p className="text-sm text-green-600 mb-2">Import complete</p>}
 
       {showAddForm && (
         <div className="bg-slate-50 border rounded-xl p-4 mb-4 shrink-0">
@@ -289,36 +310,86 @@ export default function RoleMatrixPage() {
         </div>
       )}
 
-      <div className="flex gap-2 mb-3 shrink-0">
-        <select
-          className="border rounded-lg px-2 py-1.5 text-sm"
-          value={filterFn}
-          onChange={e => setFilterFn(e.target.value)}
-        >
-          <option value="">All functions</option>
-          {uniqueFunctions.map(fn => <option key={fn}>{fn}</option>)}
-        </select>
-        <input
-          className="border rounded-lg px-3 py-1.5 text-sm"
-          placeholder="Filter by role..."
-          value={filterRole}
-          onChange={e => setFilterRole(e.target.value)}
-        />
-        <span className="text-sm text-slate-400 self-center">{filtered.length} rules shown</span>
-      </div>
-
       <div className="overflow-auto rounded-xl border bg-white flex-1">
-        <table className="min-w-max text-sm border-collapse">
-          <thead className="sticky top-0 z-10">
-            <tr className="bg-slate-50 border-b">
-              <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap">Function</th>
-              <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap">Role</th>
+        <table className="min-w-max text-sm border-collapse w-full">
+          <thead className="sticky top-0 z-10 bg-slate-50">
+            {/* Label row */}
+            <tr className="border-b">
+              <th className={thClass}>Function</th>
+              <th className={thClass}>Role</th>
               {BOOL_FLAGS.map(f => (
-                <th key={f.key} className="px-3 py-2 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap w-20">{f.label}</th>
+                <th key={f.key} className={`${thClass} text-center w-24`}>{f.label}</th>
               ))}
-              <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-72">PDM Training (auto-filled)</th>
-              <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-48">TLG Group</th>
-              <th className="px-3 py-2 w-20"></th>
+              <th className={`${thClass} w-72`}>PDM Training (auto-filled)</th>
+              <th className={`${thClass} w-40`}>TLG Group</th>
+              <th className="px-2 py-2 w-16"></th>
+            </tr>
+            {/* Filter row */}
+            <tr className="border-b bg-white">
+              {/* Function */}
+              <th className="px-2 py-1.5">
+                <select
+                  value={filters.function}
+                  onChange={e => setFilter('function', e.target.value)}
+                  className={filterInputClass}
+                >
+                  <option value="">All</option>
+                  {uniqueFunctions.map(fn => <option key={fn} value={fn}>{fn}</option>)}
+                </select>
+              </th>
+              {/* Role */}
+              <th className="px-2 py-1.5">
+                <input
+                  value={filters.role}
+                  onChange={e => setFilter('role', e.target.value)}
+                  placeholder="Filter..."
+                  className={filterInputClass}
+                />
+              </th>
+              {/* Bool flags */}
+              {BOOL_FLAGS.map(f => (
+                <th key={f.key} className="px-2 py-1.5">
+                  <select
+                    value={filters[f.key]}
+                    onChange={e => setFilter(f.key, e.target.value)}
+                    className={`${filterInputClass} text-center`}
+                  >
+                    <option value="">All</option>
+                    <option value="yes">Yes</option>
+                    <option value="no">No</option>
+                  </select>
+                </th>
+              ))}
+              {/* PDM Training */}
+              <th className="px-2 py-1.5">
+                <input
+                  value={filters.pdm_role}
+                  onChange={e => setFilter('pdm_role', e.target.value)}
+                  placeholder="Filter..."
+                  className={filterInputClass}
+                />
+              </th>
+              {/* TLG Group */}
+              <th className="px-2 py-1.5">
+                <input
+                  value={filters.tlg_group}
+                  onChange={e => setFilter('tlg_group', e.target.value)}
+                  placeholder="Filter..."
+                  className={filterInputClass}
+                />
+              </th>
+              {/* Reset */}
+              <th className="px-2 py-1.5 text-center">
+                {hasActiveFilters && (
+                  <button
+                    onClick={() => setFilters(EMPTY_FILTERS)}
+                    title="Clear all filters"
+                    className="text-slate-400 hover:text-slate-700 text-xs"
+                  >
+                    Reset
+                  </button>
+                )}
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -326,7 +397,7 @@ export default function RoleMatrixPage() {
               <tr><td colSpan={10} className="px-3 py-8 text-center text-slate-400">Loading...</td></tr>
             )}
             {!isLoading && filtered.length === 0 && (
-              <tr><td colSpan={10} className="px-3 py-8 text-center text-slate-400">No rules yet. Import the Excel template or add rules manually.</td></tr>
+              <tr><td colSpan={10} className="px-3 py-8 text-center text-slate-400">No rules match the current filters.</td></tr>
             )}
             {filtered.map(entry => (
               <tr key={entry.id} className={`border-b hover:bg-slate-50/50 ${entry.pdm_role?.startsWith('Error') ? 'bg-red-50' : ''}`}>
