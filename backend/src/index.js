@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const migrate = require('./migrate');
 
 const authRoutes = require('./routes/auth');
 const projectRoutes = require('./routes/projects');
@@ -25,4 +26,7 @@ app.use('/api/projects', generationRoutes);
 app.use('/api/projects', campaignRoutes);
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`Backend running on port ${PORT}`));
+
+migrate()
+  .then(() => app.listen(PORT, () => console.log(`Backend running on port ${PORT}`)))
+  .catch(err => { console.error('Startup failed:', err.message); process.exit(1); });
