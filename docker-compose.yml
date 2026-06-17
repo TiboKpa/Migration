@@ -24,6 +24,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    pull_policy: build
     container_name: migration_backend
     restart: unless-stopped
     environment:
@@ -47,6 +48,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    pull_policy: build
     container_name: migration_frontend
     restart: unless-stopped
     environment:
