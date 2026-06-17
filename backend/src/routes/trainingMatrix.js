@@ -3,6 +3,53 @@ const pool = require('../db');
 const authenticate = require('../middleware/auth');
 const router = express.Router();
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Insert-and-shift for curriculum_module_items.
+ * If `pos` is already taken, shift all items at >= pos up by 1 first.
+ * pos is clamped to minimum 1.
+ */
+async function shiftAndInsertCurriculumModule(db, curriculumId, moduleId, requirement, pos) {
+  const safePos = Math.max(1, pos);
+  await db.query(
+    `UPDATE curriculum_module_items
+     SET sequence_order = sequence_order + 1
+     WHERE curriculum_id = $1 AND sequence_order >= $2`,
+    [curriculumId, safePos]
+  );
+  await db.query(
+    `INSERT INTO curriculum_module_items (curriculum_id, module_id, requirement, sequence_order)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (curriculum_id, module_id) DO UPDATE
+       SET requirement = EXCLUDED.requirement, sequence_order = EXCLUDED.sequence_order`,
+    [curriculumId, moduleId, requirement, safePos]
+  );
+}
+
+/**
+ * Insert-and-shift for playlist_items.
+ * If `pos` is already taken, shift all items at >= pos up by 1 first.
+ * pos is clamped to minimum 1.
+ * During import we pass shift=false to preserve the exact xlsx order.
+ */
+async function shiftAndInsertPlaylistItem(db, playlistId, curriculumId, moduleId, pos, shift = true) {
+  const safePos = Math.max(1, pos);
+  if (shift) {
+    await db.query(
+      `UPDATE playlist_items
+       SET sequence_order = sequence_order + 1
+       WHERE playlist_id = $1 AND sequence_order >= $2`,
+      [playlistId, safePos]
+    );
+  }
+  await db.query(
+    `INSERT INTO playlist_items (playlist_id, curriculum_id, module_id, sequence_order)
+     VALUES ($1, $2, $3, $4)`,
+    [playlistId, curriculumId || null, moduleId || null, safePos]
+  );
+}
+
 // ── Legacy routes ─────────────────────────────────────────────────────────────
 router.get('/:projectId/profiles', authenticate, async (req, res) => {
   try {
@@ -108,7 +155,6 @@ router.delete('/:projectId/modules/:moduleId', authenticate, async (req, res) =>
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Bulk delete all modules for a project
 router.delete('/:projectId/modules', authenticate, async (req, res) => {
   try {
     await pool.query('DELETE FROM training_modules WHERE project_id=$1', [req.params.projectId]);
@@ -185,20 +231,29 @@ router.put('/:projectId/curricula/:curriculumId', authenticate, async (req, res)
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Add module to curriculum with insert-and-shift
 router.post('/:projectId/curricula/:curriculumId/modules', authenticate, async (req, res) => {
   const { module_id, requirement, sequence_order } = req.body;
   if (!module_id) return res.status(400).json({ error: 'module_id is required' });
+  const db = await pool.connect();
   try {
-    const r = await pool.query(
-      `INSERT INTO curriculum_module_items (curriculum_id, module_id, requirement, sequence_order)
-       VALUES ($1,$2,$3,$4)
-       ON CONFLICT (curriculum_id, module_id) DO UPDATE
-         SET requirement=EXCLUDED.requirement, sequence_order=EXCLUDED.sequence_order
-       RETURNING *`,
-      [req.params.curriculumId, module_id, requirement || 'mandatory', sequence_order || 0]
-    );
-    res.status(201).json(r.rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    await db.query('BEGIN');
+    // If no position given, place at end
+    let pos = parseInt(sequence_order);
+    if (!pos || pos < 1) {
+      const maxR = await db.query(
+        'SELECT COALESCE(MAX(sequence_order), 0) AS m FROM curriculum_module_items WHERE curriculum_id=$1',
+        [req.params.curriculumId]
+      );
+      pos = maxR.rows[0].m + 1;
+    }
+    await shiftAndInsertCurriculumModule(db, req.params.curriculumId, module_id, requirement || 'mandatory', pos);
+    await db.query('COMMIT');
+    res.status(201).json({ message: 'Added' });
+  } catch (err) {
+    await db.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally { db.release(); }
 });
 
 router.delete('/:projectId/curricula/:curriculumId/modules/:moduleId', authenticate, async (req, res) => {
@@ -215,7 +270,6 @@ router.delete('/:projectId/curricula/:curriculumId', authenticate, async (req, r
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Bulk delete all curricula for a project
 router.delete('/:projectId/curricula', authenticate, async (req, res) => {
   try {
     await pool.query('DELETE FROM training_curricula WHERE project_id=$1', [req.params.projectId]);
@@ -266,29 +320,34 @@ router.get('/:projectId/playlists/:playlistId', authenticate, async (req, res) =
       [curriculumIds]
     )).rows;
 
-    const curricula = items
-      .filter(i => i.curriculum_id)
-      .map(i => ({
-        playlist_item_id: i.id,
-        curriculum_id:    i.curriculum_id,
-        title:            i.curriculum_title,
-        content_id:       i.curriculum_content_id,
-        sequence_order:   i.sequence_order,
-        modules:          curriculumModules.filter(m => m.curriculum_id === i.curriculum_id),
-      }));
-
-    const standalone_modules = items
-      .filter(i => i.module_id && !i.curriculum_id)
-      .map(i => ({
+    // Build a unified ordered list of all playlist items (curricula + standalone modules)
+    const orderedItems = items.map(i => {
+      if (i.curriculum_id) {
+        return {
+          kind:             'curriculum',
+          playlist_item_id: i.id,
+          curriculum_id:    i.curriculum_id,
+          title:            i.curriculum_title,
+          content_id:       i.curriculum_content_id,
+          sequence_order:   i.sequence_order,
+          modules:          curriculumModules.filter(m => m.curriculum_id === i.curriculum_id),
+        };
+      }
+      return {
+        kind:             'module',
         playlist_item_id: i.id,
         module_id:        i.module_id,
         title:            i.module_title,
         content_id:       i.module_content_id,
         duration_min:     i.duration_min,
         sequence_order:   i.sequence_order,
-      }));
+      };
+    });
 
-    // Complementary refs, ordered by sequence_order
+    // Keep legacy fields for backward compat
+    const curricula = orderedItems.filter(x => x.kind === 'curriculum');
+    const standalone_modules = orderedItems.filter(x => x.kind === 'module');
+
     const refs = (await pool.query(
       'SELECT * FROM playlist_complementary_refs WHERE playlist_id=$1 ORDER BY sequence_order',
       [playlist.id]
@@ -299,7 +358,7 @@ router.get('/:projectId/playlists/:playlistId', authenticate, async (req, res) =
       .filter(m => (m.requirement || 'mandatory') === 'mandatory')
       .reduce((s, m) => s + (m.duration_min || 0), 0);
 
-    res.json({ ...playlist, curricula, standalone_modules, complementary_refs: refs, total_minutes });
+    res.json({ ...playlist, ordered_items: orderedItems, curricula, standalone_modules, complementary_refs: refs, total_minutes });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -341,7 +400,6 @@ router.delete('/:projectId/playlists/:playlistId', authenticate, async (req, res
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Bulk delete all playlists for a project
 router.delete('/:projectId/playlists', authenticate, async (req, res) => {
   try {
     await pool.query('DELETE FROM playlists WHERE project_id=$1', [req.params.projectId]);
@@ -349,17 +407,28 @@ router.delete('/:projectId/playlists', authenticate, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Add item to playlist with insert-and-shift
 router.post('/:projectId/playlists/:playlistId/items', authenticate, async (req, res) => {
   const { curriculum_id, module_id, sequence_order } = req.body;
   if (!curriculum_id && !module_id) return res.status(400).json({ error: 'curriculum_id or module_id is required' });
+  const db = await pool.connect();
   try {
-    const r = await pool.query(
-      `INSERT INTO playlist_items (playlist_id, curriculum_id, module_id, sequence_order)
-       VALUES ($1,$2,$3,$4) RETURNING *`,
-      [req.params.playlistId, curriculum_id || null, module_id || null, sequence_order || 0]
-    );
-    res.status(201).json(r.rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    await db.query('BEGIN');
+    let pos = parseInt(sequence_order);
+    if (!pos || pos < 1) {
+      const maxR = await db.query(
+        'SELECT COALESCE(MAX(sequence_order), 0) AS m FROM playlist_items WHERE playlist_id=$1',
+        [req.params.playlistId]
+      );
+      pos = maxR.rows[0].m + 1;
+    }
+    await shiftAndInsertPlaylistItem(db, req.params.playlistId, curriculum_id || null, module_id || null, pos, true);
+    await db.query('COMMIT');
+    res.status(201).json({ message: 'Added' });
+  } catch (err) {
+    await db.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally { db.release(); }
 });
 
 router.delete('/:projectId/playlists/:playlistId/items/:itemId', authenticate, async (req, res) => {
@@ -393,7 +462,7 @@ router.post('/:projectId/playlists/import', authenticate, async (req, res) => {
       moduleIdByTitle.set(r.rows[0].title.toLowerCase(), r.rows[0].id);
     }
 
-    // Step 2: upsert curricula + module items
+    // Step 2: upsert curricula + module items (no shift during import — keep xlsx order)
     const curriculumIdByTitle = new Map();
     for (const cur of curricula) {
       if (!cur.title) continue;
@@ -411,17 +480,18 @@ router.post('/:projectId/playlists/import', authenticate, async (req, res) => {
       for (const item of (cur.modules || [])) {
         const modId = moduleIdByTitle.get(item.title.toLowerCase());
         if (!modId) continue;
+        const pos = Math.max(1, item.sequence_order || 1);
         await db.query(
           `INSERT INTO curriculum_module_items (curriculum_id, module_id, requirement, sequence_order)
            VALUES ($1,$2,$3,$4)
            ON CONFLICT (curriculum_id, module_id) DO UPDATE
              SET requirement=EXCLUDED.requirement, sequence_order=EXCLUDED.sequence_order`,
-          [curId, modId, item.requirement || 'mandatory', item.sequence_order || 0]
+          [curId, modId, item.requirement || 'mandatory', pos]
         );
       }
     }
 
-    // Step 3: primary trainings
+    // Step 3: primary trainings (no shift — preserve xlsx order)
     let importedPlaylists = 0;
     for (const pt of primary_trainings) {
       if (!pt.title) continue;
@@ -436,21 +506,18 @@ router.post('/:projectId/playlists/import', authenticate, async (req, res) => {
       );
       const playlistId = r.rows[0].id;
       await db.query('DELETE FROM playlist_items WHERE playlist_id=$1', [playlistId]);
+
       for (const cur of (pt.curricula || [])) {
         const curId = curriculumIdByTitle.get(cur.title.toLowerCase());
         if (!curId) continue;
-        await db.query(
-          'INSERT INTO playlist_items (playlist_id, curriculum_id, module_id, sequence_order) VALUES ($1,$2,NULL,$3)',
-          [playlistId, curId, cur.sequence_order || 0]
-        );
+        const pos = Math.max(1, cur.sequence_order || 1);
+        await shiftAndInsertPlaylistItem(db, playlistId, curId, null, pos, false);
       }
       for (const mod of (pt.standalone_modules || [])) {
         const modId = moduleIdByTitle.get(mod.title.toLowerCase());
         if (!modId) continue;
-        await db.query(
-          'INSERT INTO playlist_items (playlist_id, curriculum_id, module_id, sequence_order) VALUES ($1,NULL,$2,$3)',
-          [playlistId, modId, mod.sequence_order || 0]
-        );
+        const pos = Math.max(1, mod.sequence_order || 1);
+        await shiftAndInsertPlaylistItem(db, playlistId, null, modId, pos, false);
       }
       importedPlaylists++;
     }
