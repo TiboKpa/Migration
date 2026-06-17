@@ -147,194 +147,297 @@ export default function TrainingMatrixPage() {
   }
 
   return (
-    <div style={{ display: 'flex', gap: 24, height: 'calc(100vh - 80px)', fontFamily: 'inherit' }}>
+    <div className="flex flex-col h-full">
 
-      {/* Left panel */}
-      <div style={{ width: 280, borderRight: '1px solid #e5e7eb', paddingRight: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-          <span style={{ fontWeight: 600, fontSize: 14 }}>Primary Trainings</span>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button
-              onClick={() => importRef.current.click()}
-              disabled={importing}
-              style={{ fontSize: 11, padding: '3px 8px', background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: 4, cursor: 'pointer' }}
-            >
-              {importing ? 'Importing...' : 'Import xlsx'}
-            </button>
-            <input ref={importRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleImportFile} />
-            <button
-              onClick={() => setShowNew(!showNew)}
-              style={{ fontSize: 11, padding: '3px 8px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}
-            >+ New</button>
-          </div>
+      {/* ── Page header ── */}
+      <div className="flex items-center justify-between mb-4 shrink-0">
+        <div>
+          <h1 className="text-xl font-bold text-slate-800">PDM Training</h1>
+          <p className="text-sm text-slate-500">{primaryTrainings.length} primary training(s)</p>
         </div>
-
-        {importResult && (
-          <div style={{ fontSize: 11, padding: '6px 8px', borderRadius: 4, background: importResult.ok ? '#d1fae5' : '#fee2e2', color: importResult.ok ? '#065f46' : '#991b1b', marginBottom: 4 }}>
-            {importResult.ok ? `${importResult.count} primary training(s) imported` : `Error: ${importResult.message}`}
-          </div>
-        )}
-
-        {showNew && (
-          <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6, padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <input placeholder="Title *" value={newPt.title} onChange={e => setNewPt(p => ({ ...p, title: e.target.value }))} style={inputStyle} />
-            <input placeholder="Content ID" value={newPt.content_id} onChange={e => setNewPt(p => ({ ...p, content_id: e.target.value }))} style={inputStyle} />
-            <input placeholder="Link" value={newPt.link} onChange={e => setNewPt(p => ({ ...p, link: e.target.value }))} style={inputStyle} />
-            <textarea placeholder="Description" value={newPt.description} onChange={e => setNewPt(p => ({ ...p, description: e.target.value }))} style={{ ...inputStyle, resize: 'vertical', minHeight: 48 }} />
-            <div style={{ display: 'flex', gap: 6 }}>
-              <button onClick={createPrimaryTraining} style={btnPrimary}>Create</button>
-              <button onClick={() => setShowNew(false)} style={btnGhost}>Cancel</button>
-            </div>
-          </div>
-        )}
-
-        <div style={{ overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {primaryTrainings.length === 0 && <span style={{ fontSize: 12, color: '#9ca3af' }}>No primary trainings yet. Import an xlsx or create one.</span>}
-          {primaryTrainings.map(pt => (
-            <button
-              key={pt.id}
-              onClick={() => selectPrimaryTraining(pt)}
-              style={{
-                textAlign: 'left', padding: '7px 10px', borderRadius: 6, border: 'none', cursor: 'pointer',
-                background: selected === pt.id ? '#eff6ff' : 'transparent',
-                color: selected === pt.id ? '#1d4ed8' : '#374151',
-                fontWeight: selected === pt.id ? 600 : 400,
-                fontSize: 13,
-              }}
-            >{pt.title}</button>
-          ))}
+        <div className="flex gap-2 items-center">
+          <button
+            onClick={() => { setShowNew(v => !v); setNewPt({ title: '', description: '', link: '', content_id: '' }); }}
+            className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700"
+          >
+            Add primary training
+          </button>
+          <button
+            onClick={() => importRef.current.click()}
+            disabled={importing}
+            className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+          >
+            {importing ? 'Importing...' : 'Import xlsx'}
+          </button>
+          <input ref={importRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportFile} />
         </div>
       </div>
 
-      {/* Right panel */}
-      <div style={{ flex: 1, overflowY: 'auto', paddingLeft: 8 }}>
-        {!selected && (
-          <div style={{ color: '#9ca3af', fontSize: 13, marginTop: 40, textAlign: 'center' }}>Select a primary training to view or edit it.</div>
-        )}
+      {importResult && (
+        <p className={`text-sm mb-3 ${importResult.ok ? 'text-green-600' : 'text-red-500'}`}>
+          {importResult.ok ? `${importResult.count} primary training(s) imported.` : `Error: ${importResult.message}`}
+        </p>
+      )}
 
-        {selected && loadingDetail && (
-          <div style={{ color: '#9ca3af', fontSize: 13, marginTop: 40, textAlign: 'center' }}>Loading...</div>
-        )}
-
-        {selected && !loadingDetail && detail && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-
-            {/* Primary training header */}
-            {editMode ? (
-              <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 8, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <input placeholder="Title *" value={editPt.title || ''} onChange={e => setEditPt(p => ({ ...p, title: e.target.value }))} style={inputStyle} />
-                <input placeholder="Content ID" value={editPt.content_id || ''} onChange={e => setEditPt(p => ({ ...p, content_id: e.target.value }))} style={inputStyle} />
-                <input placeholder="Link" value={editPt.link || ''} onChange={e => setEditPt(p => ({ ...p, link: e.target.value }))} style={inputStyle} />
-                <textarea placeholder="Description" value={editPt.description || ''} onChange={e => setEditPt(p => ({ ...p, description: e.target.value }))} style={{ ...inputStyle, resize: 'vertical', minHeight: 60 }} />
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button onClick={updatePrimaryTraining} style={btnPrimary}>Save</button>
-                  <button onClick={() => setEditMode(false)} style={btnGhost}>Cancel</button>
-                </div>
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                  <div>
-                    <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>{detail.title}</h2>
-                    <div style={{ display: 'flex', gap: 8, marginTop: 4, flexWrap: 'wrap', alignItems: 'center' }}>
-                      {detail.content_id && <span style={badgeStyle}>{detail.content_id}</span>}
-                      <span style={{ fontSize: 12, color: '#6b7280' }}>{durationLabel(detail.total_minutes)} mandatory</span>
-                      {detail.link && <a href={detail.link} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: '#2563eb' }}>Open training</a>}
-                    </div>
-                    {detail.description && <p style={{ margin: '6px 0 0', fontSize: 13, color: '#6b7280', maxWidth: 600 }}>{detail.description}</p>}
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                    <button onClick={() => { setEditMode(true); setEditPt({ title: detail.title, description: detail.description, link: detail.link, content_id: detail.content_id }); }} style={btnGhost}>Edit</button>
-                    <button onClick={deletePrimaryTraining} style={btnDanger}>Delete</button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Curricula */}
+      {/* ── Add form ── */}
+      {showNew && (
+        <div className="bg-slate-50 border rounded-xl p-4 mb-4 shrink-0">
+          <h2 className="text-sm font-semibold text-slate-700 mb-3">New primary training</h2>
+          <div className="grid grid-cols-2 gap-3 mb-3">
             <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <span style={{ fontWeight: 600, fontSize: 14 }}>Curricula</span>
-                <button onClick={() => setShowAddCur(!showAddCur)} style={btnGhost}>+ Add curriculum</button>
-              </div>
-
-              {showAddCur && (
-                <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6, padding: 10, marginBottom: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <input placeholder="Title *" value={newCur.title} onChange={e => setNewCur(p => ({ ...p, title: e.target.value }))} style={inputStyle} />
-                  <input placeholder="Content ID" value={newCur.content_id} onChange={e => setNewCur(p => ({ ...p, content_id: e.target.value }))} style={inputStyle} />
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <select value={newCur.requirement} onChange={e => setNewCur(p => ({ ...p, requirement: e.target.value }))} style={inputStyle}>
-                      <option value="mandatory">Mandatory</option>
-                      <option value="optional">Optional</option>
-                    </select>
-                    <input type="number" placeholder="Order" value={newCur.sequence_order} onChange={e => setNewCur(p => ({ ...p, sequence_order: parseInt(e.target.value) || 0 }))} style={{ ...inputStyle, width: 80 }} />
-                  </div>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button onClick={addCurriculum} style={btnPrimary}>Add</button>
-                    <button onClick={() => setShowAddCur(false)} style={btnGhost}>Cancel</button>
-                  </div>
-                </div>
-              )}
-
-              {detail.curricula.length === 0 && <span style={{ fontSize: 12, color: '#9ca3af' }}>No curricula yet.</span>}
-              {detail.curricula.map(cur => (
-                <details key={cur.id} style={{ marginBottom: 8, border: '1px solid #e5e7eb', borderRadius: 6, overflow: 'hidden' }} open>
-                  <summary style={{ padding: '8px 12px', background: '#f9fafb', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', listStyle: 'none' }}>
-                    <span style={{ fontWeight: 600, fontSize: 13 }}>{cur.title}</span>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      {cur.content_id && <span style={badgeStyle}>{cur.content_id}</span>}
-                      <span style={{ fontSize: 11, color: cur.requirement === 'mandatory' ? '#065f46' : '#92400e', background: cur.requirement === 'mandatory' ? '#d1fae5' : '#fef3c7', padding: '1px 6px', borderRadius: 10 }}>{cur.requirement}</span>
-                      <button onClick={e => { e.preventDefault(); deleteCurriculum(cur.id); }} style={{ ...btnDanger, fontSize: 11, padding: '2px 7px' }}>Delete</button>
-                    </div>
-                  </summary>
-                  <div style={{ padding: '8px 12px' }}>
-                    {cur.modules.length === 0 && <span style={{ fontSize: 12, color: '#9ca3af' }}>No modules in this curriculum.</span>}
-                    {cur.modules.map(mod => (
-                      <ModuleRow key={mod.id} mod={mod} onDelete={deleteModule} />
-                    ))}
-                  </div>
-                </details>
-              ))}
+              <label className="text-xs text-slate-500 block mb-1">Title *</label>
+              <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={newPt.title}
+                onChange={e => setNewPt(p => ({ ...p, title: e.target.value }))} />
             </div>
-
-            {/* Standalone modules */}
             <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <span style={{ fontWeight: 600, fontSize: 14 }}>Standalone modules</span>
-                <button onClick={() => setShowAddMod(!showAddMod)} style={btnGhost}>+ Add module</button>
-              </div>
-
-              {showAddMod && (
-                <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6, padding: 10, marginBottom: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <input placeholder="Title *" value={newMod.title} onChange={e => setNewMod(p => ({ ...p, title: e.target.value }))} style={inputStyle} />
-                  <input placeholder="Content ID" value={newMod.content_id} onChange={e => setNewMod(p => ({ ...p, content_id: e.target.value }))} style={inputStyle} />
-                  <input type="number" placeholder="Duration (min)" value={newMod.duration_min} onChange={e => setNewMod(p => ({ ...p, duration_min: parseInt(e.target.value) || 0 }))} style={inputStyle} />
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <select value={newMod.requirement} onChange={e => setNewMod(p => ({ ...p, requirement: e.target.value }))} style={inputStyle}>
-                      <option value="mandatory">Mandatory</option>
-                      <option value="optional">Optional</option>
-                    </select>
-                    <input type="number" placeholder="Order" value={newMod.sequence_order} onChange={e => setNewMod(p => ({ ...p, sequence_order: parseInt(e.target.value) || 0 }))} style={{ ...inputStyle, width: 80 }} />
-                  </div>
-                  <select value={newMod.curriculum_id} onChange={e => setNewMod(p => ({ ...p, curriculum_id: e.target.value }))} style={inputStyle}>
-                    <option value="">Standalone (no curriculum)</option>
-                    {detail.curricula.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
-                  </select>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button onClick={addModule} style={btnPrimary}>Add</button>
-                    <button onClick={() => setShowAddMod(false)} style={btnGhost}>Cancel</button>
-                  </div>
-                </div>
-              )}
-
-              {detail.standalone_modules.length === 0 && <span style={{ fontSize: 12, color: '#9ca3af' }}>No standalone modules.</span>}
-              {detail.standalone_modules.map(mod => (
-                <ModuleRow key={mod.id} mod={mod} onDelete={deleteModule} />
-              ))}
+              <label className="text-xs text-slate-500 block mb-1">Content ID</label>
+              <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={newPt.content_id}
+                onChange={e => setNewPt(p => ({ ...p, content_id: e.target.value }))} />
             </div>
-
+            <div>
+              <label className="text-xs text-slate-500 block mb-1">Link</label>
+              <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={newPt.link}
+                onChange={e => setNewPt(p => ({ ...p, link: e.target.value }))} />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500 block mb-1">Description</label>
+              <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={newPt.description}
+                onChange={e => setNewPt(p => ({ ...p, description: e.target.value }))} />
+            </div>
           </div>
-        )}
+          <div className="flex gap-2">
+            <button onClick={createPrimaryTraining} disabled={!newPt.title.trim()}
+              className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-40">
+              Save
+            </button>
+            <button onClick={() => setShowNew(false)}
+              className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Main content: list + detail ── */}
+      <div className="flex gap-6 flex-1 min-h-0">
+
+        {/* Left list */}
+        <div className="w-64 shrink-0 overflow-y-auto border rounded-xl bg-white">
+          {primaryTrainings.length === 0 && (
+            <p className="text-xs text-slate-400 p-4">No primary trainings yet. Import an xlsx or add one.</p>
+          )}
+          {primaryTrainings.map(pt => (
+            <button key={pt.id} onClick={() => selectPrimaryTraining(pt)}
+              className={`w-full text-left px-4 py-2.5 text-sm border-b last:border-b-0 transition-colors
+                ${selected === pt.id ? 'bg-blue-50 text-blue-700 font-semibold' : 'text-slate-700 hover:bg-slate-50'}`}>
+              {pt.title}
+            </button>
+          ))}
+        </div>
+
+        {/* Right detail */}
+        <div className="flex-1 overflow-y-auto">
+          {!selected && (
+            <p className="text-sm text-slate-400 mt-16 text-center">Select a primary training to view or edit it.</p>
+          )}
+
+          {selected && loadingDetail && (
+            <p className="text-sm text-slate-400 mt-16 text-center">Loading...</p>
+          )}
+
+          {selected && !loadingDetail && detail && (
+            <div className="flex flex-col gap-6">
+
+              {/* Header */}
+              {editMode ? (
+                <div className="bg-slate-50 border rounded-xl p-4">
+                  <h2 className="text-sm font-semibold text-slate-700 mb-3">Edit primary training</h2>
+                  <div className="grid grid-cols-2 gap-3 mb-3">
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">Title *</label>
+                      <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={editPt.title || ''}
+                        onChange={e => setEditPt(p => ({ ...p, title: e.target.value }))} />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">Content ID</label>
+                      <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={editPt.content_id || ''}
+                        onChange={e => setEditPt(p => ({ ...p, content_id: e.target.value }))} />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">Link</label>
+                      <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={editPt.link || ''}
+                        onChange={e => setEditPt(p => ({ ...p, link: e.target.value }))} />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">Description</label>
+                      <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={editPt.description || ''}
+                        onChange={e => setEditPt(p => ({ ...p, description: e.target.value }))} />
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={updatePrimaryTraining}
+                      className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">Save</button>
+                    <button onClick={() => setEditMode(false)}
+                      className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex justify-between items-start">
+                  <div>
+                    <h2 className="text-lg font-bold text-slate-800">{detail.title}</h2>
+                    <div className="flex gap-3 mt-1 flex-wrap items-center">
+                      {detail.content_id && (
+                        <span className="text-xs bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5">{detail.content_id}</span>
+                      )}
+                      <span className="text-xs text-slate-400">{durationLabel(detail.total_minutes)} mandatory</span>
+                      {detail.link && (
+                        <a href={detail.link} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">Open training</a>
+                      )}
+                    </div>
+                    {detail.description && <p className="text-sm text-slate-500 mt-1 max-w-xl">{detail.description}</p>}
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    <button
+                      onClick={() => { setEditMode(true); setEditPt({ title: detail.title, description: detail.description, link: detail.link, content_id: detail.content_id }); }}
+                      className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Edit</button>
+                    <button onClick={deletePrimaryTraining}
+                      className="border border-red-200 px-3 py-1.5 rounded-lg text-sm text-red-500 hover:bg-red-50">Delete</button>
+                  </div>
+                </div>
+              )}
+
+              {/* Curricula */}
+              <div>
+                <div className="flex justify-between items-center mb-3">
+                  <h3 className="text-sm font-semibold text-slate-700">Curricula</h3>
+                  <button onClick={() => setShowAddCur(v => !v)}
+                    className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">+ Add curriculum</button>
+                </div>
+
+                {showAddCur && (
+                  <div className="bg-slate-50 border rounded-xl p-4 mb-4">
+                    <div className="grid grid-cols-3 gap-3 mb-3">
+                      <div className="col-span-2">
+                        <label className="text-xs text-slate-500 block mb-1">Title *</label>
+                        <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={newCur.title}
+                          onChange={e => setNewCur(p => ({ ...p, title: e.target.value }))} />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-500 block mb-1">Content ID</label>
+                        <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={newCur.content_id}
+                          onChange={e => setNewCur(p => ({ ...p, content_id: e.target.value }))} />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-500 block mb-1">Requirement</label>
+                        <select className="border rounded-lg px-2 py-1.5 text-sm w-full" value={newCur.requirement}
+                          onChange={e => setNewCur(p => ({ ...p, requirement: e.target.value }))}>
+                          <option value="mandatory">Mandatory</option>
+                          <option value="optional">Optional</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-500 block mb-1">Order</label>
+                        <input type="number" className="border rounded-lg px-2 py-1.5 text-sm w-full" value={newCur.sequence_order}
+                          onChange={e => setNewCur(p => ({ ...p, sequence_order: parseInt(e.target.value) || 0 }))} />
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={addCurriculum} disabled={!newCur.title.trim()}
+                        className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-40">Add</button>
+                      <button onClick={() => setShowAddCur(false)}
+                        className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
+                    </div>
+                  </div>
+                )}
+
+                {detail.curricula.length === 0 && <p className="text-xs text-slate-400">No curricula yet.</p>}
+                {detail.curricula.map(cur => (
+                  <details key={cur.id} className="mb-2 border rounded-xl overflow-hidden" open>
+                    <summary className="flex justify-between items-center px-4 py-2.5 bg-slate-50 cursor-pointer list-none">
+                      <span className="text-sm font-semibold text-slate-700">{cur.title}</span>
+                      <div className="flex gap-2 items-center">
+                        {cur.content_id && (
+                          <span className="text-xs bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5">{cur.content_id}</span>
+                        )}
+                        <span className={`text-xs rounded-full px-2 py-0.5 ${ cur.requirement === 'mandatory' ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700' }`}>
+                          {cur.requirement}
+                        </span>
+                        <button onClick={e => { e.preventDefault(); deleteCurriculum(cur.id); }}
+                          className="border border-red-200 px-2 py-0.5 rounded-lg text-xs text-red-500 hover:bg-red-50">Delete</button>
+                      </div>
+                    </summary>
+                    <div className="px-4 py-2">
+                      {cur.modules.length === 0 && <p className="text-xs text-slate-400">No modules in this curriculum.</p>}
+                      {cur.modules.map(mod => <ModuleRow key={mod.id} mod={mod} onDelete={deleteModule} />)}
+                    </div>
+                  </details>
+                ))}
+              </div>
+
+              {/* Standalone modules */}
+              <div>
+                <div className="flex justify-between items-center mb-3">
+                  <h3 className="text-sm font-semibold text-slate-700">Standalone modules</h3>
+                  <button onClick={() => setShowAddMod(v => !v)}
+                    className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">+ Add module</button>
+                </div>
+
+                {showAddMod && (
+                  <div className="bg-slate-50 border rounded-xl p-4 mb-4">
+                    <div className="grid grid-cols-3 gap-3 mb-3">
+                      <div className="col-span-2">
+                        <label className="text-xs text-slate-500 block mb-1">Title *</label>
+                        <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={newMod.title}
+                          onChange={e => setNewMod(p => ({ ...p, title: e.target.value }))} />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-500 block mb-1">Content ID</label>
+                        <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={newMod.content_id}
+                          onChange={e => setNewMod(p => ({ ...p, content_id: e.target.value }))} />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-500 block mb-1">Duration (min)</label>
+                        <input type="number" className="border rounded-lg px-2 py-1.5 text-sm w-full" value={newMod.duration_min}
+                          onChange={e => setNewMod(p => ({ ...p, duration_min: parseInt(e.target.value) || 0 }))} />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-500 block mb-1">Requirement</label>
+                        <select className="border rounded-lg px-2 py-1.5 text-sm w-full" value={newMod.requirement}
+                          onChange={e => setNewMod(p => ({ ...p, requirement: e.target.value }))}>
+                          <option value="mandatory">Mandatory</option>
+                          <option value="optional">Optional</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-500 block mb-1">Order</label>
+                        <input type="number" className="border rounded-lg px-2 py-1.5 text-sm w-full" value={newMod.sequence_order}
+                          onChange={e => setNewMod(p => ({ ...p, sequence_order: parseInt(e.target.value) || 0 }))} />
+                      </div>
+                      <div className="col-span-3">
+                        <label className="text-xs text-slate-500 block mb-1">Attach to curriculum (optional)</label>
+                        <select className="border rounded-lg px-2 py-1.5 text-sm w-full" value={newMod.curriculum_id}
+                          onChange={e => setNewMod(p => ({ ...p, curriculum_id: e.target.value }))}>
+                          <option value="">Standalone</option>
+                          {detail.curricula.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={addModule} disabled={!newMod.title.trim()}
+                        className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-40">Add</button>
+                      <button onClick={() => setShowAddMod(false)}
+                        className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
+                    </div>
+                  </div>
+                )}
+
+                {detail.standalone_modules.length === 0 && <p className="text-xs text-slate-400">No standalone modules.</p>}
+                {detail.standalone_modules.map(mod => <ModuleRow key={mod.id} mod={mod} onDelete={deleteModule} />)}
+              </div>
+
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -342,22 +445,21 @@ export default function TrainingMatrixPage() {
 
 function ModuleRow({ mod, onDelete }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0', borderBottom: '1px solid #f3f4f6' }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flex: 1, minWidth: 0 }}>
-        <span style={{ fontSize: 13, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mod.title}</span>
-        {mod.content_id && <span style={badgeStyle}>{mod.content_id}</span>}
+    <div className="flex justify-between items-center py-1.5 border-b last:border-b-0">
+      <div className="flex gap-2 items-center flex-1 min-w-0">
+        <span className="text-sm text-slate-700 truncate">{mod.title}</span>
+        {mod.content_id && (
+          <span className="text-xs bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5 shrink-0">{mod.content_id}</span>
+        )}
       </div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
-        {mod.duration_min > 0 && <span style={{ fontSize: 11, color: '#6b7280' }}>{durationLabel(mod.duration_min)}</span>}
-        <span style={{ fontSize: 11, color: mod.requirement === 'mandatory' ? '#065f46' : '#92400e', background: mod.requirement === 'mandatory' ? '#d1fae5' : '#fef3c7', padding: '1px 6px', borderRadius: 10 }}>{mod.requirement}</span>
-        <button onClick={() => onDelete(mod.id)} style={{ ...btnDanger, fontSize: 11, padding: '2px 7px' }}>Delete</button>
+      <div className="flex gap-2 items-center shrink-0">
+        {mod.duration_min > 0 && <span className="text-xs text-slate-400">{durationLabel(mod.duration_min)}</span>}
+        <span className={`text-xs rounded-full px-2 py-0.5 ${ mod.requirement === 'mandatory' ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700' }`}>
+          {mod.requirement}
+        </span>
+        <button onClick={() => onDelete(mod.id)}
+          className="text-red-300 hover:text-red-500 text-xs">Del</button>
       </div>
     </div>
   );
 }
-
-const inputStyle = { padding: '5px 8px', borderRadius: 4, border: '1px solid #d1d5db', fontSize: 13, width: '100%', boxSizing: 'border-box' };
-const btnPrimary = { padding: '5px 12px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600 };
-const btnGhost = { padding: '5px 12px', background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: 4, cursor: 'pointer', fontSize: 12 };
-const btnDanger = { padding: '5px 12px', background: '#fee2e2', color: '#991b1b', border: '1px solid #fca5a5', borderRadius: 4, cursor: 'pointer', fontSize: 12 };
-const badgeStyle = { fontSize: 10, background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 10, padding: '1px 7px', whiteSpace: 'nowrap' };
