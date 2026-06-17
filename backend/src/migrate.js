@@ -143,19 +143,51 @@ async function migrate() {
         updated_at TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE(project_id, concatenate)
       );
+
+      -- Playlists: primary trainings with official name, description, link, content id
+      CREATE TABLE IF NOT EXISTS playlists (
+        id SERIAL PRIMARY KEY,
+        project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        description TEXT,
+        link TEXT,
+        content_id TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      -- Curricula: groupings inside a playlist
+      CREATE TABLE IF NOT EXISTS playlist_curricula (
+        id SERIAL PRIMARY KEY,
+        playlist_id INT REFERENCES playlists(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        content_id TEXT,
+        requirement TEXT DEFAULT 'mandatory',
+        sequence_order INT DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      -- Modules: belong to a curriculum OR standalone on a playlist (curriculum_id nullable)
+      CREATE TABLE IF NOT EXISTS playlist_modules (
+        id SERIAL PRIMARY KEY,
+        playlist_id INT REFERENCES playlists(id) ON DELETE CASCADE,
+        curriculum_id INT REFERENCES playlist_curricula(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        content_id TEXT,
+        duration_min INT DEFAULT 0,
+        requirement TEXT DEFAULT 'mandatory',
+        sequence_order INT DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
     `);
 
-    // Add unique constraint to training_profiles if not already present
     await client.query(`
       DO $$
       BEGIN
         IF NOT EXISTS (
-          SELECT 1 FROM pg_constraint
-          WHERE conname = 'training_profiles_project_name_unique'
+          SELECT 1 FROM pg_constraint WHERE conname = 'training_profiles_project_name_unique'
         ) THEN
-          ALTER TABLE training_profiles
-            ADD CONSTRAINT training_profiles_project_name_unique
-            UNIQUE (project_id, profile_name);
+          ALTER TABLE training_profiles ADD CONSTRAINT training_profiles_project_name_unique UNIQUE (project_id, profile_name);
         END IF;
       END$$;
     `);
