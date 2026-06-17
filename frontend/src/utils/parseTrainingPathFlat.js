@@ -20,33 +20,24 @@
  *   J(9)  : content ID
  *   K(10) : content type
  *   L(11)+: one column per training
- *            number  -> position of this row inside that Primary Training
- *            "X"/"x" -> this row is a Complementary reference
- *            empty   -> not in this training
  *
  * Row classification (C and D are structural, not playlist-order):
- *
  *   C==0, D==0  -> CURRICULUM header
  *   C==0, D!=0  -> STANDALONE MODULE (belongs to no curriculum)
  *   C!=0, D!=0  -> MODULE inside the curriculum whose chapter == C
  *
- * Within a curriculum the module's position is col D.
- * A module's requirement inside a curriculum:
- *   col G > 0  => mandatory
- *   col H > 0  => optional
+ * Playlist column cell values:
+ *   Primary Training   (row-3 link non-empty):
+ *     numeric  -> sequence_order of this row inside that training
+ *     empty    -> not in this training
  *
- * Global module duration comes from col I (total).
- * Modules are deduplicated by title; first occurrence wins for metadata.
+ *   Complementary Training (row-3 link empty):
+ *     numeric  -> included; numeric value is the display order
+ *     letter   -> included; order is position of first occurrence
+ *     empty    -> not in this training
  *
- * Playlist column rules:
- *   Primary Training     = col L+ where row-3 link is non-empty.
- *   Complementary        = col L+ where row-3 link is empty.
- *   Numeric cell value   = sequence_order of this row inside that Primary Training.
- *   X cell value         = this row is a complementary reference for that training.
- *
- * IMPORTANT: the numeric value in a playlist column is the ORDER of the
- * curriculum / standalone-module inside that specific training. It has no
- * relation to C or D.
+ * Only CURRICULUM and STANDALONE_MODULE rows can appear in playlists.
+ * MODULE rows (C!=0) are part of their curriculum and never appear directly.
  */
 
 import * as XLSX from 'xlsx';
@@ -70,17 +61,27 @@ function isNumericCell(v) {
   return !isNaN(Number(String(v).trim()));
 }
 
-function isXCell(v) {
-  if (v === null || v === undefined || v === '') return false;
-  return String(v).trim().toUpperCase() === 'X';
-}
-
 function toNum(v) {
   return Number(String(v).trim());
 }
 
 function cellStr(v) {
   return String(v === null || v === undefined ? '' : v).trim();
+}
+
+/**
+ * Returns whether a cell value means "include in complementary training".
+ * Accepts: any non-empty string or number that is not blank.
+ * Numeric value  -> explicit order (used as sequence_order).
+ * Letter/string  -> include; order is assigned by appearance.
+ */
+function complementaryCellOrder(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  if (isNumericCell(v)) return { explicit: true, order: toNum(v) };
+  // Any non-empty, non-numeric value (letter, word) means include
+  return { explicit: false, order: null };
 }
 
 export function parseTrainingPathFlat(arrayBuffer) {
@@ -90,7 +91,7 @@ export function parseTrainingPathFlat(arrayBuffer) {
 
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
 
-  // ── Playlist column metadata ──────────────────────────────────────────────────
+  // ── Playlist column metadata ──────────────────────────────────────────────
   const titleRow = rows[1] || [];
   const descRow  = rows[2] || [];
   const linkRow  = rows[3] || [];
@@ -107,7 +108,7 @@ export function parseTrainingPathFlat(arrayBuffer) {
     });
   }
 
-  // ── Find data start row ──────────────────────────────────────────────────
+  // ── Find data start row ───────────────────────────────────────────────────
   let dataStart = -1;
   for (let r = 10; r < rows.length; r++) {
     const row   = rows[r];
@@ -117,12 +118,7 @@ export function parseTrainingPathFlat(arrayBuffer) {
   }
   if (dataStart === -1) throw new Error('Could not find data rows in Training Path Flat');
 
-  // ── Classify every data row ────────────────────────────────────────────────
-  //
-  //  type: 'curriculum' | 'standalone_module' | 'module'
-  //  chapter:   numeric value of col C  (curriculum sequence)
-  //  brick:     numeric value of col D  (module sequence within chapter)
-  //
+  // ── Classify every data row ───────────────────────────────────────────────
   const classifiedRows = [];
   for (let r = dataStart; r < rows.length; r++) {
     const row   = rows[r];
@@ -140,29 +136,24 @@ export function parseTrainingPathFlat(arrayBuffer) {
     } else if (cNum === 0 && dNum !== 0) {
       type = 'standalone_module';
     } else {
-      type = 'module'; // belongs to a curriculum (chapter = cNum)
+      type = 'module';
     }
 
     classifiedRows.push({
       rowIndex:    r,
       type,
-      chapter:     cNum,  // curriculum's sequence number in the file
-      brick:       dNum,  // module's sequence number within that chapter
+      chapter:     cNum,
+      brick:       dNum,
       title,
       content_id:  cellStr(row[9]),
       mandatoryMs: hhmmssToMinutes(row[6]),
-      optionalMs:  hhmmssToMinutes(row[7]),
       totalMs:     hhmmssToMinutes(row[8]),
       rawRow:      row,
     });
   }
 
-  // ── Pass 1: unique modules ──────────────────────────────────────────────────
-  // Both 'module' and 'standalone_module' rows are global modules.
-  // Deduped by title (lower-case). Duration from col I (total).
-
-  const moduleMap = new Map(); // title_lower -> { title, content_id, duration_min }
-
+  // ── Pass 1: unique modules ────────────────────────────────────────────────
+  const moduleMap = new Map();
   for (const cr of classifiedRows) {
     if (cr.type === 'curriculum') continue;
     const key = cr.title.toLowerCase();
@@ -175,15 +166,8 @@ export function parseTrainingPathFlat(arrayBuffer) {
     }
   }
 
-  // ── Pass 2: build curricula ──────────────────────────────────────────────────
-  // Group 'module' rows by chapter number, then attach to the curriculum
-  // whose chapter number matches.
-  // Module sequence inside the curriculum = col D (brick).
-  // Requirement = mandatory if col G > 0, optional if col H > 0.
-
-  const curriculumMap = new Map(); // title_lower -> curriculum object
-
-  // First, register all curriculum rows
+  // ── Pass 2: build curricula ───────────────────────────────────────────────
+  const curriculumMap = new Map();
   for (const cr of classifiedRows) {
     if (cr.type !== 'curriculum') continue;
     const key = cr.title.toLowerCase();
@@ -191,81 +175,48 @@ export function parseTrainingPathFlat(arrayBuffer) {
       curriculumMap.set(key, {
         title:      cr.title,
         content_id: cr.content_id,
-        chapter:    cr.chapter, // file-level sequence (used to match modules)
         modules:    [],
       });
     }
   }
 
-  // Build a lookup: chapter number -> curriculum
-  // (chapter 0 means "standalone", no curriculum)
+  // Map chapter number -> curriculum by scanning file order
   const chapterToCurriculum = new Map();
-  for (const cur of curriculumMap.values()) {
-    // chapter on a curriculum row is always 0 (C==0 D==0).
-    // We need to track which chapter number the FOLLOWING module rows use.
-    // The file lists curricula in order; the modules immediately after share
-    // that curriculum's chapter number (col C = curriculum index in sequence).
-    // We reconstruct this by scanning classifiedRows in order.
-  }
-
-  // Reconstruct chapter -> curriculum by scanning in file order
   let lastCurriculum = null;
   let lastChapterNum = null;
-
   for (const cr of classifiedRows) {
     if (cr.type === 'curriculum') {
       lastCurriculum = curriculumMap.get(cr.title.toLowerCase());
-      // The chapter number used by its child module rows is the next distinct
-      // non-zero value of col C we encounter. We track it dynamically below.
-      lastChapterNum = null; // will be set when we see the first child row
-    } else if (cr.type === 'module') {
-      if (cr.chapter !== null) {
-        if (lastChapterNum === null) {
-          // First module under this curriculum -- record its chapter number
-          lastChapterNum = cr.chapter;
-          if (lastCurriculum) chapterToCurriculum.set(cr.chapter, lastCurriculum);
-        } else if (cr.chapter !== lastChapterNum) {
-          // New chapter number => new curriculum group started
-          lastChapterNum = cr.chapter;
-          if (lastCurriculum) chapterToCurriculum.set(cr.chapter, lastCurriculum);
-        }
+      lastChapterNum = null;
+    } else if (cr.type === 'module' && cr.chapter !== null) {
+      if (lastChapterNum === null || cr.chapter !== lastChapterNum) {
+        lastChapterNum = cr.chapter;
+        if (lastCurriculum) chapterToCurriculum.set(cr.chapter, lastCurriculum);
       }
     }
   }
 
-  // Attach modules to their curriculum using chapter number
+  // Attach modules to curricula
   for (const cr of classifiedRows) {
     if (cr.type !== 'module') continue;
     const cur = chapterToCurriculum.get(cr.chapter);
     if (!cur) continue;
-
     const modKey = cr.title.toLowerCase();
     if (!moduleMap.has(modKey)) continue;
-
     const alreadyIn = cur.modules.some(m => m.title.toLowerCase() === modKey);
     if (alreadyIn) continue;
-
     cur.modules.push({
       title:          cr.title,
       requirement:    cr.mandatoryMs > 0 ? 'mandatory' : 'optional',
-      sequence_order: cr.brick ?? (cur.modules.length + 1), // col D
+      sequence_order: cr.brick ?? (cur.modules.length + 1),
     });
   }
-
-  // Sort modules within each curriculum by their col-D sequence
   for (const cur of curriculumMap.values()) {
     cur.modules.sort((a, b) => a.sequence_order - b.sequence_order);
   }
 
-  // ── Pass 3: build playlists ──────────────────────────────────────────────────
-  // The numeric value in a playlist column (L+) is the ORDER of that row
-  // inside that specific training. It is completely independent of C and D.
-  //
-  // Only curriculum rows and standalone_module rows appear in playlists.
-  // A 'module' row (C!=0, D!=0) is part of its curriculum and never appears
-  // directly in a playlist column.
-
-  const primaryTrainings      = [];
+  // ── Pass 3: build playlists ───────────────────────────────────────────────
+  const primaryTrainings       = [];
   const complementaryTrainings = [];
 
   for (const pc of playlistCols) {
@@ -273,47 +224,37 @@ export function parseTrainingPathFlat(arrayBuffer) {
 
     if (isPrimary) {
       const items = [];
-
       for (const cr of classifiedRows) {
-        // Only curriculum headers and standalone modules can be playlist items
         if (cr.type === 'module') continue;
-
         const cellVal = cr.rawRow[pc.colIndex];
         if (!isNumericCell(cellVal)) continue;
-
         items.push({
           isCurriculum:   cr.type === 'curriculum',
           title:          cr.title,
-          sequence_order: toNum(cellVal), // ORDER within THIS training
+          sequence_order: toNum(cellVal),
         });
       }
-
       items.sort((a, b) => a.sequence_order - b.sequence_order);
 
       const curricula          = [];
       const standalone_modules = [];
-
       for (const item of items) {
         if (item.isCurriculum) {
           const cur = curriculumMap.get(item.title.toLowerCase());
-          if (cur) {
-            curricula.push({
-              title:          cur.title,
-              content_id:     cur.content_id,
-              sequence_order: item.sequence_order, // position in THIS training
-              modules:        cur.modules.map(m => ({ ...m })), // col-D order intact
-            });
-          }
+          if (cur) curricula.push({
+            title:          cur.title,
+            content_id:     cur.content_id,
+            sequence_order: item.sequence_order,
+            modules:        cur.modules.map(m => ({ ...m })),
+          });
         } else {
           const mod = moduleMap.get(item.title.toLowerCase());
-          if (mod) {
-            standalone_modules.push({
-              title:          mod.title,
-              content_id:     mod.content_id,
-              duration_min:   mod.duration_min,
-              sequence_order: item.sequence_order, // position in THIS training
-            });
-          }
+          if (mod) standalone_modules.push({
+            title:          mod.title,
+            content_id:     mod.content_id,
+            duration_min:   mod.duration_min,
+            sequence_order: item.sequence_order,
+          });
         }
       }
 
@@ -327,18 +268,28 @@ export function parseTrainingPathFlat(arrayBuffer) {
       });
 
     } else {
-      // Complementary training: X cells
-      const references = [];
+      // Complementary: any non-empty cell includes the row.
+      // Numeric cell -> explicit order; letter/string -> order by appearance.
+      const explicitItems = []; // { title, content_id, order: number }
+      const implicitItems = []; // { title, content_id } -- order by file position
 
       for (const cr of classifiedRows) {
-        const cellVal = cr.rawRow[pc.colIndex];
-        if (!isXCell(cellVal)) continue;
-        references.push({
-          title:      cr.title,
-          content_id: cr.content_id,
-          link:       '',
-        });
+        const result = complementaryCellOrder(cr.rawRow[pc.colIndex]);
+        if (!result) continue;
+        const entry = { title: cr.title, content_id: cr.content_id, link: '' };
+        if (result.explicit) {
+          explicitItems.push({ ...entry, sequence_order: result.order });
+        } else {
+          implicitItems.push(entry);
+        }
       }
+
+      // Assign implicit items orders starting after the highest explicit order
+      const maxExplicit = explicitItems.reduce((m, i) => Math.max(m, i.sequence_order), 0);
+      const references  = [
+        ...explicitItems.sort((a, b) => a.sequence_order - b.sequence_order),
+        ...implicitItems.map((item, idx) => ({ ...item, sequence_order: maxExplicit + idx + 1 })),
+      ];
 
       complementaryTrainings.push({
         title:            pc.title,

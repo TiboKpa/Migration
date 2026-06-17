@@ -144,7 +144,6 @@ async function migrate() {
         UNIQUE(project_id, concatenate)
       );
 
-      -- Global modules (per project, deduped by title)
       CREATE TABLE IF NOT EXISTS training_modules (
         id SERIAL PRIMARY KEY,
         project_id INT REFERENCES projects(id) ON DELETE CASCADE,
@@ -156,7 +155,6 @@ async function migrate() {
         UNIQUE(project_id, title)
       );
 
-      -- Global curricula (per project, deduped by title)
       CREATE TABLE IF NOT EXISTS training_curricula (
         id SERIAL PRIMARY KEY,
         project_id INT REFERENCES projects(id) ON DELETE CASCADE,
@@ -167,7 +165,6 @@ async function migrate() {
         UNIQUE(project_id, title)
       );
 
-      -- Ordered modules inside a curriculum (requirement is per-curriculum)
       CREATE TABLE IF NOT EXISTS curriculum_module_items (
         id SERIAL PRIMARY KEY,
         curriculum_id INT REFERENCES training_curricula(id) ON DELETE CASCADE,
@@ -177,7 +174,6 @@ async function migrate() {
         UNIQUE(curriculum_id, module_id)
       );
 
-      -- Playlists (primary or complementary trainings)
       CREATE TABLE IF NOT EXISTS playlists (
         id SERIAL PRIMARY KEY,
         project_id INT REFERENCES projects(id) ON DELETE CASCADE,
@@ -191,7 +187,6 @@ async function migrate() {
         UNIQUE(project_id, title)
       );
 
-      -- Items inside a playlist: either a curriculum or a standalone module
       CREATE TABLE IF NOT EXISTS playlist_items (
         id SERIAL PRIMARY KEY,
         playlist_id INT REFERENCES playlists(id) ON DELETE CASCADE,
@@ -201,16 +196,15 @@ async function migrate() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
-      -- Complementary training references (X cells)
       CREATE TABLE IF NOT EXISTS playlist_complementary_refs (
         id SERIAL PRIMARY KEY,
         playlist_id INT REFERENCES playlists(id) ON DELETE CASCADE,
         title TEXT,
         content_id TEXT,
-        link TEXT
+        link TEXT,
+        sequence_order INT DEFAULT 0
       );
 
-      -- Legacy playlist tables kept to avoid breaking existing data
       CREATE TABLE IF NOT EXISTS playlist_curricula (
         id SERIAL PRIMARY KEY,
         playlist_id INT,
@@ -234,12 +228,10 @@ async function migrate() {
       );
     `);
 
-    // ── ALTER TABLE guards for columns added to pre-existing tables ──────────
-    // These are safe to run repeatedly: IF NOT EXISTS prevents errors.
+    // ALTER TABLE guards for columns added to pre-existing tables
     await client.query(`
       DO $$
       BEGIN
-        -- playlists.is_complementary
         IF NOT EXISTS (
           SELECT 1 FROM information_schema.columns
           WHERE table_name='playlists' AND column_name='is_complementary'
@@ -247,18 +239,24 @@ async function migrate() {
           ALTER TABLE playlists ADD COLUMN is_complementary BOOLEAN DEFAULT false;
         END IF;
 
-        -- playlists UNIQUE(project_id, title)
         IF NOT EXISTS (
           SELECT 1 FROM pg_constraint WHERE conname='playlists_project_id_title_key'
         ) THEN
           ALTER TABLE playlists ADD CONSTRAINT playlists_project_id_title_key UNIQUE (project_id, title);
         END IF;
 
-        -- training_profiles UNIQUE(project_id, profile_name)
         IF NOT EXISTS (
           SELECT 1 FROM pg_constraint WHERE conname='training_profiles_project_name_unique'
         ) THEN
           ALTER TABLE training_profiles ADD CONSTRAINT training_profiles_project_name_unique UNIQUE (project_id, profile_name);
+        END IF;
+
+        -- sequence_order column on playlist_complementary_refs
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='playlist_complementary_refs' AND column_name='sequence_order'
+        ) THEN
+          ALTER TABLE playlist_complementary_refs ADD COLUMN sequence_order INT DEFAULT 0;
         END IF;
       END$$;
     `);
