@@ -66,7 +66,6 @@ router.post('/:projectId/profiles/:profileId/mappings', authenticate, async (req
 
 // ── Playlists ─────────────────────────────────────────────────────────────────
 
-// GET all playlists for a project (list only, no nested data)
 router.get('/:projectId/playlists', authenticate, async (req, res) => {
   try {
     const result = await pool.query(
@@ -77,7 +76,6 @@ router.get('/:projectId/playlists', authenticate, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET single playlist with full nested structure (curricula + modules)
 router.get('/:projectId/playlists/:playlistId', authenticate, async (req, res) => {
   try {
     const plRes = await pool.query('SELECT * FROM playlists WHERE id=$1 AND project_id=$2', [req.params.playlistId, req.params.projectId]);
@@ -94,14 +92,12 @@ router.get('/:projectId/playlists/:playlistId', authenticate, async (req, res) =
       [playlist.id]
     )).rows;
 
-    // Nest modules under their curriculum; collect standalone separately
     const curriculaWithModules = curricula.map(c => ({
       ...c,
       modules: modules.filter(m => m.curriculum_id === c.id)
     }));
     const standaloneModules = modules.filter(m => m.curriculum_id === null);
 
-    // Compute total duration from mandatory modules only
     const mandatoryMinutes = modules
       .filter(m => m.requirement === 'mandatory')
       .reduce((sum, m) => sum + (m.duration_min || 0), 0);
@@ -113,7 +109,6 @@ router.get('/:projectId/playlists/:playlistId', authenticate, async (req, res) =
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST create playlist
 router.post('/:projectId/playlists', authenticate, async (req, res) => {
   const { title, description, link, content_id } = req.body;
   if (!title) return res.status(400).json({ error: 'title is required' });
@@ -126,7 +121,6 @@ router.post('/:projectId/playlists', authenticate, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// PUT update playlist
 router.put('/:projectId/playlists/:playlistId', authenticate, async (req, res) => {
   const { title, description, link, content_id } = req.body;
   try {
@@ -138,7 +132,6 @@ router.put('/:projectId/playlists/:playlistId', authenticate, async (req, res) =
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// DELETE playlist
 router.delete('/:projectId/playlists/:playlistId', authenticate, async (req, res) => {
   try {
     await pool.query('DELETE FROM playlists WHERE id=$1 AND project_id=$2', [req.params.playlistId, req.params.projectId]);
@@ -146,9 +139,111 @@ router.delete('/:projectId/playlists/:playlistId', authenticate, async (req, res
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Import playlists from Training Path Flat xlsx ─────────────────────────────
+// POST /:projectId/playlists/import
+// Body: JSON produced by the frontend xlsx parser
+// Shape:
+// [
+//   {
+//     title: string,
+//     description: string,
+//     link: string,
+//     content_id: string,
+//     curricula: [
+//       {
+//         title: string, content_id: string, requirement: 'mandatory'|'optional',
+//         sequence_order: number,
+//         modules: [
+//           { title, content_id, duration_min, requirement, sequence_order }
+//         ]
+//       }
+//     ],
+//     standalone_modules: [
+//       { title, content_id, duration_min, requirement, sequence_order }
+//     ]
+//   }
+// ]
+// Behaviour: upsert by title within the project (update if exists, insert if not).
+router.post('/:projectId/playlists/import', authenticate, async (req, res) => {
+  const projectId = parseInt(req.params.projectId, 10);
+  const playlists = req.body;
+  if (!Array.isArray(playlists) || playlists.length === 0) {
+    return res.status(400).json({ error: 'Body must be a non-empty array of playlists' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const summary = [];
+
+    for (const pl of playlists) {
+      if (!pl.title) continue;
+
+      // Upsert playlist
+      const existing = await client.query(
+        'SELECT id FROM playlists WHERE project_id=$1 AND title=$2',
+        [projectId, pl.title]
+      );
+
+      let playlistId;
+      if (existing.rows.length > 0) {
+        playlistId = existing.rows[0].id;
+        await client.query(
+          'UPDATE playlists SET description=$1, link=$2, content_id=$3, updated_at=NOW() WHERE id=$4',
+          [pl.description || null, pl.link || null, pl.content_id || null, playlistId]
+        );
+        // Remove existing curricula and modules so we rebuild cleanly
+        await client.query('DELETE FROM playlist_modules WHERE playlist_id=$1 AND curriculum_id IN (SELECT id FROM playlist_curricula WHERE playlist_id=$1)', [playlistId]);
+        await client.query('DELETE FROM playlist_curricula WHERE playlist_id=$1', [playlistId]);
+        await client.query('DELETE FROM playlist_modules WHERE playlist_id=$1 AND curriculum_id IS NULL', [playlistId]);
+      } else {
+        const ins = await client.query(
+          'INSERT INTO playlists (project_id, title, description, link, content_id) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+          [projectId, pl.title, pl.description || null, pl.link || null, pl.content_id || null]
+        );
+        playlistId = ins.rows[0].id;
+      }
+
+      // Insert curricula with their modules
+      for (const cur of (pl.curricula || [])) {
+        const curRes = await client.query(
+          'INSERT INTO playlist_curricula (playlist_id, title, content_id, requirement, sequence_order) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+          [playlistId, cur.title, cur.content_id || null, cur.requirement || 'mandatory', cur.sequence_order || 0]
+        );
+        const curriculumId = curRes.rows[0].id;
+
+        for (const mod of (cur.modules || [])) {
+          await client.query(
+            'INSERT INTO playlist_modules (playlist_id, curriculum_id, title, content_id, duration_min, requirement, sequence_order) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+            [playlistId, curriculumId, mod.title, mod.content_id || null, mod.duration_min || 0, mod.requirement || 'mandatory', mod.sequence_order || 0]
+          );
+        }
+      }
+
+      // Insert standalone modules
+      for (const mod of (pl.standalone_modules || [])) {
+        await client.query(
+          'INSERT INTO playlist_modules (playlist_id, curriculum_id, title, content_id, duration_min, requirement, sequence_order) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+          [playlistId, null, mod.title, mod.content_id || null, mod.duration_min || 0, mod.requirement || 'mandatory', mod.sequence_order || 0]
+        );
+      }
+
+      summary.push({ title: pl.title, id: playlistId });
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json({ imported: summary.length, playlists: summary });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 // ── Curricula ─────────────────────────────────────────────────────────────────
 
-// POST add curriculum to playlist
 router.post('/:projectId/playlists/:playlistId/curricula', authenticate, async (req, res) => {
   const { title, content_id, requirement, sequence_order } = req.body;
   if (!title) return res.status(400).json({ error: 'title is required' });
@@ -161,7 +256,6 @@ router.post('/:projectId/playlists/:playlistId/curricula', authenticate, async (
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// PUT update curriculum
 router.put('/:projectId/playlists/:playlistId/curricula/:curriculumId', authenticate, async (req, res) => {
   const { title, content_id, requirement, sequence_order } = req.body;
   try {
@@ -173,7 +267,6 @@ router.put('/:projectId/playlists/:playlistId/curricula/:curriculumId', authenti
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// DELETE curriculum (cascades to its modules)
 router.delete('/:projectId/playlists/:playlistId/curricula/:curriculumId', authenticate, async (req, res) => {
   try {
     await pool.query('DELETE FROM playlist_curricula WHERE id=$1 AND playlist_id=$2', [req.params.curriculumId, req.params.playlistId]);
@@ -183,7 +276,6 @@ router.delete('/:projectId/playlists/:playlistId/curricula/:curriculumId', authe
 
 // ── Modules ───────────────────────────────────────────────────────────────────
 
-// POST add module (curriculum_id null = standalone)
 router.post('/:projectId/playlists/:playlistId/modules', authenticate, async (req, res) => {
   const { title, content_id, duration_min, requirement, sequence_order, curriculum_id } = req.body;
   if (!title) return res.status(400).json({ error: 'title is required' });
@@ -196,7 +288,6 @@ router.post('/:projectId/playlists/:playlistId/modules', authenticate, async (re
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// PUT update module
 router.put('/:projectId/playlists/:playlistId/modules/:moduleId', authenticate, async (req, res) => {
   const { title, content_id, duration_min, requirement, sequence_order, curriculum_id } = req.body;
   try {
@@ -208,7 +299,6 @@ router.put('/:projectId/playlists/:playlistId/modules/:moduleId', authenticate, 
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// DELETE module
 router.delete('/:projectId/playlists/:playlistId/modules/:moduleId', authenticate, async (req, res) => {
   try {
     await pool.query('DELETE FROM playlist_modules WHERE id=$1 AND playlist_id=$2', [req.params.moduleId, req.params.playlistId]);
