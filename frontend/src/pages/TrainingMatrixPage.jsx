@@ -1,13 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import * as XLSX from 'xlsx';
+import client from '../api/client';
 import { parseTrainingPathFlat } from '../utils/parseTrainingPathFlat';
-
-const API = import.meta.env.VITE_API_URL || 'http://localhost:4000';
-
-function authHeaders() {
-  return { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` };
-}
 
 function durationLabel(minutes) {
   if (!minutes) return '0 min';
@@ -38,19 +32,15 @@ export default function TrainingMatrixPage() {
 
   useEffect(() => { fetchPrimaryTrainings(); }, [projectId]);
 
-  const base = `${API}/api/projects/${projectId}`;
-
   async function fetchPrimaryTrainings() {
-    const r = await fetch(`${base}/playlists`, { headers: authHeaders() });
-    const data = await r.json();
-    setPrimaryTrainings(Array.isArray(data) ? data : []);
+    const r = await client.get(`/projects/${projectId}/playlists`);
+    setPrimaryTrainings(Array.isArray(r.data) ? r.data : []);
   }
 
   async function fetchDetail(id) {
     setLoadingDetail(true);
-    const r = await fetch(`${base}/playlists/${id}`, { headers: authHeaders() });
-    const data = await r.json();
-    setDetail(data);
+    const r = await client.get(`/projects/${projectId}/playlists/${id}`);
+    setDetail(r.data);
     setLoadingDetail(false);
   }
 
@@ -65,18 +55,14 @@ export default function TrainingMatrixPage() {
 
   async function createPrimaryTraining() {
     if (!newPt.title.trim()) return;
-    await fetch(`${base}/playlists`, {
-      method: 'POST', headers: authHeaders(), body: JSON.stringify(newPt)
-    });
+    await client.post(`/projects/${projectId}/playlists`, newPt);
     setNewPt({ title: '', description: '', link: '', content_id: '' });
     setShowNew(false);
     fetchPrimaryTrainings();
   }
 
   async function updatePrimaryTraining() {
-    await fetch(`${base}/playlists/${selected}`, {
-      method: 'PUT', headers: authHeaders(), body: JSON.stringify(editPt)
-    });
+    await client.put(`/projects/${projectId}/playlists/${selected}`, editPt);
     setEditMode(false);
     fetchPrimaryTrainings();
     fetchDetail(selected);
@@ -84,7 +70,7 @@ export default function TrainingMatrixPage() {
 
   async function deletePrimaryTraining() {
     if (!confirm('Delete this primary training and all its content?')) return;
-    await fetch(`${base}/playlists/${selected}`, { method: 'DELETE', headers: authHeaders() });
+    await client.delete(`/projects/${projectId}/playlists/${selected}`);
     setSelected(null);
     setDetail(null);
     fetchPrimaryTrainings();
@@ -92,9 +78,7 @@ export default function TrainingMatrixPage() {
 
   async function addCurriculum() {
     if (!newCur.title.trim()) return;
-    await fetch(`${base}/playlists/${selected}/curricula`, {
-      method: 'POST', headers: authHeaders(), body: JSON.stringify(newCur)
-    });
+    await client.post(`/projects/${projectId}/playlists/${selected}/curricula`, newCur);
     setNewCur({ title: '', content_id: '', requirement: 'mandatory', sequence_order: 0 });
     setShowAddCur(false);
     fetchDetail(selected);
@@ -102,17 +86,14 @@ export default function TrainingMatrixPage() {
 
   async function deleteCurriculum(curId) {
     if (!confirm('Delete curriculum and all its modules?')) return;
-    await fetch(`${base}/playlists/${selected}/curricula/${curId}`, { method: 'DELETE', headers: authHeaders() });
+    await client.delete(`/projects/${projectId}/playlists/${selected}/curricula/${curId}`);
     fetchDetail(selected);
   }
 
   async function addModule() {
-
     if (!newMod.title.trim()) return;
     const payload = { ...newMod, curriculum_id: newMod.curriculum_id || null };
-    await fetch(`${base}/playlists/${selected}/modules`, {
-      method: 'POST', headers: authHeaders(), body: JSON.stringify(payload)
-    });
+    await client.post(`/projects/${projectId}/playlists/${selected}/modules`, payload);
     setNewMod({ title: '', content_id: '', duration_min: 0, requirement: 'mandatory', sequence_order: 0, curriculum_id: '' });
     setShowAddMod(false);
     fetchDetail(selected);
@@ -120,7 +101,7 @@ export default function TrainingMatrixPage() {
 
   async function deleteModule(modId) {
     if (!confirm('Delete this module?')) return;
-    await fetch(`${base}/playlists/${selected}/modules/${modId}`, { method: 'DELETE', headers: authHeaders() });
+    await client.delete(`/projects/${projectId}/playlists/${selected}/modules/${modId}`);
     fetchDetail(selected);
   }
 
@@ -133,17 +114,12 @@ export default function TrainingMatrixPage() {
     try {
       const buf = await file.arrayBuffer();
       const parsed = parseTrainingPathFlat(buf);
-      const r = await fetch(`${base}/playlists/import`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: JSON.stringify(parsed),
-      });
-      const result = await r.json();
-      setImportResult(r.ok ? { ok: true, count: result.imported } : { ok: false, message: result.error });
+      const r = await client.post(`/projects/${projectId}/playlists/import`, parsed);
+      setImportResult({ ok: true, count: r.data.imported });
       fetchPrimaryTrainings();
       if (selected) fetchDetail(selected);
     } catch (err) {
-      setImportResult({ ok: false, message: err.message });
+      setImportResult({ ok: false, message: err.response?.data?.error || err.message });
     } finally {
       setImporting(false);
     }
@@ -210,18 +186,14 @@ export default function TrainingMatrixPage() {
           </div>
           <div className="flex gap-2">
             <button onClick={createPrimaryTraining} disabled={!newPt.title.trim()}
-              className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-40">
-              Save
-            </button>
+              className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-40">Save</button>
             <button onClick={() => setShowNew(false)}
-              className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">
-              Cancel
-            </button>
+              className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
           </div>
         </div>
       )}
 
-      {/* Main content: list + detail */}
+      {/* Main content */}
       <div className="flex gap-6 flex-1 min-h-0">
 
         {/* Left list */}
@@ -243,11 +215,9 @@ export default function TrainingMatrixPage() {
           {!selected && (
             <p className="text-sm text-slate-400 mt-16 text-center">Select a primary training to view or edit it.</p>
           )}
-
           {selected && loadingDetail && (
             <p className="text-sm text-slate-400 mt-16 text-center">Loading...</p>
           )}
-
           {selected && !loadingDetail && detail && (
             <div className="flex flex-col gap-6">
 
