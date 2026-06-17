@@ -20,14 +20,14 @@ function durationLabel(minutes) {
 
 export default function TrainingMatrixPage() {
   const { projectId } = useParams();
-  const [playlists, setPlaylists] = useState([]);
+  const [primaryTrainings, setPrimaryTrainings] = useState([]);
   const [selected, setSelected] = useState(null);
   const [detail, setDetail] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
-  const [showNewPlaylist, setShowNewPlaylist] = useState(false);
-  const [newPl, setNewPl] = useState({ title: '', description: '', link: '', content_id: '' });
+  const [showNew, setShowNew] = useState(false);
+  const [newPt, setNewPt] = useState({ title: '', description: '', link: '', content_id: '' });
   const [editMode, setEditMode] = useState(false);
-  const [editPl, setEditPl] = useState({});
+  const [editPt, setEditPt] = useState({});
   const [showAddCur, setShowAddCur] = useState(false);
   const [newCur, setNewCur] = useState({ title: '', content_id: '', requirement: 'mandatory', sequence_order: 0 });
   const [showAddMod, setShowAddMod] = useState(false);
@@ -36,12 +36,12 @@ export default function TrainingMatrixPage() {
   const [importResult, setImportResult] = useState(null);
   const importRef = useRef();
 
-  useEffect(() => { fetchPlaylists(); }, [projectId]);
+  useEffect(() => { fetchPrimaryTrainings(); }, [projectId]);
 
-  async function fetchPlaylists() {
+  async function fetchPrimaryTrainings() {
     const r = await fetch(`${API}/api/training/${projectId}/playlists`, { headers: authHeaders() });
     const data = await r.json();
-    setPlaylists(Array.isArray(data) ? data : []);
+    setPrimaryTrainings(Array.isArray(data) ? data : []);
   }
 
   async function fetchDetail(id) {
@@ -52,40 +52,40 @@ export default function TrainingMatrixPage() {
     setLoadingDetail(false);
   }
 
-  function selectPlaylist(pl) {
-    setSelected(pl.id);
-    fetchDetail(pl.id);
+  function selectPrimaryTraining(pt) {
+    setSelected(pt.id);
+    fetchDetail(pt.id);
     setEditMode(false);
     setShowAddCur(false);
     setShowAddMod(false);
     setImportResult(null);
   }
 
-  async function createPlaylist() {
-    if (!newPl.title.trim()) return;
+  async function createPrimaryTraining() {
+    if (!newPt.title.trim()) return;
     await fetch(`${API}/api/training/${projectId}/playlists`, {
-      method: 'POST', headers: authHeaders(), body: JSON.stringify(newPl)
+      method: 'POST', headers: authHeaders(), body: JSON.stringify(newPt)
     });
-    setNewPl({ title: '', description: '', link: '', content_id: '' });
-    setShowNewPlaylist(false);
-    fetchPlaylists();
+    setNewPt({ title: '', description: '', link: '', content_id: '' });
+    setShowNew(false);
+    fetchPrimaryTrainings();
   }
 
-  async function updatePlaylist() {
+  async function updatePrimaryTraining() {
     await fetch(`${API}/api/training/${projectId}/playlists/${selected}`, {
-      method: 'PUT', headers: authHeaders(), body: JSON.stringify(editPl)
+      method: 'PUT', headers: authHeaders(), body: JSON.stringify(editPt)
     });
     setEditMode(false);
-    fetchPlaylists();
+    fetchPrimaryTrainings();
     fetchDetail(selected);
   }
 
-  async function deletePlaylist() {
-    if (!confirm('Delete this playlist and all its content?')) return;
+  async function deletePrimaryTraining() {
+    if (!confirm('Delete this primary training and all its content?')) return;
     await fetch(`${API}/api/training/${projectId}/playlists/${selected}`, { method: 'DELETE', headers: authHeaders() });
     setSelected(null);
     setDetail(null);
-    fetchPlaylists();
+    fetchPrimaryTrainings();
   }
 
   async function addCurriculum() {
@@ -121,7 +121,6 @@ export default function TrainingMatrixPage() {
     fetchDetail(selected);
   }
 
-  // ── Import from xlsx ──────────────────────────────────────────────────────
   async function handleImportFile(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -138,7 +137,7 @@ export default function TrainingMatrixPage() {
       });
       const result = await r.json();
       setImportResult(r.ok ? { ok: true, count: result.imported } : { ok: false, message: result.error });
-      fetchPlaylists();
+      fetchPrimaryTrainings();
       if (selected) fetchDetail(selected);
     } catch (err) {
       setImportResult({ ok: false, message: err.message });
@@ -153,7 +152,7 @@ export default function TrainingMatrixPage() {
       {/* Left panel */}
       <div style={{ width: 280, borderRight: '1px solid #e5e7eb', paddingRight: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-          <span style={{ fontWeight: 600, fontSize: 14 }}>Playlists</span>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>Primary Trainings</span>
           <div style={{ display: 'flex', gap: 6 }}>
             <button
               onClick={() => importRef.current.click()}
@@ -164,7 +163,7 @@ export default function TrainingMatrixPage() {
             </button>
             <input ref={importRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleImportFile} />
             <button
-              onClick={() => setShowNewPlaylist(!showNewPlaylist)}
+              onClick={() => setShowNew(!showNew)}
               style={{ fontSize: 11, padding: '3px 8px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}
             >+ New</button>
           </div>
@@ -172,37 +171,37 @@ export default function TrainingMatrixPage() {
 
         {importResult && (
           <div style={{ fontSize: 11, padding: '6px 8px', borderRadius: 4, background: importResult.ok ? '#d1fae5' : '#fee2e2', color: importResult.ok ? '#065f46' : '#991b1b', marginBottom: 4 }}>
-            {importResult.ok ? `${importResult.count} playlist(s) imported` : `Error: ${importResult.message}`}
+            {importResult.ok ? `${importResult.count} primary training(s) imported` : `Error: ${importResult.message}`}
           </div>
         )}
 
-        {showNewPlaylist && (
+        {showNew && (
           <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6, padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <input placeholder="Title *" value={newPl.title} onChange={e => setNewPl(p => ({ ...p, title: e.target.value }))} style={inputStyle} />
-            <input placeholder="Content ID" value={newPl.content_id} onChange={e => setNewPl(p => ({ ...p, content_id: e.target.value }))} style={inputStyle} />
-            <input placeholder="Link" value={newPl.link} onChange={e => setNewPl(p => ({ ...p, link: e.target.value }))} style={inputStyle} />
-            <textarea placeholder="Description" value={newPl.description} onChange={e => setNewPl(p => ({ ...p, description: e.target.value }))} style={{ ...inputStyle, resize: 'vertical', minHeight: 48 }} />
+            <input placeholder="Title *" value={newPt.title} onChange={e => setNewPt(p => ({ ...p, title: e.target.value }))} style={inputStyle} />
+            <input placeholder="Content ID" value={newPt.content_id} onChange={e => setNewPt(p => ({ ...p, content_id: e.target.value }))} style={inputStyle} />
+            <input placeholder="Link" value={newPt.link} onChange={e => setNewPt(p => ({ ...p, link: e.target.value }))} style={inputStyle} />
+            <textarea placeholder="Description" value={newPt.description} onChange={e => setNewPt(p => ({ ...p, description: e.target.value }))} style={{ ...inputStyle, resize: 'vertical', minHeight: 48 }} />
             <div style={{ display: 'flex', gap: 6 }}>
-              <button onClick={createPlaylist} style={btnPrimary}>Create</button>
-              <button onClick={() => setShowNewPlaylist(false)} style={btnGhost}>Cancel</button>
+              <button onClick={createPrimaryTraining} style={btnPrimary}>Create</button>
+              <button onClick={() => setShowNew(false)} style={btnGhost}>Cancel</button>
             </div>
           </div>
         )}
 
         <div style={{ overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {playlists.length === 0 && <span style={{ fontSize: 12, color: '#9ca3af' }}>No playlists yet. Import an xlsx or create one.</span>}
-          {playlists.map(pl => (
+          {primaryTrainings.length === 0 && <span style={{ fontSize: 12, color: '#9ca3af' }}>No primary trainings yet. Import an xlsx or create one.</span>}
+          {primaryTrainings.map(pt => (
             <button
-              key={pl.id}
-              onClick={() => selectPlaylist(pl)}
+              key={pt.id}
+              onClick={() => selectPrimaryTraining(pt)}
               style={{
                 textAlign: 'left', padding: '7px 10px', borderRadius: 6, border: 'none', cursor: 'pointer',
-                background: selected === pl.id ? '#eff6ff' : 'transparent',
-                color: selected === pl.id ? '#1d4ed8' : '#374151',
-                fontWeight: selected === pl.id ? 600 : 400,
+                background: selected === pt.id ? '#eff6ff' : 'transparent',
+                color: selected === pt.id ? '#1d4ed8' : '#374151',
+                fontWeight: selected === pt.id ? 600 : 400,
                 fontSize: 13,
               }}
-            >{pl.title}</button>
+            >{pt.title}</button>
           ))}
         </div>
       </div>
@@ -210,7 +209,7 @@ export default function TrainingMatrixPage() {
       {/* Right panel */}
       <div style={{ flex: 1, overflowY: 'auto', paddingLeft: 8 }}>
         {!selected && (
-          <div style={{ color: '#9ca3af', fontSize: 13, marginTop: 40, textAlign: 'center' }}>Select a playlist to view or edit it.</div>
+          <div style={{ color: '#9ca3af', fontSize: 13, marginTop: 40, textAlign: 'center' }}>Select a primary training to view or edit it.</div>
         )}
 
         {selected && loadingDetail && (
@@ -220,15 +219,15 @@ export default function TrainingMatrixPage() {
         {selected && !loadingDetail && detail && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
-            {/* Playlist header */}
+            {/* Primary training header */}
             {editMode ? (
               <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 8, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <input placeholder="Title *" value={editPl.title || ''} onChange={e => setEditPl(p => ({ ...p, title: e.target.value }))} style={inputStyle} />
-                <input placeholder="Content ID" value={editPl.content_id || ''} onChange={e => setEditPl(p => ({ ...p, content_id: e.target.value }))} style={inputStyle} />
-                <input placeholder="Link" value={editPl.link || ''} onChange={e => setEditPl(p => ({ ...p, link: e.target.value }))} style={inputStyle} />
-                <textarea placeholder="Description" value={editPl.description || ''} onChange={e => setEditPl(p => ({ ...p, description: e.target.value }))} style={{ ...inputStyle, resize: 'vertical', minHeight: 60 }} />
+                <input placeholder="Title *" value={editPt.title || ''} onChange={e => setEditPt(p => ({ ...p, title: e.target.value }))} style={inputStyle} />
+                <input placeholder="Content ID" value={editPt.content_id || ''} onChange={e => setEditPt(p => ({ ...p, content_id: e.target.value }))} style={inputStyle} />
+                <input placeholder="Link" value={editPt.link || ''} onChange={e => setEditPt(p => ({ ...p, link: e.target.value }))} style={inputStyle} />
+                <textarea placeholder="Description" value={editPt.description || ''} onChange={e => setEditPt(p => ({ ...p, description: e.target.value }))} style={{ ...inputStyle, resize: 'vertical', minHeight: 60 }} />
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button onClick={updatePlaylist} style={btnPrimary}>Save</button>
+                  <button onClick={updatePrimaryTraining} style={btnPrimary}>Save</button>
                   <button onClick={() => setEditMode(false)} style={btnGhost}>Cancel</button>
                 </div>
               </div>
@@ -240,13 +239,13 @@ export default function TrainingMatrixPage() {
                     <div style={{ display: 'flex', gap: 8, marginTop: 4, flexWrap: 'wrap', alignItems: 'center' }}>
                       {detail.content_id && <span style={badgeStyle}>{detail.content_id}</span>}
                       <span style={{ fontSize: 12, color: '#6b7280' }}>{durationLabel(detail.total_minutes)} mandatory</span>
-                      {detail.link && <a href={detail.link} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: '#2563eb' }}>Open playlist</a>}
+                      {detail.link && <a href={detail.link} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: '#2563eb' }}>Open training</a>}
                     </div>
                     {detail.description && <p style={{ margin: '6px 0 0', fontSize: 13, color: '#6b7280', maxWidth: 600 }}>{detail.description}</p>}
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                    <button onClick={() => { setEditMode(true); setEditPl({ title: detail.title, description: detail.description, link: detail.link, content_id: detail.content_id }); }} style={btnGhost}>Edit</button>
-                    <button onClick={deletePlaylist} style={btnDanger}>Delete</button>
+                    <button onClick={() => { setEditMode(true); setEditPt({ title: detail.title, description: detail.description, link: detail.link, content_id: detail.content_id }); }} style={btnGhost}>Edit</button>
+                    <button onClick={deletePrimaryTraining} style={btnDanger}>Delete</button>
                   </div>
                 </div>
               </div>
