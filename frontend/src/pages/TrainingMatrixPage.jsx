@@ -400,7 +400,9 @@ function CurriculaTab({ projectId }) {
     <div>
       {ToastUI}
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-semibold text-slate-700">{curricula.length} curriculum{curricula.length !== 1 ? 'a' : ''}</h3>
+        <h3 className="text-sm font-semibold text-slate-700">
+          {curricula.length} {curricula.length === 1 ? 'curriculum' : 'curricula'}
+        </h3>
         <div className="flex gap-2">
           {curricula.length > 0 && (
             <button onClick={delAll}
@@ -1004,7 +1006,7 @@ export default function TrainingMatrixPage() {
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between mb-4 shrink-0">
-        <h1 className="text-xl font-bold text-slate-800">PDM Training</h1>
+        <h1 className="text-xl font-bold text-slate-800">Training Matrix</h1>
         <div className="flex gap-2 items-center">
           <button onClick={() => importRef.current.click()} disabled={importing}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
