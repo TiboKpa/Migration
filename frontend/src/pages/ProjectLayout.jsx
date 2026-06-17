@@ -31,7 +31,6 @@ export default function ProjectLayout() {
         if (status === 404 || status === 403 || status === 400) {
           navigate('/', { replace: true, state: { flash: 'This project does not exist.' } });
         } else {
-          // Network or server error -- still redirect so the user is not stuck
           navigate('/', { replace: true, state: { flash: 'This project does not exist.' } });
         }
       });
@@ -47,8 +46,8 @@ export default function ProjectLayout() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <header className="bg-white border-b px-6 py-3 flex items-center justify-between">
+    <div className="min-h-screen flex flex-col bg-slate-50">
+      <header className="bg-white border-b px-6 py-3 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
           <button onClick={() => navigate('/')} className="text-slate-400 hover:text-slate-700 text-sm">Dashboard</button>
           <span className="text-slate-300">/</span>
@@ -56,7 +55,7 @@ export default function ProjectLayout() {
         </div>
         <span className="text-xs text-slate-400">{project?.plant_name} - {project?.application_name}</span>
       </header>
-      <div className="flex flex-1">
+      <div className="flex flex-1 min-h-0">
         <aside className="w-52 bg-white border-r flex flex-col py-4 px-3 shrink-0">
           <nav className="space-y-1">
             {navItems.map(item => (
@@ -76,8 +75,10 @@ export default function ProjectLayout() {
             ))}
           </nav>
         </aside>
-        <main className="flex-1 p-6 overflow-auto">
-          <Outlet />
+        <main className="flex-1 p-6 overflow-auto bg-slate-50">
+          <React.Suspense fallback={<div className="bg-slate-50 min-h-full" />}>
+            <Outlet />
+          </React.Suspense>
         </main>
       </div>
     </div>
