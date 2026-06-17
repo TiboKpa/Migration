@@ -144,8 +144,6 @@ async function migrate() {
         UNIQUE(project_id, concatenate)
       );
 
-      -- ── Normalized training entities ──────────────────────────────────────
-
       -- Global modules (per project, deduped by title)
       CREATE TABLE IF NOT EXISTS training_modules (
         id SERIAL PRIMARY KEY,
@@ -194,7 +192,6 @@ async function migrate() {
       );
 
       -- Items inside a playlist: either a curriculum or a standalone module
-      -- Exactly one of curriculum_id / module_id is non-null per row.
       CREATE TABLE IF NOT EXISTS playlist_items (
         id SERIAL PRIMARY KEY,
         playlist_id INT REFERENCES playlists(id) ON DELETE CASCADE,
@@ -237,11 +234,29 @@ async function migrate() {
       );
     `);
 
+    // ── ALTER TABLE guards for columns added to pre-existing tables ──────────
+    // These are safe to run repeatedly: IF NOT EXISTS prevents errors.
     await client.query(`
       DO $$
       BEGIN
+        -- playlists.is_complementary
         IF NOT EXISTS (
-          SELECT 1 FROM pg_constraint WHERE conname = 'training_profiles_project_name_unique'
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='playlists' AND column_name='is_complementary'
+        ) THEN
+          ALTER TABLE playlists ADD COLUMN is_complementary BOOLEAN DEFAULT false;
+        END IF;
+
+        -- playlists UNIQUE(project_id, title)
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname='playlists_project_id_title_key'
+        ) THEN
+          ALTER TABLE playlists ADD CONSTRAINT playlists_project_id_title_key UNIQUE (project_id, title);
+        END IF;
+
+        -- training_profiles UNIQUE(project_id, profile_name)
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname='training_profiles_project_name_unique'
         ) THEN
           ALTER TABLE training_profiles ADD CONSTRAINT training_profiles_project_name_unique UNIQUE (project_id, profile_name);
         END IF;
