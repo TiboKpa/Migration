@@ -38,15 +38,17 @@ export default function TrainingMatrixPage() {
 
   useEffect(() => { fetchPrimaryTrainings(); }, [projectId]);
 
+  const base = `${API}/api/projects/${projectId}`;
+
   async function fetchPrimaryTrainings() {
-    const r = await fetch(`${API}/api/training/${projectId}/playlists`, { headers: authHeaders() });
+    const r = await fetch(`${base}/playlists`, { headers: authHeaders() });
     const data = await r.json();
     setPrimaryTrainings(Array.isArray(data) ? data : []);
   }
 
   async function fetchDetail(id) {
     setLoadingDetail(true);
-    const r = await fetch(`${API}/api/training/${projectId}/playlists/${id}`, { headers: authHeaders() });
+    const r = await fetch(`${base}/playlists/${id}`, { headers: authHeaders() });
     const data = await r.json();
     setDetail(data);
     setLoadingDetail(false);
@@ -63,7 +65,7 @@ export default function TrainingMatrixPage() {
 
   async function createPrimaryTraining() {
     if (!newPt.title.trim()) return;
-    await fetch(`${API}/api/training/${projectId}/playlists`, {
+    await fetch(`${base}/playlists`, {
       method: 'POST', headers: authHeaders(), body: JSON.stringify(newPt)
     });
     setNewPt({ title: '', description: '', link: '', content_id: '' });
@@ -72,7 +74,7 @@ export default function TrainingMatrixPage() {
   }
 
   async function updatePrimaryTraining() {
-    await fetch(`${API}/api/training/${projectId}/playlists/${selected}`, {
+    await fetch(`${base}/playlists/${selected}`, {
       method: 'PUT', headers: authHeaders(), body: JSON.stringify(editPt)
     });
     setEditMode(false);
@@ -82,7 +84,7 @@ export default function TrainingMatrixPage() {
 
   async function deletePrimaryTraining() {
     if (!confirm('Delete this primary training and all its content?')) return;
-    await fetch(`${API}/api/training/${projectId}/playlists/${selected}`, { method: 'DELETE', headers: authHeaders() });
+    await fetch(`${base}/playlists/${selected}`, { method: 'DELETE', headers: authHeaders() });
     setSelected(null);
     setDetail(null);
     fetchPrimaryTrainings();
@@ -90,7 +92,7 @@ export default function TrainingMatrixPage() {
 
   async function addCurriculum() {
     if (!newCur.title.trim()) return;
-    await fetch(`${API}/api/training/${projectId}/playlists/${selected}/curricula`, {
+    await fetch(`${base}/playlists/${selected}/curricula`, {
       method: 'POST', headers: authHeaders(), body: JSON.stringify(newCur)
     });
     setNewCur({ title: '', content_id: '', requirement: 'mandatory', sequence_order: 0 });
@@ -100,14 +102,15 @@ export default function TrainingMatrixPage() {
 
   async function deleteCurriculum(curId) {
     if (!confirm('Delete curriculum and all its modules?')) return;
-    await fetch(`${API}/api/training/${projectId}/playlists/${selected}/curricula/${curId}`, { method: 'DELETE', headers: authHeaders() });
+    await fetch(`${base}/playlists/${selected}/curricula/${curId}`, { method: 'DELETE', headers: authHeaders() });
     fetchDetail(selected);
   }
 
   async function addModule() {
+
     if (!newMod.title.trim()) return;
     const payload = { ...newMod, curriculum_id: newMod.curriculum_id || null };
-    await fetch(`${API}/api/training/${projectId}/playlists/${selected}/modules`, {
+    await fetch(`${base}/playlists/${selected}/modules`, {
       method: 'POST', headers: authHeaders(), body: JSON.stringify(payload)
     });
     setNewMod({ title: '', content_id: '', duration_min: 0, requirement: 'mandatory', sequence_order: 0, curriculum_id: '' });
@@ -117,7 +120,7 @@ export default function TrainingMatrixPage() {
 
   async function deleteModule(modId) {
     if (!confirm('Delete this module?')) return;
-    await fetch(`${API}/api/training/${projectId}/playlists/${selected}/modules/${modId}`, { method: 'DELETE', headers: authHeaders() });
+    await fetch(`${base}/playlists/${selected}/modules/${modId}`, { method: 'DELETE', headers: authHeaders() });
     fetchDetail(selected);
   }
 
@@ -130,7 +133,7 @@ export default function TrainingMatrixPage() {
     try {
       const buf = await file.arrayBuffer();
       const parsed = parseTrainingPathFlat(buf);
-      const r = await fetch(`${API}/api/training/${projectId}/playlists/import`, {
+      const r = await fetch(`${base}/playlists/import`, {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify(parsed),
@@ -149,7 +152,7 @@ export default function TrainingMatrixPage() {
   return (
     <div className="flex flex-col h-full">
 
-      {/* ── Page header ── */}
+      {/* Page header */}
       <div className="flex items-center justify-between mb-4 shrink-0">
         <div>
           <h1 className="text-xl font-bold text-slate-800">PDM Training</h1>
@@ -179,7 +182,7 @@ export default function TrainingMatrixPage() {
         </p>
       )}
 
-      {/* ── Add form ── */}
+      {/* Add form */}
       {showNew && (
         <div className="bg-slate-50 border rounded-xl p-4 mb-4 shrink-0">
           <h2 className="text-sm font-semibold text-slate-700 mb-3">New primary training</h2>
@@ -218,7 +221,7 @@ export default function TrainingMatrixPage() {
         </div>
       )}
 
-      {/* ── Main content: list + detail ── */}
+      {/* Main content: list + detail */}
       <div className="flex gap-6 flex-1 min-h-0">
 
         {/* Left list */}
@@ -248,7 +251,6 @@ export default function TrainingMatrixPage() {
           {selected && !loadingDetail && detail && (
             <div className="flex flex-col gap-6">
 
-              {/* Header */}
               {editMode ? (
                 <div className="bg-slate-50 border rounded-xl p-4">
                   <h2 className="text-sm font-semibold text-slate-700 mb-3">Edit primary training</h2>
@@ -359,7 +361,7 @@ export default function TrainingMatrixPage() {
                         {cur.content_id && (
                           <span className="text-xs bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5">{cur.content_id}</span>
                         )}
-                        <span className={`text-xs rounded-full px-2 py-0.5 ${ cur.requirement === 'mandatory' ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700' }`}>
+                        <span className={`text-xs rounded-full px-2 py-0.5 ${cur.requirement === 'mandatory' ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
                           {cur.requirement}
                         </span>
                         <button onClick={e => { e.preventDefault(); deleteCurriculum(cur.id); }}
@@ -454,7 +456,7 @@ function ModuleRow({ mod, onDelete }) {
       </div>
       <div className="flex gap-2 items-center shrink-0">
         {mod.duration_min > 0 && <span className="text-xs text-slate-400">{durationLabel(mod.duration_min)}</span>}
-        <span className={`text-xs rounded-full px-2 py-0.5 ${ mod.requirement === 'mandatory' ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700' }`}>
+        <span className={`text-xs rounded-full px-2 py-0.5 ${mod.requirement === 'mandatory' ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
           {mod.requirement}
         </span>
         <button onClick={() => onDelete(mod.id)}
