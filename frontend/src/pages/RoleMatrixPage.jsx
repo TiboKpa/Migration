@@ -43,51 +43,61 @@ function normalizeYesNo(val) {
 
 function parseMatrixExcel(buffer) {
   const wb = XLSX.read(buffer, { type: 'array' });
-  // Find the Construction sheet
-  const sheetName = wb.SheetNames.find(n => n.toLowerCase().includes('construction')) || wb.SheetNames[0];
-  const ws = wb.Sheets[sheetName];
-  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
-  // Find the header row containing 'Function'
+  // Find the sheet whose first populated row contains Function + Role + Concatenate.
+  // This handles both the old "Construction" sheet and the new "Feuil1" sheet.
+  let targetSheet = null;
   let headerIdx = -1;
-  for (let i = 0; i < raw.length; i++) {
-    const row = raw[i].map(c => String(c).trim());
-    if (row.includes('Function') && row.includes('Role') && row.includes('Concatenate')) {
-      headerIdx = i;
-      break;
-    }
-  }
-  if (headerIdx === -1) throw new Error('Header row with Function/Role/Concatenate not found in Construction sheet');
 
-  const headers = raw[headerIdx].map(c => String(c).trim());
-  const fnIdx = headers.indexOf('Function');
-  const roleIdx = headers.indexOf('Role');
-  const pbomIdx = headers.findIndex(h => h.includes('PBOM'));
-  const bocAdminIdx = headers.findIndex(h => h.includes('BOC Admin'));
-  const bocMemberIdx = headers.findIndex(h => h.includes('BOC Member'));
-  const etoIdx = headers.findIndex(h => h.includes('ETO'));
-  const tmIdx = headers.findIndex(h => h.includes('Team Manager'));
-  const pdmIdx = headers.findIndex(h => h.includes('PDM Role'));
-  const tlgIdx = headers.findIndex(h => h.includes('TLG'));
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName];
+    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    for (let i = 0; i < Math.min(raw.length, 10); i++) {
+      const row = raw[i].map(c => String(c).trim());
+      if (row.includes('Function') && row.includes('Role') && row.includes('Concatenate')) {
+        targetSheet = raw;
+        headerIdx = i;
+        break;
+      }
+    }
+    if (targetSheet) break;
+  }
+
+  if (!targetSheet || headerIdx === -1) {
+    throw new Error('Could not find a header row with Function / Role / Concatenate in any sheet.');
+  }
+
+  const headers = targetSheet[headerIdx].map(c => String(c).trim());
+  const fnIdx      = headers.indexOf('Function');
+  const roleIdx    = headers.indexOf('Role');
+  const pbomIdx    = headers.findIndex(h => h.includes('PBOM'));
+  const bocAdminIdx= headers.findIndex(h => h.includes('BOC Admin'));
+  const bocMemberIdx= headers.findIndex(h => h.includes('BOC Member'));
+  const etoIdx     = headers.findIndex(h => h.includes('ETO'));
+  const tmIdx      = headers.findIndex(h => h.includes('Team Manager'));
+  const pdmIdx     = headers.findIndex(h => h.includes('PDM Role'));
+  const tlgIdx     = headers.findIndex(h => h.includes('TLG'));
 
   const entries = [];
-  for (let i = headerIdx + 1; i < raw.length; i++) {
-    const row = raw[i];
-    const fn = String(row[fnIdx] || '').trim();
+  for (let i = headerIdx + 1; i < targetSheet.length; i++) {
+    const row = targetSheet[i];
+    const fn   = String(row[fnIdx]   || '').trim();
     const role = String(row[roleIdx] || '').trim();
     if (!fn || !role) continue;
     entries.push({
-      function: fn,
+      function:      fn,
       role,
       pbom_champion: normalizeYesNo(row[pbomIdx]),
-      boc_admin: normalizeYesNo(row[bocAdminIdx]),
-      boc_member: normalizeYesNo(row[bocMemberIdx]),
-      eto_user: normalizeYesNo(row[etoIdx]),
-      team_manager: normalizeYesNo(row[tmIdx]),
-      pdm_role: String(row[pdmIdx] || '').trim(),
-      tlg_group: String(row[tlgIdx] || '').trim(),
+      boc_admin:     normalizeYesNo(row[bocAdminIdx]),
+      boc_member:    normalizeYesNo(row[bocMemberIdx]),
+      eto_user:      normalizeYesNo(row[etoIdx]),
+      team_manager:  normalizeYesNo(row[tmIdx]),
+      pdm_role:      String(row[pdmIdx]  || '').trim(),
+      tlg_group:     String(row[tlgIdx]  || '').trim(),
     });
   }
+
+  if (entries.length === 0) throw new Error('No data rows found after the header row.');
   return entries;
 }
 
