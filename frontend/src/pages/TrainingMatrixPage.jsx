@@ -22,12 +22,13 @@ function Badge({ children, color = 'slate' }) {
   return <span className={`text-xs border rounded-full px-2 py-0.5 ${colors[color]}`}>{children}</span>;
 }
 
-function InlineField({ label, value, onChange, type = 'text' }) {
+function InlineField({ label, value, onChange, type = 'text', min }) {
   return (
     <div>
       <label className="text-xs text-slate-500 block mb-1">{label}</label>
       <input
         type={type}
+        min={min}
         className="border rounded-lg px-2 py-1.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-200"
         value={value}
         onChange={e => onChange(e.target.value)}
@@ -55,7 +56,7 @@ function FormBox({ title, children, onSave, onCancel, saveDisabled }) {
   );
 }
 
-// ── Modules tab ───────────────────────────────────────────────────────────────
+// ── Modules tab ───────────────────────────────────────────────────────────────────
 
 function ModulesTab({ projectId }) {
   const [modules, setModules]     = useState([]);
@@ -100,7 +101,7 @@ function ModulesTab({ projectId }) {
   }
 
   async function delAll() {
-    if (!confirm('Delete ALL modules for this project? This will also remove them from all curricula. This cannot be undone.')) return;
+    if (!confirm('Delete ALL modules? This cannot be undone.')) return;
     await client.delete(`/projects/${projectId}/modules`);
     load();
   }
@@ -135,13 +136,13 @@ function ModulesTab({ projectId }) {
               <InlineField label="Title *" value={form.title} onChange={v => setForm(f => ({ ...f, title: v }))} />
             </div>
             <InlineField label="Content ID" value={form.content_id} onChange={v => setForm(f => ({ ...f, content_id: v }))} />
-            <InlineField label="Duration (min)" type="number" value={form.duration_min} onChange={v => setForm(f => ({ ...f, duration_min: v }))} />
+            <InlineField label="Duration (min)" type="number" min="0" value={form.duration_min} onChange={v => setForm(f => ({ ...f, duration_min: v }))} />
           </div>
         </FormBox>
       )}
 
       {modules.length === 0 && !showAdd && (
-        <p className="text-xs text-slate-400 py-4 text-center">No modules yet. Add one or import an xlsx.</p>
+        <p className="text-xs text-slate-400 py-4 text-center">No modules yet.</p>
       )}
 
       <div className="border rounded-xl overflow-hidden bg-white">
@@ -153,7 +154,7 @@ function ModulesTab({ projectId }) {
                   <InlineField label="Title *" value={editForm.title} onChange={v => setEditForm(f => ({ ...f, title: v }))} />
                 </div>
                 <InlineField label="Content ID" value={editForm.content_id} onChange={v => setEditForm(f => ({ ...f, content_id: v }))} />
-                <InlineField label="Duration (min)" type="number" value={editForm.duration_min} onChange={v => setEditForm(f => ({ ...f, duration_min: v }))} />
+                <InlineField label="Duration (min)" type="number" min="0" value={editForm.duration_min} onChange={v => setEditForm(f => ({ ...f, duration_min: v }))} />
                 <div className="col-span-3 flex gap-2">
                   <button onClick={() => saveEdit(mod.id)} disabled={!editForm.title.trim()}
                     className="bg-blue-600 text-white px-3 py-1 rounded-lg text-xs font-medium hover:bg-blue-700 disabled:opacity-40">Save</button>
@@ -181,7 +182,7 @@ function ModulesTab({ projectId }) {
   );
 }
 
-// ── Curricula tab ─────────────────────────────────────────────────────────────
+// ── Curricula tab ─────────────────────────────────────────────────────────────────
 
 function CurriculaTab({ projectId }) {
   const [curricula, setCurricula]     = useState([]);
@@ -228,7 +229,7 @@ function CurriculaTab({ projectId }) {
   }
 
   async function delAll() {
-    if (!confirm('Delete ALL curricula for this project? Modules will not be deleted. This cannot be undone.')) return;
+    if (!confirm('Delete ALL curricula? Modules will not be deleted.')) return;
     await client.delete(`/projects/${projectId}/curricula`);
     loadAll();
   }
@@ -236,10 +237,17 @@ function CurriculaTab({ projectId }) {
   async function addModuleToCurriculum(curId) {
     const state = addModState[curId];
     if (!state?.module_id) return;
+    const cur = curricula.find(c => c.id === curId);
+    const existingOrders = (cur?.modules || []).map(m => m.sequence_order);
+    // Default: next available slot
+    let pos = parseInt(state.sequence_order);
+    if (!pos || pos < 1) {
+      pos = existingOrders.length > 0 ? Math.max(...existingOrders) + 1 : 1;
+    }
     await client.post(`/projects/${projectId}/curricula/${curId}/modules`, {
-      module_id: parseInt(state.module_id),
-      requirement: state.requirement || 'mandatory',
-      sequence_order: parseInt(state.sequence_order) || 0,
+      module_id:      parseInt(state.module_id),
+      requirement:    state.requirement || 'mandatory',
+      sequence_order: pos,
     });
     setAddModState(s => ({ ...s, [curId]: undefined }));
     loadAll();
@@ -289,6 +297,7 @@ function CurriculaTab({ projectId }) {
           const addState  = addModState[cur.id] || {};
           const usedIds   = new Set((cur.modules || []).map(m => m.module_id));
           const available = allModules.filter(m => !usedIds.has(m.id));
+          const maxOrder  = (cur.modules || []).reduce((mx, m) => Math.max(mx, m.sequence_order || 0), 0);
 
           return (
             <div key={cur.id} className="border rounded-xl overflow-hidden bg-white">
@@ -368,8 +377,9 @@ function CurriculaTab({ projectId }) {
                       </select>
                     </div>
                     <div className="w-20">
-                      <label className="text-xs text-slate-500 block mb-1">Order</label>
-                      <input type="number" className="border rounded-lg px-2 py-1.5 text-sm w-full"
+                      <label className="text-xs text-slate-500 block mb-1">Position</label>
+                      <input type="number" min="1" className="border rounded-lg px-2 py-1.5 text-sm w-full"
+                        placeholder={String(maxOrder + 1)}
                         value={addState.sequence_order || ''}
                         onChange={e => setAddModState(s => ({ ...s, [cur.id]: { ...addState, sequence_order: e.target.value } }))}
                       />
@@ -389,21 +399,21 @@ function CurriculaTab({ projectId }) {
   );
 }
 
-// ── Trainings tab ─────────────────────────────────────────────────────────────
+// ── Trainings tab ─────────────────────────────────────────────────────────────────
 
 function TrainingsTab({ projectId }) {
-  const [playlists, setPlaylists]       = useState([]);
-  const [selected, setSelected]         = useState(null);
-  const [detail, setDetail]             = useState(null);
+  const [playlists, setPlaylists]         = useState([]);
+  const [selected, setSelected]           = useState(null);
+  const [detail, setDetail]               = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
-  const [showAdd, setShowAdd]           = useState(false);
-  const [form, setForm]                 = useState({ title: '', description: '', link: '', content_id: '' });
-  const [editMode, setEditMode]         = useState(false);
-  const [editForm, setEditForm]         = useState({});
-  const [allModules, setAllModules]     = useState([]);
-  const [allCurricula, setAllCurricula] = useState([]);
-  const [showAddItem, setShowAddItem]   = useState(false);
-  const [newItem, setNewItem]           = useState({ type: 'curriculum', id: '', sequence_order: '' });
+  const [showAdd, setShowAdd]             = useState(false);
+  const [form, setForm]                   = useState({ title: '', description: '', link: '', content_id: '' });
+  const [editMode, setEditMode]           = useState(false);
+  const [editForm, setEditForm]           = useState({});
+  const [allModules, setAllModules]       = useState([]);
+  const [allCurricula, setAllCurricula]   = useState([]);
+  const [showAddItem, setShowAddItem]     = useState(false);
+  const [newItem, setNewItem]             = useState({ type: 'curriculum', id: '', sequence_order: '' });
 
   const loadList = useCallback(async () => {
     const r = await client.get(`/projects/${projectId}/playlists`);
@@ -456,7 +466,7 @@ function TrainingsTab({ projectId }) {
   }
 
   async function delAll() {
-    if (!confirm('Delete ALL trainings for this project? This cannot be undone.')) return;
+    if (!confirm('Delete ALL trainings? This cannot be undone.')) return;
     await client.delete(`/projects/${projectId}/playlists`);
     setSelected(null);
     setDetail(null);
@@ -465,10 +475,14 @@ function TrainingsTab({ projectId }) {
 
   async function addItem() {
     if (!newItem.id) return;
+    const orderedItems = detail?.ordered_items || [];
+    const maxOrder = orderedItems.reduce((mx, i) => Math.max(mx, i.sequence_order || 0), 0);
+    let pos = parseInt(newItem.sequence_order);
+    if (!pos || pos < 1) pos = maxOrder + 1;
     await client.post(`/projects/${projectId}/playlists/${selected}/items`, {
       curriculum_id:  newItem.type === 'curriculum' ? parseInt(newItem.id) : null,
       module_id:      newItem.type === 'module'     ? parseInt(newItem.id) : null,
-      sequence_order: parseInt(newItem.sequence_order) || 0,
+      sequence_order: pos,
     });
     setNewItem({ type: 'curriculum', id: '', sequence_order: '' });
     setShowAddItem(false);
@@ -483,9 +497,12 @@ function TrainingsTab({ projectId }) {
   const primary       = playlists.filter(p => !p.is_complementary);
   const complementary = playlists.filter(p => p.is_complementary);
 
-  const usedCurriculumIds = new Set((detail?.curricula || []).map(c => c.curriculum_id));
-  const usedModuleIds     = new Set((detail?.standalone_modules || []).map(m => m.module_id));
-  const availableForAdd   = newItem.type === 'curriculum'
+  const orderedItems      = detail?.ordered_items || [];
+  const usedCurriculumIds = new Set(orderedItems.filter(i => i.kind === 'curriculum').map(i => i.curriculum_id));
+  const usedModuleIds     = new Set(orderedItems.filter(i => i.kind === 'module').map(i => i.module_id));
+  const maxOrder          = orderedItems.reduce((mx, i) => Math.max(mx, i.sequence_order || 0), 0);
+
+  const availableForAdd = newItem.type === 'curriculum'
     ? allCurricula.filter(c => !usedCurriculumIds.has(c.id))
     : allModules.filter(m => !usedModuleIds.has(m.id));
 
@@ -600,7 +617,6 @@ function TrainingsTab({ projectId }) {
 
             {/* Content */}
             {detail.is_complementary ? (
-              // Complementary: show ordered refs
               <div>
                 <p className="text-sm font-semibold text-slate-700 mb-3">References</p>
                 {(detail.complementary_refs || []).length === 0 && (
@@ -619,7 +635,6 @@ function TrainingsTab({ projectId }) {
                 </div>
               </div>
             ) : (
-              // Primary: show curricula + standalone modules
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <p className="text-sm font-semibold text-slate-700">Content</p>
@@ -636,7 +651,7 @@ function TrainingsTab({ projectId }) {
                           value={newItem.type}
                           onChange={e => setNewItem(n => ({ ...n, type: e.target.value, id: '' }))}>
                           <option value="curriculum">Curriculum</option>
-                          <option value="module">Standalone module</option>
+                          <option value="module">Module</option>
                         </select>
                       </div>
                       <div>
@@ -648,66 +663,73 @@ function TrainingsTab({ projectId }) {
                           {availableForAdd.map(x => <option key={x.id} value={x.id}>{x.title}</option>)}
                         </select>
                       </div>
-                      <InlineField label="Order" type="number" value={newItem.sequence_order}
+                      <InlineField label="Position (blank = end)" type="number" min="1"
+                        value={newItem.sequence_order}
                         onChange={v => setNewItem(n => ({ ...n, sequence_order: v }))} />
                     </div>
                   </FormBox>
                 )}
 
-                {(detail.curricula || []).length === 0 && (detail.standalone_modules || []).length === 0 && (
+                {orderedItems.length === 0 && (
                   <p className="text-xs text-slate-400">No items yet.</p>
                 )}
 
-                {(detail.curricula || []).map(cur => (
-                  <details key={cur.playlist_item_id} className="mb-2 border rounded-xl overflow-hidden" open>
-                    <summary className="flex items-center justify-between px-4 py-2.5 bg-slate-50 cursor-pointer list-none">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-slate-400 w-5 text-right">{cur.sequence_order}</span>
-                        <span className="text-sm font-semibold text-slate-700">{cur.title}</span>
-                        {cur.content_id && <Badge color="blue">{cur.content_id}</Badge>}
-                      </div>
-                      <button onClick={e => { e.preventDefault(); removeItem(cur.playlist_item_id); }}
-                        className="text-xs text-red-300 hover:text-red-500">Remove</button>
-                    </summary>
-                    <div className="px-4 py-2">
-                      {(cur.modules || []).length === 0 && <p className="text-xs text-slate-400">No modules in this curriculum.</p>}
-                      {(cur.modules || []).map((mod, idx) => (
-                        <div key={mod.id}
-                          className={`flex items-center justify-between py-1.5 ${idx < cur.modules.length - 1 ? 'border-b' : ''}`}>
-                          <div className="flex items-center gap-2 flex-1 min-w-0">
-                            <span className="text-xs text-slate-400 w-5 text-right shrink-0">{mod.sequence_order}</span>
-                            <span className="text-sm text-slate-700 truncate">{mod.module_title || mod.title}</span>
-                            {mod.module_content_id && <Badge color="blue">{mod.module_content_id}</Badge>}
+                {/* Unified ordered list: curricula and standalone modules mixed by sequence_order */}
+                <div className="flex flex-col gap-2">
+                  {orderedItems.map(item => {
+                    if (item.kind === 'curriculum') {
+                      return (
+                        <details key={item.playlist_item_id} className="border rounded-xl overflow-hidden" open>
+                          <summary className="flex items-center justify-between px-4 py-2.5 bg-slate-50 cursor-pointer list-none">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-slate-400 w-5 text-right shrink-0">{item.sequence_order}</span>
+                              <span className="text-sm font-semibold text-slate-700">{item.title}</span>
+                              {item.content_id && <Badge color="blue">{item.content_id}</Badge>}
+                              <Badge color="slate">{(item.modules || []).length} module{(item.modules || []).length !== 1 ? 's' : ''}</Badge>
+                            </div>
+                            <button onClick={e => { e.preventDefault(); removeItem(item.playlist_item_id); }}
+                              className="text-xs text-red-300 hover:text-red-500">Remove</button>
+                          </summary>
+                          <div className="px-4 py-2">
+                            {(item.modules || []).length === 0 && <p className="text-xs text-slate-400">No modules in this curriculum.</p>}
+                            {(item.modules || []).map((mod, idx) => (
+                              <div key={mod.id}
+                                className={`flex items-center justify-between py-1.5 ${idx < item.modules.length - 1 ? 'border-b' : ''}`}>
+                                <div className="flex items-center gap-2 flex-1 min-w-0">
+                                  <span className="text-xs text-slate-400 w-5 text-right shrink-0">{mod.sequence_order}</span>
+                                  <span className="text-sm text-slate-700 truncate">{mod.module_title || mod.title}</span>
+                                  {mod.module_content_id && <Badge color="blue">{mod.module_content_id}</Badge>}
+                                </div>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  {mod.duration_min > 0 && <span className="text-xs text-slate-400">{durationLabel(mod.duration_min)}</span>}
+                                  <Badge color={mod.requirement === 'mandatory' ? 'green' : 'amber'}>{mod.requirement}</Badge>
+                                </div>
+                              </div>
+                            ))}
                           </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            {mod.duration_min > 0 && <span className="text-xs text-slate-400">{durationLabel(mod.duration_min)}</span>}
-                            <Badge color={mod.requirement === 'mandatory' ? 'green' : 'amber'}>{mod.requirement}</Badge>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
-                ))}
+                        </details>
+                      );
+                    }
 
-                {(detail.standalone_modules || []).length > 0 && (
-                  <div className="border rounded-xl overflow-hidden bg-white mt-2">
-                    {(detail.standalone_modules || []).map((mod, idx) => (
-                      <div key={mod.playlist_item_id}
-                        className={`flex items-center justify-between px-4 py-2.5 ${idx < detail.standalone_modules.length - 1 ? 'border-b' : ''}`}>
+                    // Standalone module
+                    return (
+                      <div key={item.playlist_item_id}
+                        className="border rounded-xl bg-white flex items-center justify-between px-4 py-2.5">
                         <div className="flex items-center gap-2 flex-1 min-w-0">
-                          <span className="text-xs text-slate-400 w-5 text-right shrink-0">{mod.sequence_order}</span>
-                          <span className="text-sm text-slate-700 truncate">{mod.title}</span>
-                          {mod.content_id && <Badge color="blue">{mod.content_id}</Badge>}
+                          <span className="text-xs text-slate-400 w-5 text-right shrink-0">{item.sequence_order}</span>
+                          <span className="text-sm text-slate-700 truncate">{item.title}</span>
+                          {item.content_id && <Badge color="blue">{item.content_id}</Badge>}
+                          <Badge color="slate">Module</Badge>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
-                          {mod.duration_min > 0 && <span className="text-xs text-slate-400">{durationLabel(mod.duration_min)}</span>}
-                          <button onClick={() => removeItem(mod.playlist_item_id)}
+                          {item.duration_min > 0 && <span className="text-xs text-slate-400">{durationLabel(item.duration_min)}</span>}
+                          <button onClick={() => removeItem(item.playlist_item_id)}
                             className="text-xs text-red-300 hover:text-red-500">Remove</button>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                )}
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -717,14 +739,14 @@ function TrainingsTab({ projectId }) {
   );
 }
 
-// ── Page shell ────────────────────────────────────────────────────────────────
+// ── Page shell ───────────────────────────────────────────────────────────────────
 
 const TABS = ['Modules', 'Curricula', 'Trainings'];
 
 export default function TrainingMatrixPage() {
   const { projectId } = useParams();
-  const [tab, setTab]               = useState('Modules');
-  const [importing, setImporting]   = useState(false);
+  const [tab, setTab]                   = useState('Modules');
+  const [importing, setImporting]       = useState(false);
   const [importResult, setImportResult] = useState(null);
   const importRef = useRef();
 
