@@ -24,7 +24,7 @@
  * Row classification (C and D are structural, not playlist-order):
  *   C==0, D==0  -> CURRICULUM header
  *   C==0, D!=0  -> STANDALONE MODULE (belongs to no curriculum)
- *   C!=0, D!=0  -> MODULE inside the curriculum whose chapter == C
+ *   C!=0, D!=0  -> MODULE inside the curriculum whose header immediately precedes it in the file
  *
  * Playlist column cell values:
  *   Primary Training   (row-3 link non-empty):
@@ -91,7 +91,7 @@ export function parseTrainingPathFlat(arrayBuffer) {
 
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
 
-  // ── Playlist column metadata ──────────────────────────────────────────────
+  // Playlist column metadata
   const titleRow = rows[1] || [];
   const descRow  = rows[2] || [];
   const linkRow  = rows[3] || [];
@@ -108,7 +108,7 @@ export function parseTrainingPathFlat(arrayBuffer) {
     });
   }
 
-  // ── Find data start row ───────────────────────────────────────────────────
+  // Find data start row
   let dataStart = -1;
   for (let r = 10; r < rows.length; r++) {
     const row   = rows[r];
@@ -118,7 +118,7 @@ export function parseTrainingPathFlat(arrayBuffer) {
   }
   if (dataStart === -1) throw new Error('Could not find data rows in Training Path Flat');
 
-  // ── Classify every data row ───────────────────────────────────────────────
+  // Classify every data row
   const classifiedRows = [];
   for (let r = dataStart; r < rows.length; r++) {
     const row   = rows[r];
@@ -152,7 +152,7 @@ export function parseTrainingPathFlat(arrayBuffer) {
     });
   }
 
-  // ── Pass 1: unique modules ────────────────────────────────────────────────
+  // Pass 1: unique modules
   const moduleMap = new Map();
   for (const cr of classifiedRows) {
     if (cr.type === 'curriculum') continue;
@@ -166,56 +166,48 @@ export function parseTrainingPathFlat(arrayBuffer) {
     }
   }
 
-  // ── Pass 2: build curricula ───────────────────────────────────────────────
-  const curriculumMap = new Map();
+  // Pass 2: build curricula and attach modules by file order.
+  // A module row belongs to whichever curriculum header immediately precedes
+  // it in the file — no chapter-number mapping is used.
+  const curriculumMap = new Map(); // key: title.toLowerCase() -> curriculum object
+  const curriculaOrder = [];       // preserves insertion order for the payload
+
+  let currentCurriculum = null;
+
   for (const cr of classifiedRows) {
-    if (cr.type !== 'curriculum') continue;
-    const key = cr.title.toLowerCase();
-    if (!curriculumMap.has(key)) {
-      curriculumMap.set(key, {
-        title:      cr.title,
-        content_id: cr.content_id,
-        modules:    [],
+    if (cr.type === 'curriculum') {
+      const key = cr.title.toLowerCase();
+      if (!curriculumMap.has(key)) {
+        const cur = {
+          title:      cr.title,
+          content_id: cr.content_id,
+          modules:    [],
+        };
+        curriculumMap.set(key, cur);
+        curriculaOrder.push(cur);
+      }
+      currentCurriculum = curriculumMap.get(key);
+      continue;
+    }
+
+    if (cr.type === 'module' && currentCurriculum) {
+      const modKey = cr.title.toLowerCase();
+      if (!moduleMap.has(modKey)) continue;
+      const alreadyIn = currentCurriculum.modules.some(m => m.title.toLowerCase() === modKey);
+      if (alreadyIn) continue;
+      currentCurriculum.modules.push({
+        title:          cr.title,
+        requirement:    cr.mandatoryMs > 0 ? 'mandatory' : 'optional',
+        sequence_order: cr.brick ?? (currentCurriculum.modules.length + 1),
       });
     }
   }
 
-  // Map chapter number -> curriculum by scanning file order
-  const chapterToCurriculum = new Map();
-  let lastCurriculum = null;
-  let lastChapterNum = null;
-  for (const cr of classifiedRows) {
-    if (cr.type === 'curriculum') {
-      lastCurriculum = curriculumMap.get(cr.title.toLowerCase());
-      lastChapterNum = null;
-    } else if (cr.type === 'module' && cr.chapter !== null) {
-      if (lastChapterNum === null || cr.chapter !== lastChapterNum) {
-        lastChapterNum = cr.chapter;
-        if (lastCurriculum) chapterToCurriculum.set(cr.chapter, lastCurriculum);
-      }
-    }
-  }
-
-  // Attach modules to curricula
-  for (const cr of classifiedRows) {
-    if (cr.type !== 'module') continue;
-    const cur = chapterToCurriculum.get(cr.chapter);
-    if (!cur) continue;
-    const modKey = cr.title.toLowerCase();
-    if (!moduleMap.has(modKey)) continue;
-    const alreadyIn = cur.modules.some(m => m.title.toLowerCase() === modKey);
-    if (alreadyIn) continue;
-    cur.modules.push({
-      title:          cr.title,
-      requirement:    cr.mandatoryMs > 0 ? 'mandatory' : 'optional',
-      sequence_order: cr.brick ?? (cur.modules.length + 1),
-    });
-  }
-  for (const cur of curriculumMap.values()) {
+  for (const cur of curriculaOrder) {
     cur.modules.sort((a, b) => a.sequence_order - b.sequence_order);
   }
 
-  // ── Pass 3: build playlists ───────────────────────────────────────────────
+  // Pass 3: build playlists
   const primaryTrainings       = [];
   const complementaryTrainings = [];
 
@@ -268,10 +260,8 @@ export function parseTrainingPathFlat(arrayBuffer) {
       });
 
     } else {
-      // Complementary: any non-empty cell includes the row.
-      // Numeric cell -> explicit order; letter/string -> order by appearance.
-      const explicitItems = []; // { title, content_id, order: number }
-      const implicitItems = []; // { title, content_id } -- order by file position
+      const explicitItems = [];
+      const implicitItems = [];
 
       for (const cr of classifiedRows) {
         const result = complementaryCellOrder(cr.rawRow[pc.colIndex]);
@@ -284,7 +274,6 @@ export function parseTrainingPathFlat(arrayBuffer) {
         }
       }
 
-      // Assign implicit items orders starting after the highest explicit order
       const maxExplicit = explicitItems.reduce((m, i) => Math.max(m, i.sequence_order), 0);
       const references  = [
         ...explicitItems.sort((a, b) => a.sequence_order - b.sequence_order),
@@ -304,7 +293,7 @@ export function parseTrainingPathFlat(arrayBuffer) {
 
   return {
     modules:                 Array.from(moduleMap.values()),
-    curricula:               Array.from(curriculumMap.values()),
+    curricula:               curriculaOrder,
     primary_trainings:       primaryTrainings,
     complementary_trainings: complementaryTrainings,
   };
