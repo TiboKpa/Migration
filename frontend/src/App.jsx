@@ -7,6 +7,7 @@ import DashboardPage from './pages/DashboardPage';
 import ProjectLayout from './pages/ProjectLayout';
 import OverviewPage from './pages/OverviewPage';
 import UserListPage from './pages/UserListPage';
+import RoleMatrixPage from './pages/RoleMatrixPage';
 import TrainingMatrixPage from './pages/TrainingMatrixPage';
 import TemplatesPage from './pages/TemplatesPage';
 import MailGenerationPage from './pages/MailGenerationPage';
@@ -28,6 +29,7 @@ export default function App() {
         <Route path="/projects/:projectId" element={<PrivateRoute><ProjectLayout /></PrivateRoute>}>
           <Route index element={<OverviewPage />} />
           <Route path="users" element={<UserListPage />} />
+          <Route path="role-matrix" element={<RoleMatrixPage />} />
           <Route path="matrix" element={<TrainingMatrixPage />} />
           <Route path="templates" element={<TemplatesPage />} />
           <Route path="generate" element={<MailGenerationPage />} />

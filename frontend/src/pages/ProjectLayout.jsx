@@ -6,6 +6,7 @@ import client from '../api/client';
 const navItems = [
   { to: '', label: 'Overview', end: true },
   { to: 'users', label: 'User List' },
+  { to: 'role-matrix', label: 'Role Matrix' },
   { to: 'matrix', label: 'Training Matrix' },
   { to: 'templates', label: 'Templates' },
   { to: 'generate', label: 'Mail Generation' },
