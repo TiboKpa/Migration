@@ -1,12 +1,7 @@
 import axios from 'axios';
 
-function getApiUrl() {
-  if (window.__ENV__?.API_URL) return window.__ENV__.API_URL + '/api';
-  return import.meta.env.VITE_API_URL || '/api';
-}
-
 const client = axios.create({
-  baseURL: getApiUrl()
+  baseURL: '/api'
 });
 
 client.interceptors.request.use(config => {
