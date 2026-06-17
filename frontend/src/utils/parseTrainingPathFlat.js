@@ -36,8 +36,9 @@
  *     letter   -> included; order is position of first occurrence
  *     empty    -> not in this training
  *
- * Only CURRICULUM and STANDALONE_MODULE rows can appear in playlists.
- * MODULE rows (C!=0) are part of their curriculum and never appear directly.
+ * CURRICULUM rows can be added as curriculum items in a training.
+ * STANDALONE_MODULE and MODULE rows (including curriculum-owned ones) can be
+ * added as standalone module items in a training when their cell is filled.
  */
 
 import * as XLSX from 'xlsx';
@@ -217,7 +218,9 @@ export function parseTrainingPathFlat(arrayBuffer) {
     if (isPrimary) {
       const items = [];
       for (const cr of classifiedRows) {
-        if (cr.type === 'module') continue;
+        // Curriculum headers become curriculum items.
+        // All module rows (standalone or curriculum-owned) become standalone module items
+        // when their training cell is filled in.
         const cellVal = cr.rawRow[pc.colIndex];
         if (!isNumericCell(cellVal)) continue;
         items.push({
