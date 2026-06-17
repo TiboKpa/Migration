@@ -10,6 +10,7 @@ const trainingMatrixRoutes = require('./routes/trainingMatrix');
 const templateRoutes = require('./routes/templates');
 const generationRoutes = require('./routes/generation');
 const campaignRoutes = require('./routes/campaigns');
+const roleMatrixRoutes = require('./routes/roleMatrix');
 
 const app = express();
 app.use(cors());
@@ -24,6 +25,7 @@ app.use('/api/projects', trainingMatrixRoutes);
 app.use('/api/projects', templateRoutes);
 app.use('/api/projects', generationRoutes);
 app.use('/api/projects', campaignRoutes);
+app.use('/api/projects', roleMatrixRoutes);
 
 const PORT = process.env.PORT || 4000;
 

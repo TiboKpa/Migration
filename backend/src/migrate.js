@@ -125,7 +125,41 @@ async function migrate() {
         status TEXT DEFAULT 'drafted',
         notes TEXT
       );
+
+      CREATE TABLE IF NOT EXISTS role_matrix (
+        id SERIAL PRIMARY KEY,
+        project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        function TEXT NOT NULL,
+        role TEXT NOT NULL,
+        pbom_champion BOOLEAN DEFAULT false,
+        boc_admin BOOLEAN DEFAULT false,
+        boc_member BOOLEAN DEFAULT false,
+        eto_user BOOLEAN DEFAULT false,
+        team_manager BOOLEAN DEFAULT false,
+        concatenate TEXT NOT NULL,
+        pdm_role TEXT,
+        tlg_group TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(project_id, concatenate)
+      );
     `);
+
+    // Add unique constraint to training_profiles if not already present
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'training_profiles_project_name_unique'
+        ) THEN
+          ALTER TABLE training_profiles
+            ADD CONSTRAINT training_profiles_project_name_unique
+            UNIQUE (project_id, profile_name);
+        END IF;
+      END$$;
+    `);
+
     console.log('Database schema ready');
   } catch (err) {
     console.error('Migration failed:', err.message);
