@@ -1,6 +1,5 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Outlet, NavLink, useParams, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
 import client from '../api/client';
 
 const navItems = [
@@ -11,16 +10,41 @@ const navItems = [
   { to: 'templates', label: 'Templates' },
   { to: 'generate', label: 'Mail Generation' },
   { to: 'campaigns', label: 'Campaign History' },
-  { to: 'settings', label: 'Settings' }
+  { to: 'settings', label: 'Settings' },
 ];
 
 export default function ProjectLayout() {
   const { projectId } = useParams();
   const navigate = useNavigate();
-  const { data: project } = useQuery({
-    queryKey: ['project', projectId],
-    queryFn: () => client.get(`/projects/${projectId}`).then(r => r.data)
-  });
+  const [project, setProject] = React.useState(null);
+  const [checking, setChecking] = React.useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setChecking(true);
+    client
+      .get(`/projects/${projectId}`)
+      .then(r => { if (!cancelled) { setProject(r.data); setChecking(false); } })
+      .catch(err => {
+        if (cancelled) return;
+        const status = err.response?.status;
+        if (status === 404 || status === 403 || status === 400) {
+          navigate('/', { replace: true, state: { flash: 'This project does not exist.' } });
+        } else {
+          // Network or server error -- still redirect so the user is not stuck
+          navigate('/', { replace: true, state: { flash: 'This project does not exist.' } });
+        }
+      });
+    return () => { cancelled = true; };
+  }, [projectId, navigate]);
+
+  if (checking) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <span className="text-sm text-slate-400">Loading...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -28,7 +52,7 @@ export default function ProjectLayout() {
         <div className="flex items-center gap-3">
           <button onClick={() => navigate('/')} className="text-slate-400 hover:text-slate-700 text-sm">Dashboard</button>
           <span className="text-slate-300">/</span>
-          <span className="text-sm font-semibold text-slate-800">{project?.project_name || 'Loading...'}</span>
+          <span className="text-sm font-semibold text-slate-800">{project?.project_name}</span>
         </div>
         <span className="text-xs text-slate-400">{project?.plant_name} - {project?.application_name}</span>
       </header>
