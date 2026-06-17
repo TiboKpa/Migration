@@ -1,4 +1,4 @@
-# Migration - Training Matrix Web App
+# Migration - Web App
 
 A multi-project web application for managing PDM migration training communications.
 It lets you build a full training catalogue (modules, curricula, trainings) and generate
