@@ -1,7 +1,12 @@
 import axios from 'axios';
 
+function getApiUrl() {
+  if (window.__ENV__?.API_URL) return window.__ENV__.API_URL + '/api';
+  return import.meta.env.VITE_API_URL || '/api';
+}
+
 const client = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || '/api'
+  baseURL: getApiUrl()
 });
 
 client.interceptors.request.use(config => {
@@ -15,6 +20,7 @@ client.interceptors.response.use(
   err => {
     if (err.response?.status === 401) {
       localStorage.removeItem('token');
+      localStorage.removeItem('user');
       window.location.href = '/login';
     }
     return Promise.reject(err);

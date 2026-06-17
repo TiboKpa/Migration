@@ -52,7 +52,7 @@ services:
     container_name: migration_frontend
     restart: unless-stopped
     environment:
-      VITE_API_URL: ${VITE_API_URL}
+      API_URL: ${API_URL}
     ports:
       - "${FRONTEND_PORT:-3000}:80"
     depends_on:
