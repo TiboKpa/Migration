@@ -16,6 +16,18 @@ function durationLabel(minutes) {
   return `${h}h ${m}min`;
 }
 
+// Returns { mandLabel, totalLabel } for a list of curriculum module objects.
+function curriculumDurationParts(modules) {
+  const mandatory = modules
+    .filter(m => (m.requirement || 'mandatory') === 'mandatory')
+    .reduce((s, m) => s + (m.duration_min || 0), 0);
+  const total = modules.reduce((s, m) => s + (m.duration_min || 0), 0);
+  return {
+    mandLabel:  durationLabel(mandatory),
+    totalLabel: total !== mandatory ? durationLabel(total) : null,
+  };
+}
+
 function Badge({ children, color = 'slate' }) {
   const colors = {
     blue:  'bg-blue-50 text-blue-700 border-blue-200',
@@ -24,6 +36,18 @@ function Badge({ children, color = 'slate' }) {
     slate: 'bg-slate-100 text-slate-600 border-slate-200',
   };
   return <span className={`text-xs border rounded-full px-2 py-0.5 ${colors[color]}`}>{children}</span>;
+}
+
+// Inline duration display: green mandatory + slate total (when different).
+function DurationInline({ modules }) {
+  const { mandLabel, totalLabel } = curriculumDurationParts(modules);
+  if (!mandLabel && !totalLabel) return null;
+  return (
+    <span className="flex items-center gap-2">
+      {mandLabel  && <span className="text-xs text-green-600">{mandLabel} mandatory</span>}
+      {totalLabel && <span className="text-xs text-slate-400">{totalLabel} total</span>}
+    </span>
+  );
 }
 
 function InlineField({ label, value, onChange, type = 'text', min }) {
@@ -140,23 +164,6 @@ function DraggableList({ items, onReorder, renderItem }) {
           {renderItem(item, idx)}
         </div>
       ))}
-    </div>
-  );
-}
-
-// ── Duration totals helper ────────────────────────────────────────────────────
-function CurriculumDurationBar({ modules }) {
-  const mandatory = modules
-    .filter(m => (m.requirement || 'mandatory') === 'mandatory')
-    .reduce((s, m) => s + (m.duration_min || 0), 0);
-  const total = modules.reduce((s, m) => s + (m.duration_min || 0), 0);
-  const mandLabel  = durationLabel(mandatory);
-  const totalLabel = durationLabel(total);
-  if (!mandLabel && !totalLabel) return null;
-  return (
-    <div className="flex gap-3 mt-1">
-      {mandLabel  && <span className="text-xs text-green-600">{mandLabel} mandatory</span>}
-      {totalLabel && total !== mandatory && <span className="text-xs text-slate-400">{totalLabel} total</span>}
     </div>
   );
 }
@@ -427,6 +434,7 @@ function CurriculaTab({ projectId }) {
 
           return (
             <div key={cur.id} className="border rounded-xl overflow-hidden bg-white">
+              {/* Header row: title+badges on the left, duration+actions on the right */}
               <div className="flex items-center justify-between px-4 py-3 bg-slate-50">
                 {editingId === cur.id ? (
                   <div className="flex items-center gap-2 flex-1">
@@ -448,16 +456,16 @@ function CurriculaTab({ projectId }) {
                   </div>
                 ) : (
                   <>
+                    {/* Clickable expand area */}
                     <button onClick={() => setOpenId(isOpen ? null : cur.id)}
-                      className="flex flex-col items-start gap-0.5 flex-1 text-left min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-slate-800 truncate">{cur.title}</span>
-                        {cur.content_id && <Badge color="blue">{cur.content_id}</Badge>}
-                        <Badge color="slate">{sortedMods.length} module{sortedMods.length !== 1 ? 's' : ''}</Badge>
-                      </div>
-                      <CurriculumDurationBar modules={sortedMods} />
+                      className="flex items-center gap-2 flex-1 text-left min-w-0 truncate">
+                      <span className="text-sm font-semibold text-slate-800 truncate">{cur.title}</span>
+                      {cur.content_id && <Badge color="blue">{cur.content_id}</Badge>}
+                      <Badge color="slate">{sortedMods.length} module{sortedMods.length !== 1 ? 's' : ''}</Badge>
                     </button>
-                    <div className="flex gap-2 items-center shrink-0">
+                    {/* Right side: duration + actions */}
+                    <div className="flex items-center gap-3 shrink-0 ml-3">
+                      <DurationInline modules={sortedMods} />
                       <button onClick={() => { setEditingId(cur.id); setEditForm({ title: cur.title, content_id: cur.content_id || '' }); }}
                         className="text-xs text-slate-400 hover:text-slate-700">Edit</button>
                       <button onClick={() => delCurriculum(cur.id)}
@@ -679,11 +687,9 @@ function TrainingsTab({ projectId }) {
 
   const orderedItems = detail?.ordered_items || [];
 
-  // IDs already used as standalone items in this training
   const standaloneModuleIds = new Set(
     orderedItems.filter(i => i.kind === 'module').map(i => i.module_id)
   );
-  // IDs of modules that live inside a curriculum in this training (for labelling only)
   const inCurriculumModuleIds = new Set(
     orderedItems
       .filter(i => i.kind === 'curriculum')
@@ -693,11 +699,9 @@ function TrainingsTab({ projectId }) {
     orderedItems.filter(i => i.kind === 'curriculum').map(i => i.curriculum_id)
   );
 
-  // For the module dropdown: only exclude modules already added as standalone.
-  // Modules that are only inside a curriculum remain available and get a label.
-  const availableModules = allModules.filter(m => !standaloneModuleIds.has(m.id));
+  const availableModules   = allModules.filter(m => !standaloneModuleIds.has(m.id));
   const availableCurricula = allCurricula.filter(c => !usedCurriculumIds.has(c.id));
-  const availableForAdd = newItem.type === 'curriculum' ? availableCurricula : availableModules;
+  const availableForAdd    = newItem.type === 'curriculum' ? availableCurricula : availableModules;
 
   return (
     <div className="flex gap-6 flex-1 min-h-0">
@@ -879,15 +883,18 @@ function TrainingsTab({ projectId }) {
                       return (
                         <details className="border rounded-xl overflow-hidden mb-1" open>
                           <summary className="flex items-center justify-between px-4 py-2.5 bg-slate-50 cursor-pointer list-none">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-1 min-w-0">
                               <span className="text-slate-300 cursor-grab select-none px-1" title="Drag to reorder">&#8597;</span>
                               <span className="text-xs text-slate-400 w-5 text-right shrink-0">{item.sequence_order}</span>
-                              <span className="text-sm font-semibold text-slate-700">{item.title}</span>
+                              <span className="text-sm font-semibold text-slate-700 truncate">{item.title}</span>
                               {item.content_id && <Badge color="blue">{item.content_id}</Badge>}
                               <Badge color="slate">{sortedMods.length} module{sortedMods.length !== 1 ? 's' : ''}</Badge>
                             </div>
-                            <button onClick={e => { e.preventDefault(); removeItem(item.playlist_item_id); }}
-                              className="text-xs text-red-300 hover:text-red-500">Remove</button>
+                            <div className="flex items-center gap-3 shrink-0 ml-3">
+                              <DurationInline modules={sortedMods} />
+                              <button onClick={e => { e.preventDefault(); removeItem(item.playlist_item_id); }}
+                                className="text-xs text-red-300 hover:text-red-500">Remove</button>
+                            </div>
                           </summary>
                           <div className="px-4 py-2">
                             {sortedMods.length === 0 && <p className="text-xs text-slate-400">No modules in this curriculum.</p>}
@@ -915,6 +922,7 @@ function TrainingsTab({ projectId }) {
                         </details>
                       );
                     }
+                    // Standalone module row
                     return (
                       <div className="border rounded-xl bg-white flex items-center justify-between px-4 py-2.5 mb-1">
                         <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -924,7 +932,7 @@ function TrainingsTab({ projectId }) {
                           {item.content_id && <Badge color="blue">{item.content_id}</Badge>}
                           <Badge color="slate">Module</Badge>
                         </div>
-                        <div className="flex items-center gap-2 shrink-0">
+                        <div className="flex items-center gap-3 shrink-0">
                           {item.duration_min > 0 && <span className="text-xs text-slate-400">{durationLabel(item.duration_min)}</span>}
                           <button onClick={() => removeItem(item.playlist_item_id)}
                             className="text-xs text-red-300 hover:text-red-500">Remove</button>
