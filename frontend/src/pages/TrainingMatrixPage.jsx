@@ -677,13 +677,27 @@ function TrainingsTab({ projectId }) {
   const primary       = playlists.filter(p => !p.is_complementary);
   const complementary = playlists.filter(p => p.is_complementary);
 
-  const orderedItems      = detail?.ordered_items || [];
-  const usedCurriculumIds = new Set(orderedItems.filter(i => i.kind === 'curriculum').map(i => i.curriculum_id));
-  const usedModuleIds     = new Set(orderedItems.filter(i => i.kind === 'module').map(i => i.module_id));
+  const orderedItems = detail?.ordered_items || [];
 
-  const availableForAdd = newItem.type === 'curriculum'
-    ? allCurricula.filter(c => !usedCurriculumIds.has(c.id))
-    : allModules.filter(m => !usedModuleIds.has(m.id));
+  // IDs already used as standalone items in this training
+  const standaloneModuleIds = new Set(
+    orderedItems.filter(i => i.kind === 'module').map(i => i.module_id)
+  );
+  // IDs of modules that live inside a curriculum in this training (for labelling only)
+  const inCurriculumModuleIds = new Set(
+    orderedItems
+      .filter(i => i.kind === 'curriculum')
+      .flatMap(i => (i.modules || []).map(m => m.module_id))
+  );
+  const usedCurriculumIds = new Set(
+    orderedItems.filter(i => i.kind === 'curriculum').map(i => i.curriculum_id)
+  );
+
+  // For the module dropdown: only exclude modules already added as standalone.
+  // Modules that are only inside a curriculum remain available and get a label.
+  const availableModules = allModules.filter(m => !standaloneModuleIds.has(m.id));
+  const availableCurricula = allCurricula.filter(c => !usedCurriculumIds.has(c.id));
+  const availableForAdd = newItem.type === 'curriculum' ? availableCurricula : availableModules;
 
   return (
     <div className="flex gap-6 flex-1 min-h-0">
@@ -838,7 +852,11 @@ function TrainingsTab({ projectId }) {
                           value={newItem.id}
                           onChange={e => setNewItem(n => ({ ...n, id: e.target.value }))}>
                           <option value="">Select...</option>
-                          {availableForAdd.map(x => <option key={x.id} value={x.id}>{x.title}</option>)}
+                          {availableForAdd.map(x => (
+                            <option key={x.id} value={x.id}>
+                              {x.title}{newItem.type === 'module' && inCurriculumModuleIds.has(x.id) ? ' (in curriculum)' : ''}
+                            </option>
+                          ))}
                         </select>
                       </div>
                       <InlineField label="Position (blank = end)" type="number" min="1"
