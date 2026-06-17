@@ -3,6 +3,11 @@ import { useParams } from 'react-router-dom';
 import client from '../api/client';
 import { parseTrainingPathFlat } from '../utils/parseTrainingPathFlat';
 
+// ── Reorder confirmation preference stored in localStorage ───────────────────
+const REORDER_SKIP_KEY = 'reorder_confirm_skip';
+function getSkipReorderConfirm() { return localStorage.getItem(REORDER_SKIP_KEY) === 'true'; }
+function setSkipReorderConfirm() { localStorage.setItem(REORDER_SKIP_KEY, 'true'); }
+
 function durationLabel(minutes) {
   if (!minutes) return '0 min';
   const h = Math.floor(minutes / 60);
@@ -56,7 +61,103 @@ function FormBox({ title, children, onSave, onCancel, saveDisabled }) {
   );
 }
 
-// ── Modules tab ───────────────────────────────────────────────────────────────────
+// ── Reorder toast ─────────────────────────────────────────────────────────────
+// Shows a bottom-right toast asking the user to confirm a reorder.
+// If the user previously ticked "don't ask again", the callback fires immediately.
+function useReorderToast() {
+  const [toast, setToast] = useState(null); // { label, onConfirm, skipChecked }
+
+  function requestReorder(label, onConfirm) {
+    if (getSkipReorderConfirm()) { onConfirm(); return; }
+    setToast({ label, onConfirm, skipChecked: false });
+  }
+
+  function confirm() {
+    if (toast?.skipChecked) setSkipReorderConfirm();
+    toast?.onConfirm();
+    setToast(null);
+  }
+
+  function dismiss() { setToast(null); }
+
+  const ToastUI = toast ? (
+    <div className="fixed bottom-6 right-6 z-50 bg-white border shadow-lg rounded-xl p-4 w-80 flex flex-col gap-3">
+      <p className="text-sm font-semibold text-slate-800">Confirm reorder</p>
+      <p className="text-sm text-slate-600">{toast.label}</p>
+      <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer select-none">
+        <input type="checkbox" checked={toast.skipChecked}
+          onChange={e => setToast(t => ({ ...t, skipChecked: e.target.checked }))}
+          className="rounded" />
+        Do not ask again
+      </label>
+      <div className="flex gap-2">
+        <button onClick={confirm}
+          className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 flex-1">
+          Confirm
+        </button>
+        <button onClick={dismiss}
+          className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">
+          Cancel
+        </button>
+      </div>
+    </div>
+  ) : null;
+
+  return { requestReorder, ToastUI };
+}
+
+// ── Drag-to-reorder list ──────────────────────────────────────────────────────
+// Generic component. items: [{ id, label, sublabel? }]
+// onReorder(id, newIndex0based) called after drop.
+function DraggableList({ items, onReorder, renderItem }) {
+  const [dragIdx, setDragIdx]   = useState(null);
+  const [overIdx, setOverIdx]   = useState(null);
+  const listRef                 = useRef();
+
+  function handleDragStart(e, idx) {
+    setDragIdx(idx);
+    e.dataTransfer.effectAllowed = 'move';
+    // Minimal ghost
+    e.dataTransfer.setDragImage(e.currentTarget, 12, 12);
+  }
+
+  function handleDragEnter(idx) {
+    if (idx !== dragIdx) setOverIdx(idx);
+  }
+
+  function handleDrop(e, idx) {
+    e.preventDefault();
+    if (dragIdx === null || dragIdx === idx) { reset(); return; }
+    onReorder(dragIdx, idx);
+    reset();
+  }
+
+  function reset() { setDragIdx(null); setOverIdx(null); }
+
+  return (
+    <div ref={listRef} onDragOver={e => e.preventDefault()}>
+      {items.map((item, idx) => (
+        <div
+          key={item.id}
+          draggable
+          onDragStart={e => handleDragStart(e, idx)}
+          onDragEnter={() => handleDragEnter(idx)}
+          onDrop={e => handleDrop(e, idx)}
+          onDragEnd={reset}
+          className={`transition-all ${
+            overIdx === idx && dragIdx !== idx
+              ? 'border-t-2 border-blue-400'
+              : ''
+          } ${dragIdx === idx ? 'opacity-40' : ''}`}
+        >
+          {renderItem(item, idx)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Modules tab ───────────────────────────────────────────────────────────────
 
 function ModulesTab({ projectId }) {
   const [modules, setModules]     = useState([]);
@@ -182,7 +283,7 @@ function ModulesTab({ projectId }) {
   );
 }
 
-// ── Curricula tab ─────────────────────────────────────────────────────────────────
+// ── Curricula tab ─────────────────────────────────────────────────────────────
 
 function CurriculaTab({ projectId }) {
   const [curricula, setCurricula]     = useState([]);
@@ -193,6 +294,7 @@ function CurriculaTab({ projectId }) {
   const [editForm, setEditForm]       = useState({});
   const [openId, setOpenId]           = useState(null);
   const [addModState, setAddModState] = useState({});
+  const { requestReorder, ToastUI }   = useReorderToast();
 
   const loadAll = useCallback(async () => {
     const [cRes, mRes] = await Promise.all([
@@ -239,7 +341,6 @@ function CurriculaTab({ projectId }) {
     if (!state?.module_id) return;
     const cur = curricula.find(c => c.id === curId);
     const existingOrders = (cur?.modules || []).map(m => m.sequence_order);
-    // Default: next available slot
     let pos = parseInt(state.sequence_order);
     if (!pos || pos < 1) {
       pos = existingOrders.length > 0 ? Math.max(...existingOrders) + 1 : 1;
@@ -258,8 +359,28 @@ function CurriculaTab({ projectId }) {
     loadAll();
   }
 
+  function handleCurriculumModuleReorder(cur, fromIdx, toIdx) {
+    const modules = [...(cur.modules || [])].sort((a, b) => a.sequence_order - b.sequence_order);
+    const item    = modules[fromIdx];
+    const target  = modules[toIdx];
+    const oldOrder = item.sequence_order;
+    const newOrder = target.sequence_order;
+    const title    = item.module_title || item.title || 'module';
+    requestReorder(
+      `Move "${title}" from position ${oldOrder} to ${newOrder}.`,
+      async () => {
+        await client.patch(
+          `/projects/${projectId}/curricula/${cur.id}/modules/${item.module_id}/reorder`,
+          { new_order: newOrder }
+        );
+        loadAll();
+      }
+    );
+  }
+
   return (
     <div>
+      {ToastUI}
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold text-slate-700">{curricula.length} curriculum{curricula.length !== 1 ? 'a' : ''}</h3>
         <div className="flex gap-2">
@@ -298,6 +419,7 @@ function CurriculaTab({ projectId }) {
           const usedIds   = new Set((cur.modules || []).map(m => m.module_id));
           const available = allModules.filter(m => !usedIds.has(m.id));
           const maxOrder  = (cur.modules || []).reduce((mx, m) => Math.max(mx, m.sequence_order || 0), 0);
+          const sortedMods = [...(cur.modules || [])].sort((a, b) => a.sequence_order - b.sequence_order);
 
           return (
             <div key={cur.id} className="border rounded-xl overflow-hidden bg-white">
@@ -340,22 +462,30 @@ function CurriculaTab({ projectId }) {
 
               {isOpen && (
                 <div className="px-4 py-3">
-                  {(cur.modules || []).length === 0 && (
+                  {sortedMods.length === 0 && (
                     <p className="text-xs text-slate-400 mb-3">No modules yet.</p>
                   )}
-                  {(cur.modules || []).map((item, idx) => (
-                    <div key={item.id} className={`flex items-center justify-between py-1.5 ${idx < cur.modules.length - 1 ? 'border-b' : ''}`}>
-                      <div className="flex items-center gap-2 flex-1 min-w-0">
-                        <span className="text-xs text-slate-400 w-5 text-right shrink-0">{item.sequence_order}</span>
-                        <span className="text-sm text-slate-700 truncate">{item.module_title || item.title}</span>
+
+                  <DraggableList
+                    items={sortedMods.map(m => ({ id: m.module_id, ...m }))}
+                    onReorder={(fromIdx, toIdx) => handleCurriculumModuleReorder(cur, fromIdx, toIdx)}
+                    renderItem={(item, idx) => (
+                      <div className={`flex items-center justify-between py-1.5 ${
+                        idx < sortedMods.length - 1 ? 'border-b' : ''
+                      }`}>
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <span className="text-slate-300 cursor-grab select-none px-1" title="Drag to reorder">&#8597;</span>
+                          <span className="text-xs text-slate-400 w-5 text-right shrink-0">{item.sequence_order}</span>
+                          <span className="text-sm text-slate-700 truncate">{item.module_title || item.title}</span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <Badge color={item.requirement === 'mandatory' ? 'green' : 'amber'}>{item.requirement}</Badge>
+                          <button onClick={() => removeModuleFromCurriculum(cur.id, item.module_id)}
+                            className="text-xs text-red-300 hover:text-red-500">Remove</button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <Badge color={item.requirement === 'mandatory' ? 'green' : 'amber'}>{item.requirement}</Badge>
-                        <button onClick={() => removeModuleFromCurriculum(cur.id, item.module_id)}
-                          className="text-xs text-red-300 hover:text-red-500">Remove</button>
-                      </div>
-                    </div>
-                  ))}
+                    )}
+                  />
 
                   <div className="mt-3 pt-3 border-t flex items-end gap-2">
                     <div className="flex-1">
@@ -399,7 +529,7 @@ function CurriculaTab({ projectId }) {
   );
 }
 
-// ── Trainings tab ─────────────────────────────────────────────────────────────────
+// ── Trainings tab ─────────────────────────────────────────────────────────────
 
 function TrainingsTab({ projectId }) {
   const [playlists, setPlaylists]         = useState([]);
@@ -414,6 +544,7 @@ function TrainingsTab({ projectId }) {
   const [allCurricula, setAllCurricula]   = useState([]);
   const [showAddItem, setShowAddItem]     = useState(false);
   const [newItem, setNewItem]             = useState({ type: 'curriculum', id: '', sequence_order: '' });
+  const { requestReorder, ToastUI }       = useReorderToast();
 
   const loadList = useCallback(async () => {
     const r = await client.get(`/projects/${projectId}/playlists`);
@@ -494,6 +625,45 @@ function TrainingsTab({ projectId }) {
     loadDetail(selected);
   }
 
+  function handlePlaylistItemReorder(fromIdx, toIdx) {
+    const items    = detail?.ordered_items || [];
+    const item     = items[fromIdx];
+    const target   = items[toIdx];
+    const oldOrder = item.sequence_order;
+    const newOrder = target.sequence_order;
+    const label    = item.title || (item.kind === 'module' ? 'module' : 'curriculum');
+    requestReorder(
+      `Move "${label}" from position ${oldOrder} to ${newOrder}.`,
+      async () => {
+        await client.patch(
+          `/projects/${projectId}/playlists/${selected}/items/${item.playlist_item_id}/reorder`,
+          { new_order: newOrder }
+        );
+        loadDetail(selected);
+      }
+    );
+  }
+
+  // Reorder modules inside a curriculum that is shown expanded inside the playlist detail
+  function handleCurriculumModuleReorderInPlaylist(cur, fromIdx, toIdx) {
+    const mods     = [...(cur.modules || [])].sort((a, b) => a.sequence_order - b.sequence_order);
+    const item     = mods[fromIdx];
+    const target   = mods[toIdx];
+    const oldOrder = item.sequence_order;
+    const newOrder = target.sequence_order;
+    const title    = item.module_title || item.title || 'module';
+    requestReorder(
+      `Move "${title}" from position ${oldOrder} to ${newOrder} inside "${cur.title}".`,
+      async () => {
+        await client.patch(
+          `/projects/${projectId}/curricula/${cur.curriculum_id}/modules/${item.module_id}/reorder`,
+          { new_order: newOrder }
+        );
+        loadDetail(selected);
+      }
+    );
+  }
+
   const primary       = playlists.filter(p => !p.is_complementary);
   const complementary = playlists.filter(p => p.is_complementary);
 
@@ -508,6 +678,7 @@ function TrainingsTab({ projectId }) {
 
   return (
     <div className="flex gap-6 flex-1 min-h-0">
+      {ToastUI}
       {/* Sidebar */}
       <div className="w-64 shrink-0 flex flex-col gap-4 overflow-y-auto">
         <div>
@@ -674,14 +845,18 @@ function TrainingsTab({ projectId }) {
                   <p className="text-xs text-slate-400">No items yet.</p>
                 )}
 
-                {/* Unified ordered list: curricula and standalone modules mixed by sequence_order */}
-                <div className="flex flex-col gap-2">
-                  {orderedItems.map(item => {
+                {/* Unified drag-to-reorder list of playlist items */}
+                <DraggableList
+                  items={orderedItems.map(i => ({ id: i.playlist_item_id, ...i }))}
+                  onReorder={handlePlaylistItemReorder}
+                  renderItem={(item) => {
                     if (item.kind === 'curriculum') {
+                      const sortedMods = [...(item.modules || [])].sort((a, b) => a.sequence_order - b.sequence_order);
                       return (
-                        <details key={item.playlist_item_id} className="border rounded-xl overflow-hidden" open>
+                        <details className="border rounded-xl overflow-hidden mb-1" open>
                           <summary className="flex items-center justify-between px-4 py-2.5 bg-slate-50 cursor-pointer list-none">
                             <div className="flex items-center gap-2">
+                              <span className="text-slate-300 cursor-grab select-none px-1" title="Drag to reorder">&#8597;</span>
                               <span className="text-xs text-slate-400 w-5 text-right shrink-0">{item.sequence_order}</span>
                               <span className="text-sm font-semibold text-slate-700">{item.title}</span>
                               {item.content_id && <Badge color="blue">{item.content_id}</Badge>}
@@ -691,31 +866,36 @@ function TrainingsTab({ projectId }) {
                               className="text-xs text-red-300 hover:text-red-500">Remove</button>
                           </summary>
                           <div className="px-4 py-2">
-                            {(item.modules || []).length === 0 && <p className="text-xs text-slate-400">No modules in this curriculum.</p>}
-                            {(item.modules || []).map((mod, idx) => (
-                              <div key={mod.id}
-                                className={`flex items-center justify-between py-1.5 ${idx < item.modules.length - 1 ? 'border-b' : ''}`}>
-                                <div className="flex items-center gap-2 flex-1 min-w-0">
-                                  <span className="text-xs text-slate-400 w-5 text-right shrink-0">{mod.sequence_order}</span>
-                                  <span className="text-sm text-slate-700 truncate">{mod.module_title || mod.title}</span>
-                                  {mod.module_content_id && <Badge color="blue">{mod.module_content_id}</Badge>}
+                            {sortedMods.length === 0 && <p className="text-xs text-slate-400">No modules in this curriculum.</p>}
+                            <DraggableList
+                              items={sortedMods.map(m => ({ id: m.module_id, ...m }))}
+                              onReorder={(fi, ti) => handleCurriculumModuleReorderInPlaylist(item, fi, ti)}
+                              renderItem={(mod, idx) => (
+                                <div className={`flex items-center justify-between py-1.5 ${
+                                  idx < sortedMods.length - 1 ? 'border-b' : ''
+                                }`}>
+                                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                                    <span className="text-slate-300 cursor-grab select-none px-1" title="Drag to reorder">&#8597;</span>
+                                    <span className="text-xs text-slate-400 w-5 text-right shrink-0">{mod.sequence_order}</span>
+                                    <span className="text-sm text-slate-700 truncate">{mod.module_title || mod.title}</span>
+                                    {mod.module_content_id && <Badge color="blue">{mod.module_content_id}</Badge>}
+                                  </div>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    {mod.duration_min > 0 && <span className="text-xs text-slate-400">{durationLabel(mod.duration_min)}</span>}
+                                    <Badge color={mod.requirement === 'mandatory' ? 'green' : 'amber'}>{mod.requirement}</Badge>
+                                  </div>
                                 </div>
-                                <div className="flex items-center gap-2 shrink-0">
-                                  {mod.duration_min > 0 && <span className="text-xs text-slate-400">{durationLabel(mod.duration_min)}</span>}
-                                  <Badge color={mod.requirement === 'mandatory' ? 'green' : 'amber'}>{mod.requirement}</Badge>
-                                </div>
-                              </div>
-                            ))}
+                              )}
+                            />
                           </div>
                         </details>
                       );
                     }
-
                     // Standalone module
                     return (
-                      <div key={item.playlist_item_id}
-                        className="border rounded-xl bg-white flex items-center justify-between px-4 py-2.5">
+                      <div className="border rounded-xl bg-white flex items-center justify-between px-4 py-2.5 mb-1">
                         <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <span className="text-slate-300 cursor-grab select-none px-1" title="Drag to reorder">&#8597;</span>
                           <span className="text-xs text-slate-400 w-5 text-right shrink-0">{item.sequence_order}</span>
                           <span className="text-sm text-slate-700 truncate">{item.title}</span>
                           {item.content_id && <Badge color="blue">{item.content_id}</Badge>}
@@ -728,8 +908,8 @@ function TrainingsTab({ projectId }) {
                         </div>
                       </div>
                     );
-                  })}
-                </div>
+                  }}
+                />
               </div>
             )}
           </div>
@@ -739,7 +919,7 @@ function TrainingsTab({ projectId }) {
   );
 }
 
-// ── Page shell ───────────────────────────────────────────────────────────────────
+// ── Page shell ────────────────────────────────────────────────────────────────
 
 const TABS = ['Modules', 'Curricula', 'Trainings'];
 

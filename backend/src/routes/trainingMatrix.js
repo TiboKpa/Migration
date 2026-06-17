@@ -5,11 +5,6 @@ const router = express.Router();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/**
- * Insert-and-shift for curriculum_module_items.
- * If `pos` is already taken, shift all items at >= pos up by 1 first.
- * pos is clamped to minimum 1.
- */
 async function shiftAndInsertCurriculumModule(db, curriculumId, moduleId, requirement, pos) {
   const safePos = Math.max(1, pos);
   await db.query(
@@ -27,12 +22,6 @@ async function shiftAndInsertCurriculumModule(db, curriculumId, moduleId, requir
   );
 }
 
-/**
- * Insert-and-shift for playlist_items.
- * If `pos` is already taken, shift all items at >= pos up by 1 first.
- * pos is clamped to minimum 1.
- * During import we pass shift=false to preserve the exact xlsx order.
- */
 async function shiftAndInsertPlaylistItem(db, playlistId, curriculumId, moduleId, pos, shift = true) {
   const safePos = Math.max(1, pos);
   if (shift) {
@@ -238,7 +227,6 @@ router.post('/:projectId/curricula/:curriculumId/modules', authenticate, async (
   const db = await pool.connect();
   try {
     await db.query('BEGIN');
-    // If no position given, place at end
     let pos = parseInt(sequence_order);
     if (!pos || pos < 1) {
       const maxR = await db.query(
@@ -250,6 +238,47 @@ router.post('/:projectId/curricula/:curriculumId/modules', authenticate, async (
     await shiftAndInsertCurriculumModule(db, req.params.curriculumId, module_id, requirement || 'mandatory', pos);
     await db.query('COMMIT');
     res.status(201).json({ message: 'Added' });
+  } catch (err) {
+    await db.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally { db.release(); }
+});
+
+// Reorder a module inside a curriculum (move to new sequence_order, shift others)
+router.patch('/:projectId/curricula/:curriculumId/modules/:moduleId/reorder', authenticate, async (req, res) => {
+  const { new_order } = req.body;
+  if (!new_order || new_order < 1) return res.status(400).json({ error: 'new_order >= 1 is required' });
+  const { curriculumId, moduleId } = req.params;
+  const db = await pool.connect();
+  try {
+    await db.query('BEGIN');
+    const cur = await db.query(
+      'SELECT sequence_order FROM curriculum_module_items WHERE curriculum_id=$1 AND module_id=$2',
+      [curriculumId, moduleId]
+    );
+    if (cur.rows.length === 0) { await db.query('ROLLBACK'); return res.status(404).json({ error: 'Item not found' }); }
+    const oldOrder = cur.rows[0].sequence_order;
+    const newOrder = parseInt(new_order);
+    if (oldOrder === newOrder) { await db.query('COMMIT'); return res.json({ old_order: oldOrder, new_order: newOrder }); }
+    if (newOrder > oldOrder) {
+      await db.query(
+        `UPDATE curriculum_module_items SET sequence_order = sequence_order - 1
+         WHERE curriculum_id=$1 AND sequence_order > $2 AND sequence_order <= $3`,
+        [curriculumId, oldOrder, newOrder]
+      );
+    } else {
+      await db.query(
+        `UPDATE curriculum_module_items SET sequence_order = sequence_order + 1
+         WHERE curriculum_id=$1 AND sequence_order >= $2 AND sequence_order < $3`,
+        [curriculumId, newOrder, oldOrder]
+      );
+    }
+    await db.query(
+      'UPDATE curriculum_module_items SET sequence_order=$1 WHERE curriculum_id=$2 AND module_id=$3',
+      [newOrder, curriculumId, moduleId]
+    );
+    await db.query('COMMIT');
+    res.json({ old_order: oldOrder, new_order: newOrder });
   } catch (err) {
     await db.query('ROLLBACK');
     res.status(500).json({ error: err.message });
@@ -320,7 +349,6 @@ router.get('/:projectId/playlists/:playlistId', authenticate, async (req, res) =
       [curriculumIds]
     )).rows;
 
-    // Build a unified ordered list of all playlist items (curricula + standalone modules)
     const orderedItems = items.map(i => {
       if (i.curriculum_id) {
         return {
@@ -344,8 +372,7 @@ router.get('/:projectId/playlists/:playlistId', authenticate, async (req, res) =
       };
     });
 
-    // Keep legacy fields for backward compat
-    const curricula = orderedItems.filter(x => x.kind === 'curriculum');
+    const curricula         = orderedItems.filter(x => x.kind === 'curriculum');
     const standalone_modules = orderedItems.filter(x => x.kind === 'module');
 
     const refs = (await pool.query(
@@ -431,6 +458,47 @@ router.post('/:projectId/playlists/:playlistId/items', authenticate, async (req,
   } finally { db.release(); }
 });
 
+// Reorder a playlist item (move to new sequence_order, shift others)
+router.patch('/:projectId/playlists/:playlistId/items/:itemId/reorder', authenticate, async (req, res) => {
+  const { new_order } = req.body;
+  if (!new_order || new_order < 1) return res.status(400).json({ error: 'new_order >= 1 is required' });
+  const { playlistId, itemId } = req.params;
+  const db = await pool.connect();
+  try {
+    await db.query('BEGIN');
+    const cur = await db.query(
+      'SELECT sequence_order FROM playlist_items WHERE id=$1 AND playlist_id=$2',
+      [itemId, playlistId]
+    );
+    if (cur.rows.length === 0) { await db.query('ROLLBACK'); return res.status(404).json({ error: 'Item not found' }); }
+    const oldOrder = cur.rows[0].sequence_order;
+    const newOrder = parseInt(new_order);
+    if (oldOrder === newOrder) { await db.query('COMMIT'); return res.json({ old_order: oldOrder, new_order: newOrder }); }
+    if (newOrder > oldOrder) {
+      await db.query(
+        `UPDATE playlist_items SET sequence_order = sequence_order - 1
+         WHERE playlist_id=$1 AND sequence_order > $2 AND sequence_order <= $3`,
+        [playlistId, oldOrder, newOrder]
+      );
+    } else {
+      await db.query(
+        `UPDATE playlist_items SET sequence_order = sequence_order + 1
+         WHERE playlist_id=$1 AND sequence_order >= $2 AND sequence_order < $3`,
+        [playlistId, newOrder, oldOrder]
+      );
+    }
+    await db.query(
+      'UPDATE playlist_items SET sequence_order=$1 WHERE id=$2 AND playlist_id=$3',
+      [newOrder, itemId, playlistId]
+    );
+    await db.query('COMMIT');
+    res.json({ old_order: oldOrder, new_order: newOrder });
+  } catch (err) {
+    await db.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally { db.release(); }
+});
+
 router.delete('/:projectId/playlists/:playlistId/items/:itemId', authenticate, async (req, res) => {
   try {
     await pool.query('DELETE FROM playlist_items WHERE id=$1 AND playlist_id=$2', [req.params.itemId, req.params.playlistId]);
@@ -447,7 +515,6 @@ router.post('/:projectId/playlists/import', authenticate, async (req, res) => {
   try {
     await db.query('BEGIN');
 
-    // Step 1: upsert modules
     const moduleIdByTitle = new Map();
     for (const mod of modules) {
       if (!mod.title) continue;
@@ -462,7 +529,6 @@ router.post('/:projectId/playlists/import', authenticate, async (req, res) => {
       moduleIdByTitle.set(r.rows[0].title.toLowerCase(), r.rows[0].id);
     }
 
-    // Step 2: upsert curricula + module items (no shift during import — keep xlsx order)
     const curriculumIdByTitle = new Map();
     for (const cur of curricula) {
       if (!cur.title) continue;
@@ -491,7 +557,6 @@ router.post('/:projectId/playlists/import', authenticate, async (req, res) => {
       }
     }
 
-    // Step 3: primary trainings (no shift — preserve xlsx order)
     let importedPlaylists = 0;
     for (const pt of primary_trainings) {
       if (!pt.title) continue;
@@ -522,7 +587,6 @@ router.post('/:projectId/playlists/import', authenticate, async (req, res) => {
       importedPlaylists++;
     }
 
-    // Step 4: complementary trainings
     for (const ct of complementary_trainings) {
       if (!ct.title) continue;
       const r = await db.query(
