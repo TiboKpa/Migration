@@ -87,8 +87,229 @@ function matchCombo(combos, profile) {
   ) || null;
 }
 
+// ---- Reusable single-select panel (radio) ----
+function SingleSelectPanel({ title, placeholder, options, value, onChange, onAddNew }) {
+  const [search, setSearch] = useState('');
+  const [showModal, setShowModal] = useState(false);
+  const [modalSearch, setModalSearch] = useState('');
+  const [modalTemp, setModalTemp] = useState(value);
+
+  const filtered = options.filter(o => o.toLowerCase().includes(search.toLowerCase()));
+  const modalFiltered = options.filter(o => o.toLowerCase().includes(modalSearch.toLowerCase()));
+
+  function openModal() {
+    setModalTemp(value);
+    setModalSearch('');
+    setShowModal(true);
+  }
+
+  function confirmModal() {
+    onChange(modalTemp);
+    setShowModal(false);
+  }
+
+  return (
+    <>
+      <div className="flex flex-col h-full">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">{title}</p>
+        <input
+          className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1"
+          placeholder={placeholder}
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+        <div className="border rounded-lg overflow-y-auto flex-1" style={{ maxHeight: '10rem' }}>
+          {filtered.length === 0 && (
+            <p className="text-xs text-slate-400 text-center py-3">No results</p>
+          )}
+          {filtered.map(opt => (
+            <label key={opt}
+              className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
+                value === opt ? 'bg-indigo-50' : ''
+              }`}>
+              <input
+                type="radio"
+                name={`single-${title}`}
+                checked={value === opt}
+                onChange={() => onChange(value === opt ? '' : opt)}
+                className="rounded"
+              />
+              <span className="text-xs text-slate-700">{opt}</span>
+            </label>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={openModal}
+          className="mt-1.5 w-full border border-dashed border-slate-300 rounded-lg px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50 hover:border-slate-400"
+        >
+          + Add new
+        </button>
+      </div>
+
+      {showModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40" onClick={() => setShowModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm max-h-[80vh] flex flex-col p-5" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
+              <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
+            </div>
+            <p className="text-xs text-slate-400 mb-2">Only one selection allowed.</p>
+            <input
+              className="border rounded-lg px-2 py-1.5 text-sm w-full mb-2"
+              placeholder={placeholder}
+              value={modalSearch}
+              autoFocus
+              onChange={e => setModalSearch(e.target.value)}
+            />
+            <div className="border rounded-lg overflow-y-auto flex-1 mb-3">
+              {modalFiltered.length === 0 && (
+                <p className="text-xs text-slate-400 text-center py-3">No results</p>
+              )}
+              {modalFiltered.map(opt => (
+                <label key={opt}
+                  className={`flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
+                    modalTemp === opt ? 'bg-indigo-50' : ''
+                  }`}>
+                  <input
+                    type="radio"
+                    name={`modal-single-${title}`}
+                    checked={modalTemp === opt}
+                    onChange={() => setModalTemp(modalTemp === opt ? '' : opt)}
+                    className="rounded"
+                  />
+                  <span className="text-sm text-slate-700">{opt}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setShowModal(false)} className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
+              <button onClick={confirmModal} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">Select</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ---- Reusable multi-select panel (checkbox) ----
+function MultiSelectPanel({ title, placeholder, options, value, onChange }) {
+  const [search, setSearch] = useState('');
+  const [showModal, setShowModal] = useState(false);
+  const [modalSearch, setModalSearch] = useState('');
+  const [modalTemp, setModalTemp] = useState([...value]);
+
+  const isSelected = (opt) => value.some(v => v === opt);
+  const isModalSelected = (opt) => modalTemp.some(v => v === opt);
+
+  const filtered = options.filter(o => o.toLowerCase().includes(search.toLowerCase()));
+  const modalFiltered = options.filter(o => o.toLowerCase().includes(modalSearch.toLowerCase()));
+
+  function toggle(opt) {
+    onChange(isSelected(opt) ? value.filter(v => v !== opt) : [...value, opt]);
+  }
+
+  function toggleModal(opt) {
+    setModalTemp(isModalSelected(opt) ? modalTemp.filter(v => v !== opt) : [...modalTemp, opt]);
+  }
+
+  function openModal() {
+    setModalTemp([...value]);
+    setModalSearch('');
+    setShowModal(true);
+  }
+
+  function confirmModal() {
+    onChange([...modalTemp]);
+    setShowModal(false);
+  }
+
+  return (
+    <>
+      <div className="flex flex-col h-full">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">{title}</p>
+        <input
+          className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1"
+          placeholder={placeholder}
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+        <div className="border rounded-lg overflow-y-auto flex-1" style={{ maxHeight: '10rem' }}>
+          {filtered.length === 0 && (
+            <p className="text-xs text-slate-400 text-center py-3">No results</p>
+          )}
+          {filtered.map(opt => (
+            <label key={opt}
+              className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
+                isSelected(opt) ? 'bg-blue-50' : ''
+              }`}>
+              <input
+                type="checkbox"
+                checked={isSelected(opt)}
+                onChange={() => toggle(opt)}
+                className="rounded accent-blue-600"
+              />
+              <span className="text-xs text-slate-700">{opt}</span>
+            </label>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={openModal}
+          className="mt-1.5 w-full border border-dashed border-slate-300 rounded-lg px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50 hover:border-slate-400"
+        >
+          + Add new
+        </button>
+      </div>
+
+      {showModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40" onClick={() => setShowModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm max-h-[80vh] flex flex-col p-5" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
+              <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
+            </div>
+            <p className="text-xs text-slate-400 mb-2">Multiple selections allowed.</p>
+            <input
+              className="border rounded-lg px-2 py-1.5 text-sm w-full mb-2"
+              placeholder={placeholder}
+              value={modalSearch}
+              autoFocus
+              onChange={e => setModalSearch(e.target.value)}
+            />
+            <div className="border rounded-lg overflow-y-auto flex-1 mb-3">
+              {modalFiltered.length === 0 && (
+                <p className="text-xs text-slate-400 text-center py-3">No results</p>
+              )}
+              {modalFiltered.map(opt => (
+                <label key={opt}
+                  className={`flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
+                    isModalSelected(opt) ? 'bg-blue-50' : ''
+                  }`}>
+                  <input
+                    type="checkbox"
+                    checked={isModalSelected(opt)}
+                    onChange={() => toggleModal(opt)}
+                    className="rounded accent-blue-600"
+                  />
+                  <span className="text-sm text-slate-700">{opt}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setShowModal(false)} className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
+              <button onClick={confirmModal} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">Add selected</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ---- Edit Modal ----
-function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
+function EditModal({ entry, profiles, complementaryOptions, uniqueFunctions, uniqueRoles, onSave, onClose }) {
   const allItems = [
     ...complementaryOptions.curricula.map(c => ({ ...c, type: 'curriculum' })),
     ...complementaryOptions.modules.map(m => ({ ...m, type: 'module' })),
@@ -115,7 +336,7 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
   );
   const selectedProfile = profiles.find(p => String(p.id) === form.recommended_training_id) || null;
 
-  // Complementary items search
+  // Complementary items
   function toggleComplementary(item) {
     setForm(f => {
       const exists = f.complementary_items.some(i => i.type === item.type && i.id === item.id);
@@ -128,7 +349,7 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
     });
   }
 
-  function isSelected(item) {
+  function isCompSelected(item) {
     return form.complementary_items.some(i => i.type === item.type && i.id === item.id);
   }
 
@@ -137,41 +358,47 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
     i.title.toLowerCase().includes(itemSearch.toLowerCase())
   );
 
+  // Complementary bool flags as string labels for the MultiSelectPanel
+  const flagOptions = BOOL_FLAGS.map(f => f.label);
+  const selectedFlags = BOOL_FLAGS.filter(f => form[f.key]).map(f => f.label);
+
+  function handleFlagsChange(labels) {
+    const updates = {};
+    BOOL_FLAGS.forEach(f => { updates[f.key] = labels.includes(f.label); });
+    setForm(f => ({ ...f, ...updates }));
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
-      {/* Modal widened to max-w-4xl to fit two columns side by side */}
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-5">
           <h2 className="text-base font-semibold text-slate-800">Edit rule</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
         </div>
 
-        {/* Function + Role */}
-        <div className="grid grid-cols-2 gap-3 mb-4">
-          <div>
-            <label className="text-xs text-slate-500 block mb-1">Function</label>
-            <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={form.function}
-              onChange={e => setForm(f => ({ ...f, function: e.target.value }))} />
-          </div>
-          <div>
-            <label className="text-xs text-slate-500 block mb-1">Role</label>
-            <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={form.role}
-              onChange={e => setForm(f => ({ ...f, role: e.target.value }))} />
-          </div>
-        </div>
-
-        {/* Boolean flags */}
-        <div className="mb-4">
-          <label className="text-xs text-slate-500 block mb-2">Complementary flags</label>
-          <div className="flex flex-wrap gap-4">
-            {BOOL_FLAGS.map(flag => (
-              <label key={flag.key} className="flex items-center gap-1.5 text-sm cursor-pointer">
-                <input type="checkbox" checked={form[flag.key]}
-                  onChange={e => setForm(f => ({ ...f, [flag.key]: e.target.checked }))} className="rounded" />
-                {flag.label}
-              </label>
-            ))}
-          </div>
+        {/* Three-panel: Function / Role / Complementary Info */}
+        <div className="grid grid-cols-3 gap-4 mb-5">
+          <SingleSelectPanel
+            title="Function"
+            placeholder="Search functions..."
+            options={uniqueFunctions}
+            value={form.function}
+            onChange={v => setForm(f => ({ ...f, function: v }))}
+          />
+          <SingleSelectPanel
+            title="Role"
+            placeholder="Search roles..."
+            options={uniqueRoles}
+            value={form.role}
+            onChange={v => setForm(f => ({ ...f, role: v }))}
+          />
+          <MultiSelectPanel
+            title="Complementary Info"
+            placeholder="Search flags..."
+            options={flagOptions}
+            value={selectedFlags}
+            onChange={handleFlagsChange}
+          />
         </div>
 
         {/* PDM Role + TLG */}
@@ -188,7 +415,7 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
           </div>
         </div>
 
-        {/* Primary Training + Complementary side by side */}
+        {/* Primary Training + Complementary trainings side by side */}
         <div className="grid grid-cols-2 gap-4 mb-5">
 
           {/* Left: Recommended Primary Training */}
@@ -262,9 +489,9 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
               {filteredItems.map(item => (
                 <label key={`${item.type}-${item.id}`}
                   className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
-                    isSelected(item) ? 'bg-blue-50' : ''
+                    isCompSelected(item) ? 'bg-blue-50' : ''
                   }`}>
-                  <input type="checkbox" checked={isSelected(item)} onChange={() => toggleComplementary(item)} className="rounded" />
+                  <input type="checkbox" checked={isCompSelected(item)} onChange={() => toggleComplementary(item)} className="rounded" />
                   <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">
                     {item.type === 'curriculum' ? 'CUR' : 'MOD'}
                   </span>
@@ -286,64 +513,6 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
             className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700"
           >Save</button>
         </div>
-      </div>
-    </div>
-  );
-}
-
-// ---- Add Form sub-components ----
-
-// Select-or-new for Function and Role
-function SelectOrNew({ label, value, onChange, options, placeholder }) {
-  const NEW_VAL = '__new__';
-  const isNew = value !== '' && !options.includes(value);
-  const selectVal = isNew ? NEW_VAL : value;
-
-  return (
-    <div>
-      <label className="text-xs text-slate-500 block mb-1">{label}</label>
-      <select
-        className="border rounded-lg px-2 py-1.5 text-sm w-full mb-1"
-        value={selectVal}
-        onChange={e => {
-          if (e.target.value === NEW_VAL) onChange('');
-          else onChange(e.target.value);
-        }}
-      >
-        <option value="">-- Select {label} --</option>
-        {options.map(o => <option key={o} value={o}>{o}</option>)}
-        <option value={NEW_VAL}>Add new...</option>
-      </select>
-      {(selectVal === NEW_VAL || isNew) && (
-        <input
-          className="border rounded-lg px-2 py-1.5 text-sm w-full"
-          placeholder={placeholder}
-          value={isNew ? value : ''}
-          autoFocus
-          onChange={e => onChange(e.target.value)}
-        />
-      )}
-    </div>
-  );
-}
-
-// Complementary info as flag checklist (OR logic — user picks which flags apply)
-function ComplementaryFlagChecklist({ form, setForm }) {
-  return (
-    <div>
-      <label className="text-xs text-slate-500 block mb-2">Complementary Info</label>
-      <div className="border rounded-lg divide-y">
-        {BOOL_FLAGS.map(flag => (
-          <label key={flag.key} className={`flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-slate-50 ${form[flag.key] ? 'bg-blue-50' : ''}`}>
-            <input
-              type="checkbox"
-              checked={form[flag.key]}
-              onChange={e => setForm(f => ({ ...f, [flag.key]: e.target.checked }))}
-              className="rounded accent-blue-600"
-            />
-            <span className="text-sm text-slate-700">{flag.label}</span>
-          </label>
-        ))}
       </div>
     </div>
   );
@@ -436,6 +605,15 @@ export default function RoleMatrixPage() {
     return p ? p.profile_name : null;
   }
 
+  // Add form flag state as string array for MultiSelectPanel
+  const flagOptions = BOOL_FLAGS.map(f => f.label);
+  const formSelectedFlags = BOOL_FLAGS.filter(f => form[f.key]).map(f => f.label);
+  function handleFormFlagsChange(labels) {
+    const updates = {};
+    BOOL_FLAGS.forEach(f => { updates[f.key] = labels.includes(f.label); });
+    setForm(f => ({ ...f, ...updates }));
+  }
+
   return (
     <div className="flex flex-col h-full">
       {editingEntry && (
@@ -443,6 +621,8 @@ export default function RoleMatrixPage() {
           entry={editingEntry}
           profiles={profiles}
           complementaryOptions={complementaryOptions}
+          uniqueFunctions={uniqueFunctions}
+          uniqueRoles={uniqueRoles}
           onSave={(data) => updateMutation.mutate({ id: editingEntry.id, data })}
           onClose={() => setEditingEntry(null)}
         />
@@ -481,27 +661,29 @@ export default function RoleMatrixPage() {
         <div className="bg-slate-50 border rounded-xl p-4 mb-4 shrink-0">
           <h2 className="text-sm font-semibold text-slate-700 mb-3">New rule</h2>
 
-          {/* Function + Role — select from existing or add new */}
-          <div className="grid grid-cols-2 gap-3 mb-3">
-            <SelectOrNew
-              label="Function"
+          {/* Three-panel: Function / Role / Complementary Info */}
+          <div className="grid grid-cols-3 gap-4 mb-3">
+            <SingleSelectPanel
+              title="Function"
+              placeholder="Search functions..."
+              options={uniqueFunctions}
               value={form.function}
               onChange={v => setForm(f => ({ ...f, function: v }))}
-              options={uniqueFunctions}
-              placeholder="e.g. Engineering"
             />
-            <SelectOrNew
-              label="Role"
+            <SingleSelectPanel
+              title="Role"
+              placeholder="Search roles..."
+              options={uniqueRoles}
               value={form.role}
               onChange={v => setForm(f => ({ ...f, role: v }))}
-              options={uniqueRoles}
-              placeholder="e.g. Author"
             />
-          </div>
-
-          {/* Complementary Info — flag checklist (OR logic) */}
-          <div className="mb-3">
-            <ComplementaryFlagChecklist form={form} setForm={setForm} />
+            <MultiSelectPanel
+              title="Complementary Info"
+              placeholder="Search flags..."
+              options={flagOptions}
+              value={formSelectedFlags}
+              onChange={handleFormFlagsChange}
+            />
           </div>
 
           <div className="grid grid-cols-2 gap-3 mb-3">
