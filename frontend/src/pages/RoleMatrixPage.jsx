@@ -742,6 +742,12 @@ export default function RoleMatrixPage() {
     if (confirmed) clearAllMutation.mutate();
   }
 
+  function handleResetPreview() {
+    setFilterFn('');
+    setFilterRole('');
+    setProfile(Object.fromEntries(allInfoKeys.map(k => [k, false])));
+  }
+
   const pivot = useMemo(() => buildPivot(entries), [entries]);
   const uniqueFunctions = useMemo(() => [...new Set(entries.map(e => e.function))].sort(), [entries]);
   const uniqueRoles = useMemo(() => [...new Set(entries.map(e => e.role))].sort(), [entries]);
@@ -876,7 +882,7 @@ export default function RoleMatrixPage() {
             )}
 
             <button
-              onClick={() => setProfile(Object.fromEntries(allInfoKeys.map(k => [k, false])))}
+              onClick={handleResetPreview}
               className="ml-auto text-xs text-slate-400 hover:text-slate-600"
             >
               Reset
