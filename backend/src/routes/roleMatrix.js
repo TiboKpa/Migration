@@ -24,8 +24,8 @@ function parseJsonField(raw, fallback) {
 function normalizeRow(row) {
   return {
     ...row,
-    additional_info:    parseAdditionalInfo(row.additional_info),
-    tlg_addon:          parseJsonField(row.tlg_addon, []),
+    additional_info: parseAdditionalInfo(row.additional_info),
+    tlg_addon: parseJsonField(row.tlg_addon, []),
     complementary_items: parseJsonField(row.complementary_items, []),
   };
 }
@@ -89,7 +89,6 @@ router.post('/:projectId/role-matrix', authenticate, async (req, res) => {
          (project_id, function, role, additional_info, concatenate,
           tlg_primary, tlg_addon, recommended_training_id, complementary_items)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       ON CONFLICT DO NOTHING
        RETURNING *`,
       [
         req.params.projectId, fn, role,
@@ -101,29 +100,8 @@ router.post('/:projectId/role-matrix', authenticate, async (req, res) => {
         JSON.stringify(complementary_items || []),
       ]
     );
-    // If nothing was inserted (no unique conflict support), do a plain insert
-    let row = result.rows[0];
-    if (!row) {
-      const r2 = await client.query(
-        `INSERT INTO role_matrix
-           (project_id, function, role, additional_info, concatenate,
-            tlg_primary, tlg_addon, recommended_training_id, complementary_items)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-         RETURNING *`,
-        [
-          req.params.projectId, fn, role,
-          JSON.stringify(additional_info),
-          concatenate,
-          tlg_primary || '',
-          JSON.stringify(tlg_addon || []),
-          recommended_training_id || null,
-          JSON.stringify(complementary_items || []),
-        ]
-      );
-      row = r2.rows[0];
-    }
     await client.query('COMMIT');
-    res.json(normalizeRow(row));
+    res.json(normalizeRow(result.rows[0]));
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
@@ -140,23 +118,21 @@ router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => 
   try {
     await client.query('BEGIN');
     for (const e of entries) {
-      // Support old fixed-boolean format from Excel import
       const additional_info = e.additional_info && typeof e.additional_info === 'object'
         ? e.additional_info
         : {
             'PBOM Champion': !!e.pbom_champion,
-            'BOC Admin':     !!e.boc_admin,
-            'BOC Member':    !!e.boc_member,
-            'ETO User':      !!e.eto_user,
-            'Team Manager':  !!e.team_manager,
+            'BOC Admin': !!e.boc_admin,
+            'BOC Member': !!e.boc_member,
+            'ETO User': !!e.eto_user,
+            'Team Manager': !!e.team_manager,
           };
       const concatenate = buildConcatenate(e.function, e.role, additional_info);
       await client.query(
         `INSERT INTO role_matrix
            (project_id, function, role, additional_info, concatenate,
             tlg_primary, tlg_addon)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
-         ON CONFLICT DO NOTHING`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
         [
           req.params.projectId, e.function, e.role,
           JSON.stringify(additional_info),
@@ -225,6 +201,17 @@ router.delete('/:projectId/role-matrix/:id', authenticate, async (req, res) => {
       [req.params.id, req.params.projectId]
     );
     res.json({ message: 'Deleted' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DELETE all entries for a project
+router.delete('/:projectId/role-matrix', authenticate, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'DELETE FROM role_matrix WHERE project_id=$1 RETURNING id',
+      [req.params.projectId]
+    );
+    res.json({ message: 'All role matrix entries deleted', deleted: result.rowCount });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

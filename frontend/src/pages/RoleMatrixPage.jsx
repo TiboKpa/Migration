@@ -49,8 +49,6 @@ function parseMatrixExcel(buffer) {
   const fnIdx = headers.indexOf('Function');
   const roleIdx = headers.indexOf('Role');
   const tlgIdx = headers.findIndex(h => h.includes('TLG'));
-
-  // All columns that are not Function, Role, Concatenate, TLG are treated as Additional Info
   const skipCols = new Set(['Function', 'Role', 'Concatenate', 'TLG', 'TLG Primary', 'TLG Add-on']);
   const infoHeaders = headers
     .map((h, i) => ({ h, i }))
@@ -119,7 +117,6 @@ function entryToForm(entry) {
   };
 }
 
-// ---- Mandatory single-select: starts empty, user adds via + Add new, no deselect ----
 function MandatorySingleSelectPanel({ title, placeholder, value, onChange }) {
   const [options, setOptions] = useState([]);
   const [search, setSearch] = useState('');
@@ -221,15 +218,12 @@ function MandatorySingleSelectPanel({ title, placeholder, value, onChange }) {
   );
 }
 
-// ---- Additional Info panel: checkbox multi-select, + Add new creates new keys ----
 function AdditionalInfoPanel({ value, onChange }) {
-  // value is { [label]: boolean }
   const [options, setOptions] = useState(Object.keys(value));
   const [search, setSearch] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKey, setNewKey] = useState('');
 
-  // Sync options when value keys change from outside (e.g. edit mode)
   useEffect(() => {
     setOptions(prev => {
       const incoming = Object.keys(value);
@@ -410,7 +404,6 @@ function RuleModal({ entry, profiles, complementaryOptions, entries, onSave, onC
   const [form, setForm] = useState(entryToForm(entry));
   const [autoFilled, setAutoFilled] = useState(false);
 
-  // Auto-fill TLG + trainings when Function + Role + additional_info exactly match an existing entry
   useEffect(() => {
     if (!isNew) return;
     if (!form.function || !form.role) { setAutoFilled(false); return; }
@@ -478,7 +471,6 @@ function RuleModal({ entry, profiles, complementaryOptions, entries, onSave, onC
           </div>
         )}
 
-        {/* Row 1: Function / Role / Additional Info */}
         <div className="grid grid-cols-3 gap-4 mb-5">
           <MandatorySingleSelectPanel
             title="Function"
@@ -498,7 +490,6 @@ function RuleModal({ entry, profiles, complementaryOptions, entries, onSave, onC
           />
         </div>
 
-        {/* Row 2: TLG Group */}
         <div className="border rounded-xl p-4 mb-4 bg-slate-50">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">TLG Group</p>
           <TlgGroupSelector
@@ -510,7 +501,6 @@ function RuleModal({ entry, profiles, complementaryOptions, entries, onSave, onC
           />
         </div>
 
-        {/* Row 3: Recommended + Complementary trainings */}
         <div className="grid grid-cols-2 gap-4 mb-5">
           <div className="flex flex-col">
             <label className="text-xs text-slate-500 block mb-1">Recommended Primary Training</label>
@@ -656,7 +646,6 @@ export default function RoleMatrixPage() {
       client.get(`/projects/${projectId}/role-matrix/complementary-options`).then(r => r.data),
   });
 
-  // Derive all known Additional Info keys from saved entries
   const allInfoKeys = useMemo(() => {
     const keys = new Set();
     for (const e of entries) {
@@ -667,7 +656,6 @@ export default function RoleMatrixPage() {
     return [...keys].sort();
   }, [entries]);
 
-  // Keep profile in sync when new keys appear
   useEffect(() => {
     setProfile(prev => {
       const next = { ...prev };
@@ -694,6 +682,16 @@ export default function RoleMatrixPage() {
   const deleteMutation = useMutation({
     mutationFn: id => client.delete(`/projects/${projectId}/role-matrix/${id}`),
     onSuccess: () => qc.invalidateQueries(['role-matrix', projectId]),
+  });
+  const clearAllMutation = useMutation({
+    mutationFn: () => client.delete(`/projects/${projectId}/role-matrix`),
+    onSuccess: () => {
+      qc.invalidateQueries(['role-matrix', projectId]);
+      setFilterFn('');
+      setFilterRole('');
+      setProfile({});
+      setModalEntry(null);
+    },
   });
 
   function handleSave(data) {
@@ -734,6 +732,14 @@ export default function RoleMatrixPage() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Role Matrix');
     XLSX.writeFile(wb, 'role-matrix-export.xlsx');
+  }
+
+  function handleClearAll() {
+    if (entries.length === 0 || clearAllMutation.isPending) return;
+    const confirmed = window.confirm(
+      'Are you sure you want to empty the entire role matrix for this project? This action cannot be undone.'
+    );
+    if (confirmed) clearAllMutation.mutate();
   }
 
   const pivot = useMemo(() => buildPivot(entries), [entries]);
@@ -800,7 +806,7 @@ export default function RoleMatrixPage() {
               : `${entries.length} total rules`}
           </p>
         </div>
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2 items-center flex-wrap justify-end">
           <div className="flex border rounded-lg overflow-hidden text-xs">
             <button onClick={() => setViewMode('pivot')}
               className={`px-3 py-1.5 font-medium ${
@@ -821,6 +827,13 @@ export default function RoleMatrixPage() {
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Import Excel</button>
           <button onClick={handleExport} disabled={entries.length === 0}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">Export Excel</button>
+          <button
+            onClick={handleClearAll}
+            disabled={entries.length === 0 || clearAllMutation.isPending}
+            className="border border-red-200 text-red-600 px-3 py-1.5 rounded-lg text-sm hover:bg-red-50 disabled:opacity-40"
+          >
+            {clearAllMutation.isPending ? 'Emptying...' : 'Empty matrix'}
+          </button>
           <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleFileChange} />
         </div>
       </div>
@@ -829,7 +842,6 @@ export default function RoleMatrixPage() {
       {importMutation.isPending && <p className="text-sm text-blue-600 mb-2">Importing...</p>}
       {importMutation.isSuccess && <p className="text-sm text-green-600 mb-2">Import complete</p>}
 
-      {/* ---- PIVOT VIEW ---- */}
       {viewMode === 'pivot' && (
         <>
           <div className="flex flex-wrap items-center gap-4 mb-3 px-4 py-2.5 bg-slate-50 border rounded-xl shrink-0">
@@ -951,7 +963,6 @@ export default function RoleMatrixPage() {
         </>
       )}
 
-      {/* ---- FULL LIST VIEW ---- */}
       {viewMode === 'flat' && (
         <div className="overflow-auto rounded-xl border bg-white flex-1">
           <table className="min-w-max text-sm border-collapse">
