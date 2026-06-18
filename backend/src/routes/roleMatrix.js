@@ -28,23 +28,65 @@ router.get('/:projectId/role-matrix', authenticate, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST single entry - also creates the training playlist
+// GET training profiles (primary trainings) for a project
+router.get('/:projectId/role-matrix/training-profiles', authenticate, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, profile_name FROM training_profiles WHERE project_id=$1 ORDER BY profile_name',
+      [req.params.projectId]
+    );
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET all modules + curricula for complementary items picker
+router.get('/:projectId/role-matrix/complementary-options', authenticate, async (req, res) => {
+  try {
+    const [mods, currs] = await Promise.all([
+      pool.query('SELECT id, title FROM training_modules WHERE project_id=$1 ORDER BY title', [req.params.projectId]),
+      pool.query('SELECT id, title FROM training_curricula WHERE project_id=$1 ORDER BY title', [req.params.projectId]),
+    ]);
+    res.json({
+      modules: mods.rows.map(r => ({ ...r, type: 'module' })),
+      curricula: currs.rows.map(r => ({ ...r, type: 'curriculum' })),
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST single entry
 router.post('/:projectId/role-matrix', authenticate, async (req, res) => {
-  const { function: fn, role, pbom_champion, boc_admin, boc_member, eto_user, team_manager, pdm_role, tlg_group } = req.body;
+  const {
+    function: fn, role,
+    pbom_champion, boc_admin, boc_member, eto_user, team_manager,
+    pdm_role, tlg_group,
+    recommended_training_id, complementary_items,
+  } = req.body;
   const concatenate = `${fn}-${role}-${pbom_champion ? 'Yes' : 'No'}-${boc_admin ? 'Yes' : 'No'}-${boc_member ? 'Yes' : 'No'}-${eto_user ? 'Yes' : 'No'}-${team_manager ? 'Yes' : 'No'}`;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const result = await client.query(
-      `INSERT INTO role_matrix (project_id, function, role, pbom_champion, boc_admin, boc_member, eto_user, team_manager, concatenate, pdm_role, tlg_group)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      `INSERT INTO role_matrix
+         (project_id, function, role, pbom_champion, boc_admin, boc_member, eto_user, team_manager,
+          concatenate, pdm_role, tlg_group, recommended_training_id, complementary_items)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        ON CONFLICT (project_id, concatenate) DO UPDATE SET
-         function=EXCLUDED.function, role=EXCLUDED.role, pbom_champion=EXCLUDED.pbom_champion,
-         boc_admin=EXCLUDED.boc_admin, boc_member=EXCLUDED.boc_member, eto_user=EXCLUDED.eto_user,
-         team_manager=EXCLUDED.team_manager, pdm_role=EXCLUDED.pdm_role, tlg_group=EXCLUDED.tlg_group,
+         function=EXCLUDED.function, role=EXCLUDED.role,
+         pbom_champion=EXCLUDED.pbom_champion, boc_admin=EXCLUDED.boc_admin,
+         boc_member=EXCLUDED.boc_member, eto_user=EXCLUDED.eto_user,
+         team_manager=EXCLUDED.team_manager, pdm_role=EXCLUDED.pdm_role,
+         tlg_group=EXCLUDED.tlg_group,
+         recommended_training_id=EXCLUDED.recommended_training_id,
+         complementary_items=EXCLUDED.complementary_items,
          updated_at=NOW()
        RETURNING *`,
-      [req.params.projectId, fn, role, pbom_champion, boc_admin, boc_member, eto_user, team_manager, concatenate, pdm_role, tlg_group]
+      [
+        req.params.projectId, fn, role,
+        pbom_champion, boc_admin, boc_member, eto_user, team_manager,
+        concatenate, pdm_role, tlg_group,
+        recommended_training_id || null,
+        JSON.stringify(complementary_items || []),
+      ]
     );
     await upsertPlaylist(client, req.params.projectId, pdm_role);
     await client.query('COMMIT');
@@ -55,21 +97,20 @@ router.post('/:projectId/role-matrix', authenticate, async (req, res) => {
   } finally { client.release(); }
 });
 
-// POST bulk import - upserts rules and creates all distinct playlists
+// POST bulk import
 router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => {
   const { entries } = req.body;
   if (!Array.isArray(entries) || entries.length === 0) return res.status(400).json({ error: 'No entries provided' });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-
-    // Collect distinct non-error pdm_role values for playlist creation
     const playlistNames = new Set();
-
     for (const e of entries) {
       const concatenate = `${e.function}-${e.role}-${e.pbom_champion ? 'Yes' : 'No'}-${e.boc_admin ? 'Yes' : 'No'}-${e.boc_member ? 'Yes' : 'No'}-${e.eto_user ? 'Yes' : 'No'}-${e.team_manager ? 'Yes' : 'No'}`;
       await client.query(
-        `INSERT INTO role_matrix (project_id, function, role, pbom_champion, boc_admin, boc_member, eto_user, team_manager, concatenate, pdm_role, tlg_group)
+        `INSERT INTO role_matrix
+           (project_id, function, role, pbom_champion, boc_admin, boc_member, eto_user, team_manager,
+            concatenate, pdm_role, tlg_group)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
          ON CONFLICT (project_id, concatenate) DO UPDATE SET
            pdm_role=EXCLUDED.pdm_role, tlg_group=EXCLUDED.tlg_group, updated_at=NOW()`,
@@ -77,12 +118,9 @@ router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => 
       );
       if (!isErrorRole(e.pdm_role)) playlistNames.add(e.pdm_role);
     }
-
-    // Create one playlist per distinct pdm_role
     for (const name of playlistNames) {
       await upsertPlaylist(client, req.params.projectId, name);
     }
-
     await client.query('COMMIT');
     res.json({ imported: entries.length, playlists_created: playlistNames.size });
   } catch (err) {
@@ -91,16 +129,52 @@ router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => 
   } finally { client.release(); }
 });
 
-// PUT single entry - also ensures the new pdm_role has a playlist
+// PUT single entry - full update of all fields
 router.put('/:projectId/role-matrix/:id', authenticate, async (req, res) => {
-  const { pdm_role, tlg_group } = req.body;
+  const {
+    function: fn, role,
+    pbom_champion, boc_admin, boc_member, eto_user, team_manager,
+    pdm_role, tlg_group,
+    recommended_training_id, complementary_items,
+  } = req.body;
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const result = await client.query(
-      'UPDATE role_matrix SET pdm_role=$1, tlg_group=$2, updated_at=NOW() WHERE id=$3 AND project_id=$4 RETURNING *',
-      [pdm_role, tlg_group, req.params.id, req.params.projectId]
-    );
+
+    // Rebuild concatenate if structural fields were provided
+    let updateQuery, updateParams;
+    if (fn !== undefined && role !== undefined) {
+      const concatenate = `${fn}-${role}-${pbom_champion ? 'Yes' : 'No'}-${boc_admin ? 'Yes' : 'No'}-${boc_member ? 'Yes' : 'No'}-${eto_user ? 'Yes' : 'No'}-${team_manager ? 'Yes' : 'No'}`;
+      updateQuery = `UPDATE role_matrix SET
+        function=$1, role=$2,
+        pbom_champion=$3, boc_admin=$4, boc_member=$5, eto_user=$6, team_manager=$7,
+        concatenate=$8, pdm_role=$9, tlg_group=$10,
+        recommended_training_id=$11, complementary_items=$12,
+        updated_at=NOW()
+      WHERE id=$13 AND project_id=$14 RETURNING *`;
+      updateParams = [
+        fn, role, pbom_champion, boc_admin, boc_member, eto_user, team_manager,
+        concatenate, pdm_role, tlg_group,
+        recommended_training_id || null,
+        JSON.stringify(complementary_items || []),
+        req.params.id, req.params.projectId,
+      ];
+    } else {
+      updateQuery = `UPDATE role_matrix SET
+        pdm_role=$1, tlg_group=$2,
+        recommended_training_id=$3, complementary_items=$4,
+        updated_at=NOW()
+      WHERE id=$5 AND project_id=$6 RETURNING *`;
+      updateParams = [
+        pdm_role, tlg_group,
+        recommended_training_id || null,
+        JSON.stringify(complementary_items || []),
+        req.params.id, req.params.projectId,
+      ];
+    }
+
+    const result = await client.query(updateQuery, updateParams);
     await upsertPlaylist(client, req.params.projectId, pdm_role);
     await client.query('COMMIT');
     res.json(result.rows[0]);

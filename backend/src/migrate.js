@@ -139,6 +139,8 @@ async function migrate() {
         concatenate TEXT NOT NULL,
         pdm_role TEXT,
         tlg_group TEXT,
+        recommended_training_id INT,
+        complementary_items JSONB DEFAULT '[]',
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE(project_id, concatenate)
@@ -248,6 +250,20 @@ async function migrate() {
           WHERE table_name='training_curricula' AND column_name='link'
         ) THEN
           ALTER TABLE training_curricula ADD COLUMN link TEXT;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='role_matrix' AND column_name='recommended_training_id'
+        ) THEN
+          ALTER TABLE role_matrix ADD COLUMN recommended_training_id INT;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='role_matrix' AND column_name='complementary_items'
+        ) THEN
+          ALTER TABLE role_matrix ADD COLUMN complementary_items JSONB DEFAULT '[]';
         END IF;
       END$$;
     `);
