@@ -241,7 +241,7 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
 }
 
 // ---------------------------------------------------------------------------
-// TLG selector -- N/A is now a toggle, Error removed from list
+// TLG selector
 // ---------------------------------------------------------------------------
 function TlgGroupSelector({ naTlg, onNaTlgChange, tlgPrimary, tlgAddon, onChange }) {
   return (
@@ -714,36 +714,35 @@ export default function RoleMatrixPage() {
               <th className={`${thClass} whitespace-nowrap`}>Role</th>
               {dimensions.info_keys.map(k => (
                 /*
-                 * Rotated header: the <th> is locked to 36px wide.
-                 * The inner span is rotated -90deg and positioned so it reads
-                 * bottom-to-top. overflow-visible lets the text spill upward
-                 * into the thead height without widening the column.
+                 * writing-mode: vertical-rl is layout-aware, unlike transform: rotate.
+                 * The browser allocates proper width/height and overflow/ellipsis works.
+                 * rotate(180deg) flips the axis so text reads bottom-to-top.
+                 * maxHeight caps the header row height for very long key names.
                  */
                 <th
                   key={k}
                   title={k}
-                  style={{ width: 36, minWidth: 36, maxWidth: 36 }}
-                  className="px-0 py-2 text-center align-bottom"
+                  style={{ width: 32, minWidth: 32, maxWidth: 32 }}
+                  className="px-0 pb-2 pt-3 text-center align-bottom"
                 >
-                  <div style={{ height: 80, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
-                    <span
-                      style={{
-                        display: 'block',
-                        transformOrigin: 'bottom center',
-                        transform: 'rotate(-90deg) translateX(-50%)',
-                        whiteSpace: 'nowrap',
-                        fontSize: '10px',
-                        fontWeight: 600,
-                        color: '#94a3b8',
-                        letterSpacing: '0.05em',
-                        textTransform: 'uppercase',
-                        lineHeight: 1,
-                        marginBottom: 2,
-                      }}
-                    >
-                      {k}
-                    </span>
-                  </div>
+                  <span
+                    style={{
+                      writingMode: 'vertical-rl',
+                      transform: 'rotate(180deg)',
+                      display: 'inline-block',
+                      maxHeight: 120,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      fontSize: 10,
+                      fontWeight: 600,
+                      color: '#94a3b8',
+                      letterSpacing: '0.04em',
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    {k}
+                  </span>
                 </th>
               ))}
               <th className={`${thClass} w-52 whitespace-nowrap`}>Primary Training</th>
@@ -777,7 +776,7 @@ export default function RoleMatrixPage() {
                   <td className="px-3 py-2 text-xs font-medium text-slate-700 whitespace-nowrap">{entry.function}</td>
                   <td className="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">{entry.role}</td>
                   {dimensions.info_keys.map(k => (
-                    <td key={k} className="py-2 text-center" style={{ width: 36, minWidth: 36, maxWidth: 36 }}>
+                    <td key={k} className="py-2 text-center" style={{ width: 32, minWidth: 32, maxWidth: 32 }}>
                       <span className={`text-xs font-medium ${
                         entry.additional_info?.[k] ? 'text-blue-600' : 'text-slate-300'
                       }`}>
