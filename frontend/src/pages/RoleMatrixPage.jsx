@@ -20,24 +20,23 @@ const TLG_ADDON_OPTIONS = [
 
 // Columns that are never info keys
 const SKIP_COLS = new Set([
-  'Function', 'Role', 'Concatenate',
-  'PDM Role', 'TLG Group',
-  'TLG Primary', 'TLG Add-on',
-  'Primary Training', 'Complementary Training',
+  'Function', 'Role', 'Concatenate', 'PDM Role', 'TLG Group',
 ]);
 
-// Strip suffixes like " (Yes/No)", " (Yes / No)", " (Y/N)" from a header
+// Handle both:
+//   v1: "PBOM Champion (Yes/No)"
+//   v2: "Additional Info PBOM Champion"
 function cleanInfoKeyName(header) {
   return header
+    .replace(/^Additional\s+Info\s+/i, '')
     .replace(/\s*\(yes\s*\/\s*no\)\s*$/i, '')
-    .replace(/\s*\(y\s*\/\s*n\)\s*$/i, '')
     .trim();
 }
 
-// Split a " + " delimited cell into [primary, ...addons]
+// Split " + " delimited cell into [primary, ...rest]
 function splitByPlus(raw) {
   if (!raw || !String(raw).trim()) return [];
-  return String(raw).split('+').map(s => s.trim()).filter(Boolean);
+  return String(raw).split(' + ').map(s => s.trim()).filter(Boolean);
 }
 
 function parseRoleMatrixExcel(buffer) {
@@ -63,19 +62,15 @@ function parseRoleMatrixExcel(buffer) {
     throw new Error('No header row with Function and Role found.');
 
   const headers = rawSheet[headerIdx].map(c => String(c).trim());
-  const fnIdx   = headers.indexOf('Function');
-  const roleIdx = headers.indexOf('Role');
-
-  // "PDM Role" column -> primary_training_name + complementary_training_names
+  const fnIdx      = headers.indexOf('Function');
+  const roleIdx    = headers.indexOf('Role');
   const pdmRoleIdx = headers.findIndex(h => h === 'PDM Role');
-
-  // "TLG Group" column -> tlg_primary + tlg_addon[]
   const tlgGroupIdx = headers.findIndex(h => h === 'TLG Group');
 
-  // Everything that is not a fixed column and looks like a boolean flag is an info key
+  // All non-fixed columns are boolean info keys
   const infoHeaders = headers
     .map((h, i) => ({ raw: h, clean: cleanInfoKeyName(h), i }))
-    .filter(({ raw }) => raw && !SKIP_COLS.has(raw) && raw !== 'Concatenate');
+    .filter(({ raw }) => raw && !SKIP_COLS.has(raw));
 
   const entries = [];
 
@@ -85,7 +80,6 @@ function parseRoleMatrixExcel(buffer) {
     const role = String(row[roleIdx] || '').trim();
     if (!fn || !role) continue;
 
-    // Build additional_info using cleaned key names
     const additional_info = {};
     for (const { clean, i: ci } of infoHeaders) {
       const val = row[ci];
@@ -95,13 +89,11 @@ function parseRoleMatrixExcel(buffer) {
         (typeof val === 'string' && val.trim().toLowerCase() === 'yes');
     }
 
-    // Parse TLG Group: "Heavy Author L1 + SE_TLG_BOM_Transformation + SE_TLG_MPM_Process_Plan"
-    const tlgParts   = tlgGroupIdx >= 0 ? splitByPlus(row[tlgGroupIdx]) : [];
+    const tlgParts    = tlgGroupIdx >= 0 ? splitByPlus(row[tlgGroupIdx]) : [];
     const tlg_primary = tlgParts[0] || '';
     const tlg_addon   = tlgParts.slice(1);
 
-    // Parse PDM Role: "Primary Training Name + Complementary1 + Complementary2"
-    const pdmParts            = pdmRoleIdx >= 0 ? splitByPlus(row[pdmRoleIdx]) : [];
+    const pdmParts              = pdmRoleIdx >= 0 ? splitByPlus(row[pdmRoleIdx]) : [];
     const primary_training_name = pdmParts[0] || '';
     const complementary_names   = pdmParts.slice(1);
 
@@ -450,6 +442,7 @@ export default function RoleMatrixPage() {
     onSuccess: () => {
       qc.invalidateQueries(['role-matrix', projectId]);
       qc.invalidateQueries(['role-matrix-dimensions', projectId]);
+      setImportStats(null);
     },
   });
 
@@ -468,7 +461,7 @@ export default function RoleMatrixPage() {
     const data = entries.map(e => {
       const row = { Function: e.function, Role: e.role };
       for (const k of dimensions.info_keys) {
-        row[`${k} (Yes/No)`] = e.additional_info?.[k] ? 'Yes' : 'No';
+        row[`Additional Info ${k}`] = e.additional_info?.[k] ? 'Yes' : 'No';
       }
       row['Concatenate'] = '';
       const rec = profiles.find(p => p.id === e.recommended_training_id);
@@ -502,17 +495,17 @@ export default function RoleMatrixPage() {
   }
 
   function handleClearAll() {
-    if (entries.length === 0 || clearAllMutation.isPending) return;
-    if (window.confirm('Empty the entire role matrix and its dimensions? This cannot be undone.'))
+    if (clearAllMutation.isPending) return;
+    if (window.confirm('Empty the entire role matrix including all dimensions? This cannot be undone.'))
       clearAllMutation.mutate();
   }
 
   const uniqueFunctions = useMemo(() => dimensions.functions, [dimensions]);
-  const uniqueRoles = useMemo(() => dimensions.roles, [dimensions]);
+  const uniqueRoles     = useMemo(() => dimensions.roles,     [dimensions]);
 
   const filteredEntries = useMemo(() => {
     let rows = entries;
-    if (filterFn) rows = rows.filter(r => r.function === filterFn);
+    if (filterFn)   rows = rows.filter(r => r.function === filterFn);
     if (filterRole) rows = rows.filter(r => r.role === filterRole);
     return rows;
   }, [entries, filterFn, filterRole]);
@@ -559,7 +552,7 @@ export default function RoleMatrixPage() {
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">Export Excel</button>
           <button
             onClick={handleClearAll}
-            disabled={entries.length === 0 || clearAllMutation.isPending}
+            disabled={clearAllMutation.isPending}
             className="border border-red-200 text-red-600 px-3 py-1.5 rounded-lg text-sm hover:bg-red-50 disabled:opacity-40"
           >
             {clearAllMutation.isPending ? 'Emptying...' : 'Empty matrix'}
@@ -572,7 +565,8 @@ export default function RoleMatrixPage() {
       {importMutation.isPending && <p className="text-sm text-blue-600 mb-2">Importing...</p>}
       {importStats && !importMutation.isPending && (
         <p className="text-sm text-green-600 mb-2">
-          Import complete: {importStats.imported} rows, {importStats.dimensions_added} new dimension values added.
+          Import complete: {importStats.imported} rows, {importStats.dimensions_added} new dimension values,
+          {' '}{importStats.resolved} trainings resolved, {importStats.unresolved} unresolved.
         </p>
       )}
 
@@ -652,7 +646,7 @@ export default function RoleMatrixPage() {
             {!isLoading && filteredEntries.length === 0 && (
               <tr><td colSpan={6 + dimensions.info_keys.length} className="px-3 py-8 text-center text-slate-400">
                 {entries.length === 0
-                  ? 'Add functions and roles above to generate the matrix automatically.'
+                  ? 'Import an Excel file or add dimensions above to get started.'
                   : 'No rows match the current filter.'}
               </td></tr>
             )}
@@ -681,22 +675,19 @@ export default function RoleMatrixPage() {
                     {rec
                       ? <span className="text-xs text-indigo-700 font-medium">{rec.profile_name}</span>
                       : entry.primary_training_name
-                        ? <span className="text-xs text-indigo-700 font-medium">{entry.primary_training_name}</span>
+                        ? <span className="text-xs text-amber-600 font-medium" title="Not yet matched to a training item">{entry.primary_training_name}</span>
                         : <span className="text-xs text-slate-300">-</span>}
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-1">
-                      {compItems.length > 0
-                        ? compItems.map(i => (
-                            <span key={`${i.type}-${i.id}`}
-                              className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{i.title}</span>
-                          ))
-                        : entry.complementary_names && entry.complementary_names.length > 0
-                          ? entry.complementary_names.map((n, idx) => (
-                              <span key={idx}
-                                className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{n}</span>
-                            ))
-                          : null}
+                      {compItems.filter(i => i.type !== 'unresolved').map(i => (
+                        <span key={`${i.type}-${i.id}`}
+                          className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{i.title}</span>
+                      ))}
+                      {compItems.filter(i => i.type === 'unresolved').map((i, idx) => (
+                        <span key={`unresolved-${idx}`}
+                          className="text-[10px] bg-amber-50 text-amber-600 border border-amber-200 rounded px-1.5 py-0.5" title="Not matched to a training item">{i.title}</span>
+                      ))}
                     </div>
                   </td>
                   <td className="px-3 py-2">
