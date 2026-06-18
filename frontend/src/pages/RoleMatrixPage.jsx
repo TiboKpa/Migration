@@ -9,7 +9,6 @@ const TLG_PRIMARY_OPTIONS = [
   'Medium Author L2',
   'Light Author L3',
   'Viewer L5',
-  'Error',
 ];
 
 const TLG_ADDON_OPTIONS = [
@@ -17,8 +16,6 @@ const TLG_ADDON_OPTIONS = [
   'SE_TLG_BOM_Transformation',
   'SE_TLG_MPM_Process_Plan',
 ];
-
-const NA_SENTINEL = 'N/A';
 
 const SKIP_COLS = new Set(['Function', 'Role', 'Concatenate', 'PDM Role', 'TLG Group']);
 
@@ -65,15 +62,21 @@ function parseRoleMatrixExcel(buffer) {
       const val = row[ci];
       additional_info[clean] = val === true || val === 1 || (typeof val === 'string' && val.trim().toLowerCase() === 'yes');
     }
-    const tlgParts = tlgGroupIdx >= 0 ? splitByPlus(row[tlgGroupIdx]) : [];
-    const pdmParts = pdmRoleIdx  >= 0 ? splitByPlus(row[pdmRoleIdx])  : [];
+    const tlgRaw   = tlgGroupIdx >= 0 ? String(row[tlgGroupIdx] || '').trim() : '';
+    const isNaTlg  = tlgRaw === 'N/A';
+    const tlgParts = isNaTlg ? [] : splitByPlus(tlgRaw);
+    const pdmRaw   = pdmRoleIdx >= 0 ? String(row[pdmRoleIdx] || '').trim() : '';
+    const isNaTrn  = pdmRaw === 'N/A';
+    const pdmParts = isNaTrn ? [] : splitByPlus(pdmRaw);
     entries.push({
       function: fn, role,
       additional_info,
-      tlg_primary: tlgParts[0] || '',
-      tlg_addon:   tlgParts.slice(1),
+      tlg_primary: isNaTlg ? 'N/A' : (tlgParts[0] || ''),
+      tlg_addon:   isNaTlg ? [] : tlgParts.slice(1),
+      na_tlg: isNaTlg,
       primary_training_name: pdmParts[0] || '',
       complementary_names:   pdmParts.slice(1),
+      na_training: isNaTrn,
     });
   }
   if (entries.length === 0) throw new Error('No data rows found.');
@@ -238,71 +241,58 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
 }
 
 // ---------------------------------------------------------------------------
-// TLG selector
+// TLG selector -- N/A is now a toggle, Error removed from list
 // ---------------------------------------------------------------------------
-function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
-  const isNA    = tlgPrimary === NA_SENTINEL;
-  const isError = tlgPrimary === 'Error';
-  const addonDisabled = isNA || isError;
-
-  function handlePrimaryClick(opt) {
-    const next = tlgPrimary === opt ? '' : opt;
-    onChange({ tlgPrimary: next, tlgAddon: next === NA_SENTINEL ? [] : tlgAddon });
-  }
-
+function TlgGroupSelector({ naTlg, onNaTlgChange, tlgPrimary, tlgAddon, onChange }) {
   return (
-    <div className="grid grid-cols-2 gap-3">
-      <div>
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Primary TLG Group</p>
-        <div className="border rounded-lg overflow-hidden">
-          <label className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b ${
-            isNA ? 'bg-slate-100' : ''
-          }`}>
-            <input type="radio" name="tlg_primary" checked={isNA}
-              onChange={() => handlePrimaryClick(NA_SENTINEL)} />
-            <span className="text-xs text-slate-400 font-semibold">N/A</span>
-          </label>
-          {TLG_PRIMARY_OPTIONS.map(opt => (
-            <label key={opt}
-              className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 ${
-                isNA ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'
-              } ${
-                tlgPrimary === opt ? (opt === 'Error' ? 'bg-red-50' : 'bg-indigo-50') : ''
-              }`}>
-              <input type="radio" name="tlg_primary" checked={tlgPrimary === opt}
-                disabled={isNA}
-                onChange={() => handlePrimaryClick(opt)} />
-              <span className={`text-xs ${
-                isNA ? 'text-slate-400' : opt === 'Error' ? 'text-red-500 font-medium' : 'text-slate-700'
-              }`}>{opt}</span>
-            </label>
-          ))}
-        </div>
+    <div>
+      {/* N/A toggle header -- mirrors the Trainings pattern */}
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">TLG Group</p>
+        <ToggleSwitch checked={naTlg} onChange={onNaTlgChange} label="N/A (not applicable)" />
       </div>
-      <div>
-        <p className={`text-xs font-semibold uppercase tracking-wide mb-1.5 ${
-          addonDisabled ? 'text-slate-300' : 'text-slate-500'
-        }`}>Add-on TLG Groups</p>
-        <div className={`border rounded-lg overflow-hidden ${
-          addonDisabled ? 'opacity-40' : ''
-        }`}>
-          {TLG_ADDON_OPTIONS.map(opt => {
-            const checked = tlgAddon.includes(opt);
-            return (
+
+      <div className={`grid grid-cols-2 gap-3 transition-opacity ${
+        naTlg ? 'opacity-40 pointer-events-none select-none' : ''
+      }`}>
+        <div>
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Primary TLG Group</p>
+          <div className="border rounded-lg overflow-hidden">
+            {TLG_PRIMARY_OPTIONS.map(opt => (
               <label key={opt}
-                className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 ${
-                  addonDisabled ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'
-                } ${checked ? 'bg-teal-50' : ''}`}>
-                <input type="checkbox" checked={checked} disabled={addonDisabled}
-                  onChange={() => onChange({ tlgPrimary, tlgAddon: checked ? tlgAddon.filter(x => x !== opt) : [...tlgAddon, opt] })}
-                  className="rounded accent-teal-600" />
+                className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 cursor-pointer hover:bg-slate-50 ${
+                  tlgPrimary === opt ? 'bg-indigo-50' : ''
+                }`}>
+                <input
+                  type="radio"
+                  name="tlg_primary"
+                  checked={tlgPrimary === opt}
+                  onChange={() => onChange({ tlgPrimary: tlgPrimary === opt ? '' : opt, tlgAddon })}
+                />
                 <span className="text-xs text-slate-700">{opt}</span>
               </label>
-            );
-          })}
+            ))}
+          </div>
         </div>
-        {isNA    && <p className="text-xs text-slate-400 mt-1">Add-ons not applicable.</p>}
-        {isError && !isNA && <p className="text-xs text-red-400 mt-1">Add-ons disabled when primary is Error.</p>}
+        <div>
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Add-on TLG Groups</p>
+          <div className="border rounded-lg overflow-hidden">
+            {TLG_ADDON_OPTIONS.map(opt => {
+              const checked = tlgAddon.includes(opt);
+              return (
+                <label key={opt}
+                  className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 cursor-pointer hover:bg-slate-50 ${
+                    checked ? 'bg-teal-50' : ''
+                  }`}>
+                  <input type="checkbox" checked={checked}
+                    onChange={() => onChange({ tlgPrimary, tlgAddon: checked ? tlgAddon.filter(x => x !== opt) : [...tlgAddon, opt] })}
+                    className="rounded accent-teal-600" />
+                  <span className="text-xs text-slate-700">{opt}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -317,6 +307,7 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
     ...complementaryOptions.modules.map(m => ({ ...m, type: 'module' })),
   ];
 
+  const [naTlg,              setNaTlg]              = useState(entry.na_tlg === true);
   const [tlgPrimary,         setTlgPrimary]         = useState(entry.tlg_primary || '');
   const [tlgAddon,           setTlgAddon]           = useState(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []);
   const [naTraining,         setNaTraining]         = useState(entry.na_training === true);
@@ -324,6 +315,11 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
   const [complementaryItems, setComplementaryItems] = useState(Array.isArray(entry.complementary_items) ? entry.complementary_items : []);
   const [primarySearch,      setPrimarySearch]      = useState('');
   const [itemSearch,         setItemSearch]         = useState('');
+
+  function handleNaTlg(val) {
+    setNaTlg(val);
+    if (val) { setTlgPrimary(''); setTlgAddon([]); }
+  }
 
   function handleNaTraining(val) {
     setNaTraining(val);
@@ -364,14 +360,21 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
         </div>
 
+        {/* TLG section -- N/A is now a toggle like trainings */}
         <div className="border rounded-xl p-4 mb-4 bg-slate-50">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">TLG Group</p>
           <TlgGroupSelector
-            tlgPrimary={tlgPrimary} tlgAddon={tlgAddon}
+            naTlg={naTlg}
+            onNaTlgChange={handleNaTlg}
+            tlgPrimary={tlgPrimary}
+            tlgAddon={tlgAddon}
             onChange={({ tlgPrimary: p, tlgAddon: a }) => { setTlgPrimary(p); setTlgAddon(a); }}
           />
+          {naTlg && (
+            <p className="text-xs text-slate-400 mt-2">TLG is marked as not applicable. No TLG will be saved.</p>
+          )}
         </div>
 
+        {/* Training section */}
         <div className="mb-5">
           <div className="flex items-center justify-between mb-3">
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Trainings</p>
@@ -450,8 +453,9 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
           <button onClick={onClose} className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
           <button
             onClick={() => onSave({
-              tlg_primary: tlgPrimary,
-              tlg_addon: tlgPrimary === NA_SENTINEL ? [] : tlgAddon,
+              na_tlg: naTlg,
+              tlg_primary: naTlg ? '' : tlgPrimary,
+              tlg_addon: naTlg ? [] : tlgAddon,
               na_training: naTraining,
               recommended_training_id: naTraining ? null : (recommendedId ? parseInt(recommendedId) : null),
               complementary_items: naTraining ? [] : complementaryItems,
@@ -525,7 +529,6 @@ export default function RoleMatrixPage() {
     onSuccess: (data, variables) => {
       qc.setQueryData(dimKey, data);
       qc.refetchQueries({ queryKey: matrixKey, exact: true });
-      // Deselect if the removed item was selected
       if (variables.type === 'function' && selectedFn === variables.value)   setSelectedFn(null);
       if (variables.type === 'role'     && selectedRole === variables.value) setSelectedRole(null);
       if (variables.type === 'info_key') setSelectedInfo(prev => prev.filter(v => v !== variables.value));
@@ -574,7 +577,7 @@ export default function RoleMatrixPage() {
       const rec = profiles.find(p => p.id === e.recommended_training_id);
       const compTitles = Array.isArray(e.complementary_items) ? e.complementary_items.map(i => i.title) : [];
       row['PDM Role']  = e.na_training ? 'N/A' : [rec ? rec.profile_name : '', ...compTitles].filter(Boolean).join(' + ');
-      row['TLG Group'] = e.tlg_primary === NA_SENTINEL ? 'N/A' : [e.tlg_primary || '', ...(Array.isArray(e.tlg_addon) ? e.tlg_addon : [])].filter(Boolean).join(' + ');
+      row['TLG Group'] = e.na_tlg ? 'N/A' : [e.tlg_primary || '', ...(Array.isArray(e.tlg_addon) ? e.tlg_addon : [])].filter(Boolean).join(' + ');
       return row;
     });
     const ws = XLSX.utils.json_to_sheet(data);
@@ -649,7 +652,6 @@ export default function RoleMatrixPage() {
           <p className="text-sm text-slate-500">{entries.length} rules</p>
         </div>
         <div className="flex gap-3 items-center flex-wrap justify-end">
-          {/* Empty matrix sits left of the edit toggle */}
           {editMode && (
             <button onClick={handleClearAll} disabled={clearAllMutation.isPending}
               className="border border-red-200 text-red-600 px-3 py-1.5 rounded-lg text-sm hover:bg-red-50 disabled:opacity-40">
@@ -739,14 +741,12 @@ export default function RoleMatrixPage() {
               </td></tr>
             )}
             {filteredEntries.map(entry => {
-              const isTlgNA   = entry.tlg_primary === NA_SENTINEL;
-              const isError   = entry.tlg_primary === 'Error';
+              const isNaRow  = entry.na_tlg || entry.na_training;
               const rec       = profiles.find(p => p.id === entry.recommended_training_id);
               const compItems = Array.isArray(entry.complementary_items) ? entry.complementary_items : [];
-              const isFilled  = !!entry.tlg_primary;
               return (
                 <tr key={entry.id} className={`border-b hover:bg-slate-50/50 ${
-                  isError ? 'bg-red-50' : !isFilled ? 'bg-amber-50/30' : ''
+                  isNaRow ? 'bg-slate-100/60' : ''
                 }`}>
                   <td className="px-3 py-2 text-xs font-medium text-slate-700 whitespace-nowrap">{entry.function}</td>
                   <td className="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">{entry.role}</td>
@@ -779,14 +779,14 @@ export default function RoleMatrixPage() {
                         </div>}
                   </td>
                   <td className="px-3 py-2">
-                    {isTlgNA
+                    {entry.na_tlg
                       ? <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>
                       : entry.tlg_primary
-                        ? <span className={`text-xs font-medium ${isError ? 'text-red-500' : 'text-slate-800'}`}>{entry.tlg_primary}</span>
+                        ? <span className="text-xs font-medium text-slate-800">{entry.tlg_primary}</span>
                         : <span className="text-xs text-slate-300">-</span>}
                   </td>
                   <td className="px-3 py-2">
-                    {isTlgNA
+                    {entry.na_tlg
                       ? <span className="text-xs text-slate-300">-</span>
                       : <div className="flex flex-wrap gap-1">
                           {(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []).map(a => (
