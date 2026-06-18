@@ -246,7 +246,6 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
 function TlgGroupSelector({ naTlg, onNaTlgChange, tlgPrimary, tlgAddon, onChange }) {
   return (
     <div>
-      {/* N/A toggle header -- mirrors the Trainings pattern */}
       <div className="flex items-center justify-between mb-3">
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">TLG Group</p>
         <ToggleSwitch checked={naTlg} onChange={onNaTlgChange} label="N/A (not applicable)" />
@@ -360,7 +359,6 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
         </div>
 
-        {/* TLG section -- N/A is now a toggle like trainings */}
         <div className="border rounded-xl p-4 mb-4 bg-slate-50">
           <TlgGroupSelector
             naTlg={naTlg}
@@ -374,7 +372,6 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
           )}
         </div>
 
-        {/* Training section */}
         <div className="mb-5">
           <div className="flex items-center justify-between mb-3">
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Trainings</p>
@@ -716,8 +713,37 @@ export default function RoleMatrixPage() {
               <th className={`${thClass} whitespace-nowrap`}>Function</th>
               <th className={`${thClass} whitespace-nowrap`}>Role</th>
               {dimensions.info_keys.map(k => (
-                <th key={k} className={`${thClass} text-center`} style={{ maxWidth: '10%', width: '10%' }}>
-                  <span className="block truncate" title={k}>{k}</span>
+                /*
+                 * Rotated header: the <th> is locked to 36px wide.
+                 * The inner span is rotated -90deg and positioned so it reads
+                 * bottom-to-top. overflow-visible lets the text spill upward
+                 * into the thead height without widening the column.
+                 */
+                <th
+                  key={k}
+                  title={k}
+                  style={{ width: 36, minWidth: 36, maxWidth: 36 }}
+                  className="px-0 py-2 text-center align-bottom"
+                >
+                  <div style={{ height: 80, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+                    <span
+                      style={{
+                        display: 'block',
+                        transformOrigin: 'bottom center',
+                        transform: 'rotate(-90deg) translateX(-50%)',
+                        whiteSpace: 'nowrap',
+                        fontSize: '10px',
+                        fontWeight: 600,
+                        color: '#94a3b8',
+                        letterSpacing: '0.05em',
+                        textTransform: 'uppercase',
+                        lineHeight: 1,
+                        marginBottom: 2,
+                      }}
+                    >
+                      {k}
+                    </span>
+                  </div>
                 </th>
               ))}
               <th className={`${thClass} w-52 whitespace-nowrap`}>Primary Training</th>
@@ -751,9 +777,11 @@ export default function RoleMatrixPage() {
                   <td className="px-3 py-2 text-xs font-medium text-slate-700 whitespace-nowrap">{entry.function}</td>
                   <td className="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">{entry.role}</td>
                   {dimensions.info_keys.map(k => (
-                    <td key={k} className="px-3 py-2 text-center" style={{ maxWidth: '10%', width: '10%' }}>
-                      <span className={`text-xs font-medium ${entry.additional_info?.[k] ? 'text-blue-600' : 'text-slate-300'}`}>
-                        {entry.additional_info?.[k] ? 'Yes' : 'No'}
+                    <td key={k} className="py-2 text-center" style={{ width: 36, minWidth: 36, maxWidth: 36 }}>
+                      <span className={`text-xs font-medium ${
+                        entry.additional_info?.[k] ? 'text-blue-600' : 'text-slate-300'
+                      }`}>
+                        {entry.additional_info?.[k] ? 'Y' : 'N'}
                       </span>
                     </td>
                   ))}
