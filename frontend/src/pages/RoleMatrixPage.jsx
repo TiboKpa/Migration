@@ -713,12 +713,6 @@ export default function RoleMatrixPage() {
               <th className={`${thClass} whitespace-nowrap`}>Function</th>
               <th className={`${thClass} whitespace-nowrap`}>Role</th>
               {dimensions.info_keys.map(k => (
-                /*
-                 * writing-mode: vertical-rl is layout-aware, unlike transform: rotate.
-                 * The browser allocates proper width/height and overflow/ellipsis works.
-                 * rotate(180deg) flips the axis so text reads bottom-to-top.
-                 * maxHeight caps the header row height for very long key names.
-                 */
                 <th
                   key={k}
                   title={k}
@@ -746,7 +740,7 @@ export default function RoleMatrixPage() {
                 </th>
               ))}
               <th className={`${thClass} w-52 whitespace-nowrap`}>Primary Training</th>
-              <th className={`${thClass} whitespace-nowrap`}>Complementary</th>
+              <th className={`${thClass} whitespace-nowrap`} style={{ minWidth: 160, maxWidth: 220 }}>Complementary</th>
               <th className={`${thClass} w-40 whitespace-nowrap`}>TLG Group</th>
               <th className={`${thClass} w-48 whitespace-nowrap`}>TLG Add-on</th>
               <th className="px-2 py-2 w-14"></th>
@@ -793,17 +787,42 @@ export default function RoleMatrixPage() {
                           ? <span className="text-xs text-amber-600 font-medium" title="Not yet matched">{entry.primary_training_name}</span>
                           : <span className="text-xs text-slate-300">-</span>}
                   </td>
-                  <td className="px-3 py-2">
+                  {/*
+                   * Complementary cell: fixed-width scrollable strip.
+                   * overflow-x:auto + whitespace:nowrap keeps badges on one line
+                   * and lets the user scroll sideways without growing the row.
+                   * maxWidth caps the column so it does not push other columns away.
+                   */}
+                  <td className="px-2 py-2" style={{ maxWidth: 220, minWidth: 160 }}>
                     {entry.na_training
                       ? <span className="text-xs text-slate-300">-</span>
-                      : <div className="flex flex-wrap gap-1">
-                          {compItems.filter(i => i.type !== 'unresolved').map(i => (
-                            <span key={`${i.type}-${i.id}`} className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{i.title}</span>
-                          ))}
-                          {compItems.filter(i => i.type === 'unresolved').map((i, idx) => (
-                            <span key={`unresolved-${idx}`} className="text-[10px] bg-amber-50 text-amber-600 border border-amber-200 rounded px-1.5 py-0.5" title="Not matched">{i.title}</span>
-                          ))}
-                        </div>}
+                      : compItems.length === 0
+                        ? <span className="text-xs text-slate-300">-</span>
+                        : (
+                          <div
+                            style={{ overflowX: 'auto', whiteSpace: 'nowrap' }}
+                            className="flex gap-1 items-center"
+                          >
+                            {compItems.filter(i => i.type !== 'unresolved').map(i => (
+                              <span
+                                key={`${i.type}-${i.id}`}
+                                className="inline-flex shrink-0 items-center text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5"
+                              >
+                                {i.title}
+                              </span>
+                            ))}
+                            {compItems.filter(i => i.type === 'unresolved').map((i, idx) => (
+                              <span
+                                key={`unresolved-${idx}`}
+                                title="Not matched"
+                                className="inline-flex shrink-0 items-center text-[10px] bg-amber-50 text-amber-600 border border-amber-200 rounded px-1.5 py-0.5"
+                              >
+                                {i.title}
+                              </span>
+                            ))}
+                          </div>
+                        )
+                    }
                   </td>
                   <td className="px-3 py-2">
                     {entry.na_tlg
