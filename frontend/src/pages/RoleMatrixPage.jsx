@@ -18,14 +18,10 @@ const TLG_ADDON_OPTIONS = [
   'SE_TLG_MPM_Process_Plan',
 ];
 
-// Columns that are never info keys
 const SKIP_COLS = new Set([
   'Function', 'Role', 'Concatenate', 'PDM Role', 'TLG Group',
 ]);
 
-// Handle both:
-//   v1: "PBOM Champion (Yes/No)"
-//   v2: "Additional Info PBOM Champion"
 function cleanInfoKeyName(header) {
   return header
     .replace(/^Additional\s+Info\s+/i, '')
@@ -33,7 +29,6 @@ function cleanInfoKeyName(header) {
     .trim();
 }
 
-// Split " + " delimited cell into [primary, ...rest]
 function splitByPlus(raw) {
   if (!raw || !String(raw).trim()) return [];
   return String(raw).split(' + ').map(s => s.trim()).filter(Boolean);
@@ -62,12 +57,11 @@ function parseRoleMatrixExcel(buffer) {
     throw new Error('No header row with Function and Role found.');
 
   const headers = rawSheet[headerIdx].map(c => String(c).trim());
-  const fnIdx      = headers.indexOf('Function');
-  const roleIdx    = headers.indexOf('Role');
-  const pdmRoleIdx = headers.findIndex(h => h === 'PDM Role');
+  const fnIdx       = headers.indexOf('Function');
+  const roleIdx     = headers.indexOf('Role');
+  const pdmRoleIdx  = headers.findIndex(h => h === 'PDM Role');
   const tlgGroupIdx = headers.findIndex(h => h === 'TLG Group');
 
-  // All non-fixed columns are boolean info keys
   const infoHeaders = headers
     .map((h, i) => ({ raw: h, clean: cleanInfoKeyName(h), i }))
     .filter(({ raw }) => raw && !SKIP_COLS.has(raw));
@@ -349,26 +343,28 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
   );
 }
 
-function AddValueInline({ label, onAdd }) {
+function AddValueInline({ label, onAdd, disabled }) {
   const [value, setValue] = useState('');
   function submit() {
     const trimmed = value.trim();
-    if (!trimmed) return;
+    if (!trimmed || disabled) return;
     onAdd(trimmed);
     setValue('');
   }
   return (
     <div className="flex gap-1 mt-1">
       <input
-        className="border rounded-lg px-2 py-1 text-xs flex-1 min-w-0"
+        className="border rounded-lg px-2 py-1 text-xs flex-1 min-w-0 disabled:opacity-50"
         placeholder={`Add ${label}...`}
         value={value}
+        disabled={disabled}
         onChange={e => setValue(e.target.value)}
         onKeyDown={e => e.key === 'Enter' && submit()}
       />
       <button
         onClick={submit}
-        className="bg-blue-600 text-white px-2 py-1 rounded-lg text-xs font-medium hover:bg-blue-700 shrink-0"
+        disabled={disabled}
+        className="bg-blue-600 text-white px-2 py-1 rounded-lg text-xs font-medium hover:bg-blue-700 shrink-0 disabled:opacity-50"
       >
         Add
       </button>
@@ -387,15 +383,20 @@ export default function RoleMatrixPage() {
   const [importError, setImportError] = useState('');
   const [importStats, setImportStats] = useState(null);
 
+  const dimKey    = ['role-matrix-dimensions', projectId];
+  const matrixKey = ['role-matrix', projectId];
+
   const { data: dimensions = { functions: [], roles: [], info_keys: [] } } = useQuery({
-    queryKey: ['role-matrix-dimensions', projectId],
+    queryKey: dimKey,
     queryFn: () =>
       client.get(`/projects/${projectId}/role-matrix/dimensions`).then(r => r.data),
+    staleTime: 0,
   });
 
   const { data: entries = [], isLoading } = useQuery({
-    queryKey: ['role-matrix', projectId],
+    queryKey: matrixKey,
     queryFn: () => client.get(`/projects/${projectId}/role-matrix`).then(r => r.data),
+    staleTime: 0,
   });
 
   const { data: profiles = [] } = useQuery({
@@ -413,9 +414,15 @@ export default function RoleMatrixPage() {
   const addDimMutation = useMutation({
     mutationFn: ({ type, value }) =>
       client.post(`/projects/${projectId}/role-matrix/dimensions`, { type, value }).then(r => r.data),
-    onSuccess: () => {
-      qc.invalidateQueries(['role-matrix-dimensions', projectId]);
-      qc.invalidateQueries(['role-matrix', projectId]);
+    onSuccess: (data) => {
+      // Immediately update the dimensions cache with the value returned by the server
+      // so the UI reflects the new tag without waiting for a refetch.
+      qc.setQueryData(dimKey, data);
+      // Force a fresh fetch of matrix rows -- the server already generated them.
+      qc.refetchQueries({ queryKey: matrixKey, exact: true });
+    },
+    onError: (err) => {
+      console.error('Failed to add dimension:', err);
     },
   });
 
@@ -423,25 +430,28 @@ export default function RoleMatrixPage() {
     mutationFn: ({ type, value }) =>
       client.delete(`/projects/${projectId}/role-matrix/dimensions`, { data: { type, value } }).then(r => r.data),
     onSuccess: () => {
-      qc.invalidateQueries(['role-matrix-dimensions', projectId]);
-      qc.invalidateQueries(['role-matrix', projectId]);
+      qc.refetchQueries({ queryKey: dimKey, exact: true });
+      qc.refetchQueries({ queryKey: matrixKey, exact: true });
     },
   });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }) =>
-      client.put(`/projects/${projectId}/role-matrix/${id}`, data),
-    onSuccess: () => {
-      qc.invalidateQueries(['role-matrix', projectId]);
+      client.put(`/projects/${projectId}/role-matrix/${id}`, data).then(r => r.data),
+    onSuccess: (updated) => {
+      // Patch only the updated row in the cache -- no full refetch needed.
+      qc.setQueryData(matrixKey, (old = []) =>
+        old.map(row => row.id === updated.id ? updated : row)
+      );
       setModalEntry(null);
     },
   });
 
   const clearAllMutation = useMutation({
-    mutationFn: () => client.delete(`/projects/${projectId}/role-matrix`),
+    mutationFn: () => client.delete(`/projects/${projectId}/role-matrix`).then(r => r.data),
     onSuccess: () => {
-      qc.invalidateQueries(['role-matrix', projectId]);
-      qc.invalidateQueries(['role-matrix-dimensions', projectId]);
+      qc.setQueryData(dimKey, { functions: [], roles: [], info_keys: [] });
+      qc.setQueryData(matrixKey, []);
       setImportStats(null);
     },
   });
@@ -449,11 +459,15 @@ export default function RoleMatrixPage() {
   const importMutation = useMutation({
     mutationFn: payload =>
       client.post(`/projects/${projectId}/role-matrix/import`, payload).then(r => r.data),
-    onSuccess: data => {
-      qc.invalidateQueries(['role-matrix', projectId]);
-      qc.invalidateQueries(['role-matrix-dimensions', projectId]);
+    onSuccess: (data) => {
       setImportError('');
       setImportStats(data);
+      // Refetch both -- import changes dimensions and rows
+      qc.refetchQueries({ queryKey: dimKey, exact: true });
+      qc.refetchQueries({ queryKey: matrixKey, exact: true });
+    },
+    onError: (err) => {
+      setImportError(err?.response?.data?.error || err.message || 'Import failed');
     },
   });
 
@@ -485,6 +499,7 @@ export default function RoleMatrixPage() {
     reader.onload = evt => {
       try {
         const parsed = parseRoleMatrixExcel(evt.target.result);
+        setImportError('');
         importMutation.mutate({ entries: parsed });
       } catch (err) {
         setImportError(err.message);
@@ -510,6 +525,8 @@ export default function RoleMatrixPage() {
     return rows;
   }, [entries, filterFn, filterRole]);
 
+  const isDimPending = addDimMutation.isPending || delDimMutation.isPending;
+
   const thClass =
     'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
 
@@ -519,7 +536,8 @@ export default function RoleMatrixPage() {
         {value}
         <button
           onClick={() => delDimMutation.mutate({ type, value })}
-          className="text-slate-400 hover:text-red-500 leading-none ml-0.5"
+          disabled={isDimPending}
+          className="text-slate-400 hover:text-red-500 leading-none ml-0.5 disabled:opacity-40"
           title={`Remove ${value}`}
         >
           &times;
@@ -547,7 +565,10 @@ export default function RoleMatrixPage() {
         </div>
         <div className="flex gap-2 items-center flex-wrap justify-end">
           <button onClick={() => fileRef.current.click()}
-            className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Import Excel</button>
+            disabled={importMutation.isPending}
+            className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
+            {importMutation.isPending ? 'Importing...' : 'Import Excel'}
+          </button>
           <button onClick={handleExport} disabled={entries.length === 0}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">Export Excel</button>
           <button
@@ -562,10 +583,9 @@ export default function RoleMatrixPage() {
       </div>
 
       {importError && <p className="text-sm text-red-500 mb-2">{importError}</p>}
-      {importMutation.isPending && <p className="text-sm text-blue-600 mb-2">Importing...</p>}
       {importStats && !importMutation.isPending && (
         <p className="text-sm text-green-600 mb-2">
-          Import complete: {importStats.imported} rows, {importStats.dimensions_added} new dimension values,
+          Import complete: {importStats.imported} rows, {importStats.dimensions_added} new dimensions,
           {' '}{importStats.resolved} trainings resolved, {importStats.unresolved} unresolved.
         </p>
       )}
@@ -579,7 +599,11 @@ export default function RoleMatrixPage() {
               <span className="text-xs text-slate-400">No functions yet</span>
             )}
           </div>
-          <AddValueInline label="function" onAdd={v => addDimMutation.mutate({ type: 'function', value: v })} />
+          <AddValueInline
+            label="function"
+            disabled={isDimPending}
+            onAdd={v => addDimMutation.mutate({ type: 'function', value: v })}
+          />
         </div>
 
         <div className="border rounded-xl p-3 bg-slate-50">
@@ -590,7 +614,11 @@ export default function RoleMatrixPage() {
               <span className="text-xs text-slate-400">No roles yet</span>
             )}
           </div>
-          <AddValueInline label="role" onAdd={v => addDimMutation.mutate({ type: 'role', value: v })} />
+          <AddValueInline
+            label="role"
+            disabled={isDimPending}
+            onAdd={v => addDimMutation.mutate({ type: 'role', value: v })}
+          />
         </div>
 
         <div className="border rounded-xl p-3 bg-slate-50">
@@ -601,9 +629,17 @@ export default function RoleMatrixPage() {
               <span className="text-xs text-slate-400">No info keys yet</span>
             )}
           </div>
-          <AddValueInline label="info key" onAdd={v => addDimMutation.mutate({ type: 'info_key', value: v })} />
+          <AddValueInline
+            label="info key"
+            disabled={isDimPending}
+            onAdd={v => addDimMutation.mutate({ type: 'info_key', value: v })}
+          />
         </div>
       </div>
+
+      {isDimPending && (
+        <p className="text-xs text-blue-500 mb-2">Updating matrix...</p>
+      )}
 
       <div className="flex items-center gap-3 mb-3 shrink-0">
         <select value={filterFn} onChange={e => setFilterFn(e.target.value)}
@@ -646,7 +682,9 @@ export default function RoleMatrixPage() {
             {!isLoading && filteredEntries.length === 0 && (
               <tr><td colSpan={6 + dimensions.info_keys.length} className="px-3 py-8 text-center text-slate-400">
                 {entries.length === 0
-                  ? 'Import an Excel file or add dimensions above to get started.'
+                  ? dimensions.functions.length === 0 || dimensions.roles.length === 0
+                    ? 'Add at least one function and one role to generate matrix rows.'
+                    : 'Import an Excel file or add dimensions above to get started.'
                   : 'No rows match the current filter.'}
               </td></tr>
             )}
@@ -686,7 +724,8 @@ export default function RoleMatrixPage() {
                       ))}
                       {compItems.filter(i => i.type === 'unresolved').map((i, idx) => (
                         <span key={`unresolved-${idx}`}
-                          className="text-[10px] bg-amber-50 text-amber-600 border border-amber-200 rounded px-1.5 py-0.5" title="Not matched to a training item">{i.title}</span>
+                          className="text-[10px] bg-amber-50 text-amber-600 border border-amber-200 rounded px-1.5 py-0.5"
+                          title="Not matched to a training item">{i.title}</span>
                       ))}
                     </div>
                   </td>
