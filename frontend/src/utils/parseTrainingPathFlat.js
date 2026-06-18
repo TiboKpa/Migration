@@ -26,15 +26,9 @@
  *   C==0, D!=0  -> STANDALONE MODULE (belongs to no curriculum)
  *   C!=0, D!=0  -> MODULE inside the curriculum whose header immediately precedes it in the file
  *
- * Playlist column cell values:
- *   Primary Training   (row-3 link non-empty):
- *     numeric  -> sequence_order of this row inside that training
- *     empty    -> not in this training
- *
- *   Complementary Training (row-3 link empty):
- *     numeric  -> included; numeric value is the display order
- *     letter   -> included; order is position of first occurrence
- *     empty    -> not in this training
+ * Playlist column cell values (all playlists are primary):
+ *   numeric  -> sequence_order of this row inside that training
+ *   empty    -> not in this training
  *
  * CURRICULUM rows can be added as curriculum items in a training.
  * STANDALONE_MODULE and MODULE rows (including curriculum-owned ones) can be
@@ -68,21 +62,6 @@ function toNum(v) {
 
 function cellStr(v) {
   return String(v === null || v === undefined ? '' : v).trim();
-}
-
-/**
- * Returns whether a cell value means "include in complementary training".
- * Accepts: any non-empty string or number that is not blank.
- * Numeric value  -> explicit order (used as sequence_order).
- * Letter/string  -> include; order is assigned by appearance.
- */
-function complementaryCellOrder(v) {
-  if (v === null || v === undefined || v === '') return null;
-  const s = String(v).trim();
-  if (!s) return null;
-  if (isNumericCell(v)) return { explicit: true, order: toNum(v) };
-  // Any non-empty, non-numeric value (letter, word) means include
-  return { explicit: false, order: null };
 }
 
 export function parseTrainingPathFlat(arrayBuffer) {
@@ -170,8 +149,8 @@ export function parseTrainingPathFlat(arrayBuffer) {
   // Pass 2: build curricula and attach modules by file order.
   // A module row belongs to whichever curriculum header immediately precedes
   // it in the file — no chapter-number mapping is used.
-  const curriculumMap = new Map(); // key: title.toLowerCase() -> curriculum object
-  const curriculaOrder = [];       // preserves insertion order for the payload
+  const curriculumMap = new Map();
+  const curriculaOrder = [];
 
   let currentCurriculum = null;
 
@@ -208,96 +187,57 @@ export function parseTrainingPathFlat(arrayBuffer) {
     cur.modules.sort((a, b) => a.sequence_order - b.sequence_order);
   }
 
-  // Pass 3: build playlists
-  const primaryTrainings       = [];
-  const complementaryTrainings = [];
+  // Pass 3: build playlists — all columns are primary trainings
+  const primaryTrainings = [];
 
   for (const pc of playlistCols) {
-    const isPrimary = pc.link !== '';
-
-    if (isPrimary) {
-      const items = [];
-      for (const cr of classifiedRows) {
-        // Curriculum headers become curriculum items.
-        // All module rows (standalone or curriculum-owned) become standalone module items
-        // when their training cell is filled in.
-        const cellVal = cr.rawRow[pc.colIndex];
-        if (!isNumericCell(cellVal)) continue;
-        items.push({
-          isCurriculum:   cr.type === 'curriculum',
-          title:          cr.title,
-          sequence_order: toNum(cellVal),
-        });
-      }
-      items.sort((a, b) => a.sequence_order - b.sequence_order);
-
-      const curricula          = [];
-      const standalone_modules = [];
-      for (const item of items) {
-        if (item.isCurriculum) {
-          const cur = curriculumMap.get(item.title.toLowerCase());
-          if (cur) curricula.push({
-            title:          cur.title,
-            content_id:     cur.content_id,
-            sequence_order: item.sequence_order,
-            modules:        cur.modules.map(m => ({ ...m })),
-          });
-        } else {
-          const mod = moduleMap.get(item.title.toLowerCase());
-          if (mod) standalone_modules.push({
-            title:          mod.title,
-            content_id:     mod.content_id,
-            duration_min:   mod.duration_min,
-            sequence_order: item.sequence_order,
-          });
-        }
-      }
-
-      primaryTrainings.push({
-        title:             pc.title,
-        description:       pc.description,
-        link:              pc.link,
-        content_id:        '',
-        curricula,
-        standalone_modules,
-      });
-
-    } else {
-      const explicitItems = [];
-      const implicitItems = [];
-
-      for (const cr of classifiedRows) {
-        const result = complementaryCellOrder(cr.rawRow[pc.colIndex]);
-        if (!result) continue;
-        const entry = { title: cr.title, content_id: cr.content_id, link: '' };
-        if (result.explicit) {
-          explicitItems.push({ ...entry, sequence_order: result.order });
-        } else {
-          implicitItems.push(entry);
-        }
-      }
-
-      const maxExplicit = explicitItems.reduce((m, i) => Math.max(m, i.sequence_order), 0);
-      const references  = [
-        ...explicitItems.sort((a, b) => a.sequence_order - b.sequence_order),
-        ...implicitItems.map((item, idx) => ({ ...item, sequence_order: maxExplicit + idx + 1 })),
-      ];
-
-      complementaryTrainings.push({
-        title:            pc.title,
-        description:      pc.description,
-        is_complementary: true,
-        references,
-        curricula:        [],
-        standalone_modules: [],
+    const items = [];
+    for (const cr of classifiedRows) {
+      const cellVal = cr.rawRow[pc.colIndex];
+      if (!isNumericCell(cellVal)) continue;
+      items.push({
+        isCurriculum:   cr.type === 'curriculum',
+        title:          cr.title,
+        sequence_order: toNum(cellVal),
       });
     }
+    items.sort((a, b) => a.sequence_order - b.sequence_order);
+
+    const curricula          = [];
+    const standalone_modules = [];
+    for (const item of items) {
+      if (item.isCurriculum) {
+        const cur = curriculumMap.get(item.title.toLowerCase());
+        if (cur) curricula.push({
+          title:          cur.title,
+          content_id:     cur.content_id,
+          sequence_order: item.sequence_order,
+          modules:        cur.modules.map(m => ({ ...m })),
+        });
+      } else {
+        const mod = moduleMap.get(item.title.toLowerCase());
+        if (mod) standalone_modules.push({
+          title:          mod.title,
+          content_id:     mod.content_id,
+          duration_min:   mod.duration_min,
+          sequence_order: item.sequence_order,
+        });
+      }
+    }
+
+    primaryTrainings.push({
+      title:             pc.title,
+      description:       pc.description,
+      link:              pc.link,
+      content_id:        '',
+      curricula,
+      standalone_modules,
+    });
   }
 
   return {
-    modules:                 Array.from(moduleMap.values()),
-    curricula:               curriculaOrder,
-    primary_trainings:       primaryTrainings,
-    complementary_trainings: complementaryTrainings,
+    modules:           Array.from(moduleMap.values()),
+    curricula:         curriculaOrder,
+    primary_trainings: primaryTrainings,
   };
 }

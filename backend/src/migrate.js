@@ -181,7 +181,6 @@ async function migrate() {
         description TEXT,
         link TEXT,
         content_id TEXT,
-        is_complementary BOOLEAN DEFAULT false,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE(project_id, title)
@@ -194,15 +193,6 @@ async function migrate() {
         module_id INT REFERENCES training_modules(id) ON DELETE SET NULL,
         sequence_order INT DEFAULT 0,
         created_at TIMESTAMPTZ DEFAULT NOW()
-      );
-
-      CREATE TABLE IF NOT EXISTS playlist_complementary_refs (
-        id SERIAL PRIMARY KEY,
-        playlist_id INT REFERENCES playlists(id) ON DELETE CASCADE,
-        title TEXT,
-        content_id TEXT,
-        link TEXT,
-        sequence_order INT DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS playlist_curricula (
@@ -233,13 +223,6 @@ async function migrate() {
       DO $$
       BEGIN
         IF NOT EXISTS (
-          SELECT 1 FROM information_schema.columns
-          WHERE table_name='playlists' AND column_name='is_complementary'
-        ) THEN
-          ALTER TABLE playlists ADD COLUMN is_complementary BOOLEAN DEFAULT false;
-        END IF;
-
-        IF NOT EXISTS (
           SELECT 1 FROM pg_constraint WHERE conname='playlists_project_id_title_key'
         ) THEN
           ALTER TABLE playlists ADD CONSTRAINT playlists_project_id_title_key UNIQUE (project_id, title);
@@ -249,14 +232,6 @@ async function migrate() {
           SELECT 1 FROM pg_constraint WHERE conname='training_profiles_project_name_unique'
         ) THEN
           ALTER TABLE training_profiles ADD CONSTRAINT training_profiles_project_name_unique UNIQUE (project_id, profile_name);
-        END IF;
-
-        -- sequence_order column on playlist_complementary_refs
-        IF NOT EXISTS (
-          SELECT 1 FROM information_schema.columns
-          WHERE table_name='playlist_complementary_refs' AND column_name='sequence_order'
-        ) THEN
-          ALTER TABLE playlist_complementary_refs ADD COLUMN sequence_order INT DEFAULT 0;
         END IF;
       END$$;
     `);

@@ -39,7 +39,6 @@ async function shiftAndInsertPlaylistItem(db, playlistId, curriculumId, moduleId
   );
 }
 
-// After a delete, close gaps in sequence_order so numbers stay contiguous.
 async function renumberCurriculumModules(db, curriculumId) {
   await db.query(
     `UPDATE curriculum_module_items cmi
@@ -249,7 +248,6 @@ router.put('/:projectId/curricula/:curriculumId', authenticate, async (req, res)
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Add module to curriculum with insert-and-shift
 router.post('/:projectId/curricula/:curriculumId/modules', authenticate, async (req, res) => {
   const { module_id, requirement, sequence_order } = req.body;
   if (!module_id) return res.status(400).json({ error: 'module_id is required' });
@@ -273,7 +271,6 @@ router.post('/:projectId/curricula/:curriculumId/modules', authenticate, async (
   } finally { db.release(); }
 });
 
-// Reorder a module inside a curriculum
 router.patch('/:projectId/curricula/:curriculumId/modules/:moduleId/reorder', authenticate, async (req, res) => {
   const { new_order } = req.body;
   if (!new_order || new_order < 1) return res.status(400).json({ error: 'new_order >= 1 is required' });
@@ -314,7 +311,6 @@ router.patch('/:projectId/curricula/:curriculumId/modules/:moduleId/reorder', au
   } finally { db.release(); }
 });
 
-// Remove a module from a curriculum and renumber remaining items
 router.delete('/:projectId/curricula/:curriculumId/modules/:moduleId', authenticate, async (req, res) => {
   const db = await pool.connect();
   try {
@@ -351,7 +347,7 @@ router.delete('/:projectId/curricula', authenticate, async (req, res) => {
 router.get('/:projectId/playlists', authenticate, async (req, res) => {
   try {
     const r = await pool.query(
-      'SELECT * FROM playlists WHERE project_id=$1 ORDER BY is_complementary, title',
+      'SELECT * FROM playlists WHERE project_id=$1 ORDER BY title',
       [req.params.projectId]
     );
     res.json(r.rows);
@@ -415,45 +411,39 @@ router.get('/:projectId/playlists/:playlistId', authenticate, async (req, res) =
     const curricula          = orderedItems.filter(x => x.kind === 'curriculum');
     const standalone_modules = orderedItems.filter(x => x.kind === 'module');
 
-    const refs = (await pool.query(
-      'SELECT * FROM playlist_complementary_refs WHERE playlist_id=$1 ORDER BY sequence_order',
-      [playlist.id]
-    )).rows;
-
     const allModules = [...curricula.flatMap(c => c.modules), ...standalone_modules];
     const total_minutes = allModules
       .filter(m => (m.requirement || 'mandatory') === 'mandatory')
       .reduce((s, m) => s + (m.duration_min || 0), 0);
 
-    res.json({ ...playlist, ordered_items: orderedItems, curricula, standalone_modules, complementary_refs: refs, total_minutes });
+    res.json({ ...playlist, ordered_items: orderedItems, curricula, standalone_modules, total_minutes });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.post('/:projectId/playlists', authenticate, async (req, res) => {
-  const { title, description, link, content_id, is_complementary } = req.body;
+  const { title, description, link, content_id } = req.body;
   if (!title) return res.status(400).json({ error: 'title is required' });
   try {
     const r = await pool.query(
-      `INSERT INTO playlists (project_id, title, description, link, content_id, is_complementary)
-       VALUES ($1,$2,$3,$4,$5,$6)
+      `INSERT INTO playlists (project_id, title, description, link, content_id)
+       VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (project_id, title) DO UPDATE
          SET description=EXCLUDED.description, link=EXCLUDED.link,
-             content_id=EXCLUDED.content_id, is_complementary=EXCLUDED.is_complementary, updated_at=NOW()
+             content_id=EXCLUDED.content_id, updated_at=NOW()
        RETURNING *`,
-      [req.params.projectId, title, description || null, link || null, content_id || null, is_complementary || false]
+      [req.params.projectId, title, description || null, link || null, content_id || null]
     );
     res.status(201).json(r.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.put('/:projectId/playlists/:playlistId', authenticate, async (req, res) => {
-  const { title, description, link, content_id, is_complementary } = req.body;
+  const { title, description, link, content_id } = req.body;
   try {
     const r = await pool.query(
-      `UPDATE playlists SET title=$1, description=$2, link=$3, content_id=$4,
-        is_complementary=$5, updated_at=NOW()
-       WHERE id=$6 AND project_id=$7 RETURNING *`,
-      [title, description || null, link || null, content_id || null, is_complementary || false,
+      `UPDATE playlists SET title=$1, description=$2, link=$3, content_id=$4, updated_at=NOW()
+       WHERE id=$5 AND project_id=$6 RETURNING *`,
+      [title, description || null, link || null, content_id || null,
        req.params.playlistId, req.params.projectId]
     );
     res.json(r.rows[0]);
@@ -474,7 +464,6 @@ router.delete('/:projectId/playlists', authenticate, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Add item to playlist with insert-and-shift
 router.post('/:projectId/playlists/:playlistId/items', authenticate, async (req, res) => {
   const { curriculum_id, module_id, sequence_order } = req.body;
   if (!curriculum_id && !module_id) return res.status(400).json({ error: 'curriculum_id or module_id is required' });
@@ -498,7 +487,6 @@ router.post('/:projectId/playlists/:playlistId/items', authenticate, async (req,
   } finally { db.release(); }
 });
 
-// Reorder a playlist item
 router.patch('/:projectId/playlists/:playlistId/items/:itemId/reorder', authenticate, async (req, res) => {
   const { new_order } = req.body;
   if (!new_order || new_order < 1) return res.status(400).json({ error: 'new_order >= 1 is required' });
@@ -539,7 +527,6 @@ router.patch('/:projectId/playlists/:playlistId/items/:itemId/reorder', authenti
   } finally { db.release(); }
 });
 
-// Remove a playlist item and renumber remaining items
 router.delete('/:projectId/playlists/:playlistId/items/:itemId', authenticate, async (req, res) => {
   const db = await pool.connect();
   try {
@@ -560,7 +547,7 @@ router.delete('/:projectId/playlists/:playlistId/items/:itemId', authenticate, a
 // ── Import ────────────────────────────────────────────────────────────────────
 router.post('/:projectId/playlists/import', authenticate, async (req, res) => {
   const projectId = parseInt(req.params.projectId, 10);
-  const { modules = [], curricula = [], primary_trainings = [], complementary_trainings = [] } = req.body;
+  const { modules = [], curricula = [], primary_trainings = [] } = req.body;
 
   const db = await pool.connect();
   try {
@@ -612,11 +599,11 @@ router.post('/:projectId/playlists/import', authenticate, async (req, res) => {
     for (const pt of primary_trainings) {
       if (!pt.title) continue;
       const r = await db.query(
-        `INSERT INTO playlists (project_id, title, description, link, content_id, is_complementary)
-         VALUES ($1,$2,$3,$4,$5,false)
+        `INSERT INTO playlists (project_id, title, description, link, content_id)
+         VALUES ($1,$2,$3,$4,$5)
          ON CONFLICT (project_id, title) DO UPDATE
            SET description=EXCLUDED.description, link=EXCLUDED.link,
-               content_id=EXCLUDED.content_id, is_complementary=false, updated_at=NOW()
+               content_id=EXCLUDED.content_id, updated_at=NOW()
          RETURNING id`,
         [projectId, pt.title, pt.description || null, pt.link || null, pt.content_id || null]
       );
@@ -634,27 +621,6 @@ router.post('/:projectId/playlists/import', authenticate, async (req, res) => {
         if (!modId) continue;
         const pos = Math.max(1, mod.sequence_order || 1);
         await shiftAndInsertPlaylistItem(db, playlistId, null, modId, pos, false);
-      }
-      importedPlaylists++;
-    }
-
-    for (const ct of complementary_trainings) {
-      if (!ct.title) continue;
-      const r = await db.query(
-        `INSERT INTO playlists (project_id, title, description, link, content_id, is_complementary)
-         VALUES ($1,$2,$3,NULL,NULL,true)
-         ON CONFLICT (project_id, title) DO UPDATE
-           SET description=EXCLUDED.description, is_complementary=true, updated_at=NOW()
-         RETURNING id`,
-        [projectId, ct.title, ct.description || null]
-      );
-      const playlistId = r.rows[0].id;
-      await db.query('DELETE FROM playlist_complementary_refs WHERE playlist_id=$1', [playlistId]);
-      for (const ref of (ct.references || [])) {
-        await db.query(
-          'INSERT INTO playlist_complementary_refs (playlist_id, title, content_id, link, sequence_order) VALUES ($1,$2,$3,$4,$5)',
-          [playlistId, ref.title || null, ref.content_id || null, ref.link || null, ref.sequence_order || 0]
-        );
       }
       importedPlaylists++;
     }
