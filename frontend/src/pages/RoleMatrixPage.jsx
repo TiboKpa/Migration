@@ -372,94 +372,6 @@ function AddValueInline({ label, onAdd, disabled }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Pivot cell: shows the training assignment for one (function x role x infoCombo)
-// ---------------------------------------------------------------------------
-function PivotCell({ entry, profiles, onEdit }) {
-  if (!entry) return <td className="border px-2 py-1 text-center text-slate-200 text-xs">-</td>;
-
-  const isError  = entry.tlg_primary === 'Error';
-  const rec      = profiles.find(p => p.id === entry.recommended_training_id);
-  const compItems = Array.isArray(entry.complementary_items) ? entry.complementary_items : [];
-  const isFilled = !!entry.tlg_primary;
-
-  return (
-    <td
-      className={`border px-2 py-1 align-top min-w-[11rem] ${
-        isError ? 'bg-red-50' : !isFilled ? 'bg-amber-50/30' : ''
-      }`}
-    >
-      <div className="flex flex-col gap-0.5">
-        {entry.tlg_primary ? (
-          <span className={`text-[10px] font-semibold ${
-            isError ? 'text-red-500' : 'text-slate-700'
-          }`}>
-            {entry.tlg_primary}
-            {(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []).map(a => (
-              <span key={a} className="ml-1 text-teal-600">[{a}]</span>
-            ))}
-          </span>
-        ) : (
-          <span className="text-[10px] text-slate-300">no TLG</span>
-        )}
-        {rec ? (
-          <span className="text-[10px] text-indigo-700 truncate max-w-[10rem]" title={rec.profile_name}>
-            {rec.profile_name}
-          </span>
-        ) : entry.primary_training_name ? (
-          <span className="text-[10px] text-amber-600 truncate max-w-[10rem]" title={entry.primary_training_name}>
-            {entry.primary_training_name}
-          </span>
-        ) : null}
-        {compItems.length > 0 && (
-          <div className="flex flex-wrap gap-0.5 mt-0.5">
-            {compItems.map((i, idx) => (
-              <span key={idx}
-                className={`text-[9px] rounded px-1 py-0.5 ${
-                  i.type === 'unresolved'
-                    ? 'bg-amber-50 text-amber-500 border border-amber-200'
-                    : 'bg-slate-100 text-slate-500'
-                }`}>
-                {i.title}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-      <button
-        onClick={() => onEdit(entry)}
-        className="mt-1 text-[9px] text-slate-400 hover:text-blue-600"
-      >
-        Fill
-      </button>
-    </td>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Build all unique info-key combinations from existing entries
-// ---------------------------------------------------------------------------
-function buildInfoCombos(entries, info_keys) {
-  if (info_keys.length === 0) return [{}];
-  const seen = new Set();
-  const combos = [];
-  for (const e of entries) {
-    const combo = {};
-    for (const k of info_keys) combo[k] = !!(e.additional_info && e.additional_info[k]);
-    const key = info_keys.map(k => (combo[k] ? 'Y' : 'N')).join('');
-    if (!seen.has(key)) { seen.add(key); combos.push(combo); }
-  }
-  // Sort: all-true first, then by keys in order
-  combos.sort((a, b) => {
-    for (const k of info_keys) {
-      if (a[k] === b[k]) continue;
-      return a[k] ? -1 : 1;
-    }
-    return 0;
-  });
-  return combos.length > 0 ? combos : [{}];
-}
-
 export default function RoleMatrixPage() {
   const { projectId } = useParams();
   const qc = useQueryClient();
@@ -506,7 +418,9 @@ export default function RoleMatrixPage() {
       qc.setQueryData(dimKey, data);
       qc.refetchQueries({ queryKey: matrixKey, exact: true });
     },
-    onError: (err) => { console.error('Failed to add dimension:', err); },
+    onError: (err) => {
+      console.error('Failed to add dimension:', err);
+    },
   });
 
   const delDimMutation = useMutation({
@@ -599,32 +513,14 @@ export default function RoleMatrixPage() {
   const uniqueFunctions = useMemo(() => dimensions.functions, [dimensions]);
   const uniqueRoles     = useMemo(() => dimensions.roles,     [dimensions]);
 
-  // Pivot data structures
-  const { visibleFunctions, visibleRoles, infoCombos, entryMap } = useMemo(() => {
-    const vFns   = filterFn   ? [filterFn]   : uniqueFunctions;
-    const vRoles = filterRole ? [filterRole] : uniqueRoles;
-    const combos = buildInfoCombos(entries, dimensions.info_keys);
-
-    // Map: fn|role|comboKey -> entry
-    const map = new Map();
-    for (const e of entries) {
-      const comboKey = dimensions.info_keys
-        .map(k => (e.additional_info && e.additional_info[k] ? 'Y' : 'N'))
-        .join('');
-      map.set(`${e.function}||${e.role}||${comboKey}`, e);
-    }
-    return { visibleFunctions: vFns, visibleRoles: vRoles, infoCombos: combos, entryMap: map };
-  }, [entries, dimensions, filterFn, filterRole, uniqueFunctions, uniqueRoles]);
+  const filteredEntries = useMemo(() => {
+    let rows = entries;
+    if (filterFn)   rows = rows.filter(r => r.function === filterFn);
+    if (filterRole) rows = rows.filter(r => r.role === filterRole);
+    return rows;
+  }, [entries, filterFn, filterRole]);
 
   const isDimPending = addDimMutation.isPending || delDimMutation.isPending;
-
-  function comboKey(combo) {
-    return dimensions.info_keys.map(k => (combo[k] ? 'Y' : 'N')).join('');
-  }
-
-  function getEntry(fn, role, combo) {
-    return entryMap.get(`${fn}||${role}||${comboKey(combo)}`) || null;
-  }
 
   const thClass =
     'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
@@ -644,9 +540,6 @@ export default function RoleMatrixPage() {
       </span>
     );
   }
-
-  const hasData = entries.length > 0;
-  const hasMinDims = uniqueFunctions.length > 0 && uniqueRoles.length > 0;
 
   return (
     <div className="flex flex-col h-full">
@@ -671,7 +564,7 @@ export default function RoleMatrixPage() {
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
             {importMutation.isPending ? 'Importing...' : 'Import Excel'}
           </button>
-          <button onClick={handleExport} disabled={!hasData}
+          <button onClick={handleExport} disabled={entries.length === 0}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">Export Excel</button>
           <button
             onClick={handleClearAll}
@@ -692,7 +585,6 @@ export default function RoleMatrixPage() {
         </p>
       )}
 
-      {/* Dimensions panel */}
       <div className="grid grid-cols-3 gap-4 mb-4 shrink-0">
         <div className="border rounded-xl p-3 bg-slate-50">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Functions</p>
@@ -744,7 +636,6 @@ export default function RoleMatrixPage() {
         <p className="text-xs text-blue-500 mb-2">Updating matrix...</p>
       )}
 
-      {/* Filters */}
       <div className="flex items-center gap-3 mb-3 shrink-0">
         <select value={filterFn} onChange={e => setFilterFn(e.target.value)}
           className="border rounded-lg px-2 py-1 text-xs text-slate-600">
@@ -760,83 +651,103 @@ export default function RoleMatrixPage() {
           <button onClick={() => { setFilterFn(''); setFilterRole(''); }}
             className="text-xs text-slate-400 hover:text-slate-600">Reset</button>
         )}
-        <span className="ml-auto text-xs text-slate-400">
-          {visibleFunctions.length} function(s) x {visibleRoles.length} role(s)
-          {dimensions.info_keys.length > 0 && ` x ${infoCombos.length} combination(s)`}
-        </span>
+        <span className="ml-auto text-xs text-slate-400">{filteredEntries.length} rows</span>
       </div>
 
-      {/* Pivot table */}
       <div className="overflow-auto rounded-xl border bg-white flex-1">
-        {isLoading && (
-          <div className="flex items-center justify-center h-32 text-slate-400 text-sm">Loading...</div>
-        )}
-        {!isLoading && !hasMinDims && (
-          <div className="flex items-center justify-center h-32 text-slate-400 text-sm">
-            Add at least one function and one role to generate matrix rows.
-          </div>
-        )}
-        {!isLoading && hasMinDims && (
-          <table className="text-xs border-collapse" style={{ minWidth: `${16 + visibleRoles.length * 11}rem` }}>
-            <thead className="sticky top-0 z-10 bg-slate-50">
-              {/* Role header row */}
-              <tr>
-                <th className={`${thClass} border bg-slate-100 w-32`}>Function</th>
-                {dimensions.info_keys.length > 0 && (
-                  <th className={`${thClass} border bg-slate-100`}>
-                    {dimensions.info_keys.join(' / ')}
-                  </th>
-                )}
-                {visibleRoles.map(role => (
-                  <th key={role} className={`${thClass} border bg-slate-100 text-center`}>
-                    {role}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {visibleFunctions.map(fn => (
-                infoCombos.map((combo, ci) => (
-                  <tr key={`${fn}-${ci}`} className={ci === 0 ? 'border-t-2 border-slate-300' : ''}>
-                    {/* Function cell -- spans all info combos */}
-                    {ci === 0 && (
-                      <td
-                        rowSpan={infoCombos.length}
-                        className="border px-2 py-1 font-semibold text-slate-700 align-middle bg-slate-50 whitespace-nowrap"
-                      >
-                        {fn}
-                      </td>
-                    )}
-                    {/* Info combo label */}
-                    {dimensions.info_keys.length > 0 && (
-                      <td className="border px-2 py-1 bg-slate-50 whitespace-nowrap">
-                        <div className="flex flex-col gap-0.5">
-                          {dimensions.info_keys.map(k => (
-                            <span key={k}
-                              className={`text-[9px] font-medium ${
-                                combo[k] ? 'text-blue-600' : 'text-slate-400'
-                              }`}>
-                              {k}: {combo[k] ? 'Yes' : 'No'}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-                    )}
-                    {/* One cell per role */}
-                    {visibleRoles.map(role => (
-                      <PivotCell
-                        key={role}
-                        entry={getEntry(fn, role, combo)}
-                        profiles={profiles}
-                        onEdit={setModalEntry}
-                      />
-                    ))}
-                  </tr>
-                ))
+        <table className="min-w-max text-sm border-collapse w-full">
+          <thead className="sticky top-0 z-10 bg-slate-50 border-b">
+            <tr>
+              <th className={thClass}>Function</th>
+              <th className={thClass}>Role</th>
+              {dimensions.info_keys.map(k => (
+                <th key={k} className={`${thClass} text-center`}>{k}</th>
               ))}
-            </tbody>
-          </table>
-        )}
+              <th className={`${thClass} w-52`}>Primary Training</th>
+              <th className={thClass}>Complementary</th>
+              <th className={`${thClass} w-40`}>TLG Group</th>
+              <th className={`${thClass} w-48`}>TLG Add-on</th>
+              <th className="px-2 py-2 w-14"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading && (
+              <tr><td colSpan={6 + dimensions.info_keys.length} className="px-3 py-8 text-center text-slate-400">Loading...</td></tr>
+            )}
+            {!isLoading && filteredEntries.length === 0 && (
+              <tr><td colSpan={6 + dimensions.info_keys.length} className="px-3 py-8 text-center text-slate-400">
+                {entries.length === 0
+                  ? dimensions.functions.length === 0 || dimensions.roles.length === 0
+                    ? 'Add at least one function and one role to generate matrix rows.'
+                    : 'Import an Excel file or add dimensions above to get started.'
+                  : 'No rows match the current filter.'}
+              </td></tr>
+            )}
+            {filteredEntries.map(entry => {
+              const isError = entry.tlg_primary === 'Error';
+              const rec = profiles.find(p => p.id === entry.recommended_training_id);
+              const compItems = Array.isArray(entry.complementary_items) ? entry.complementary_items : [];
+              const isFilled = !!entry.tlg_primary;
+              return (
+                <tr key={entry.id}
+                  className={`border-b hover:bg-slate-50/50 ${
+                    isError ? 'bg-red-50' : !isFilled ? 'bg-amber-50/30' : ''
+                  }`}>
+                  <td className="px-3 py-2 text-xs font-medium text-slate-700 whitespace-nowrap">{entry.function}</td>
+                  <td className="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">{entry.role}</td>
+                  {dimensions.info_keys.map(k => (
+                    <td key={k} className="px-3 py-2 text-center">
+                      <span className={`text-xs font-medium ${
+                        entry.additional_info?.[k] ? 'text-blue-600' : 'text-slate-300'
+                      }`}>
+                        {entry.additional_info?.[k] ? 'Yes' : 'No'}
+                      </span>
+                    </td>
+                  ))}
+                  <td className="px-3 py-2">
+                    {rec
+                      ? <span className="text-xs text-indigo-700 font-medium">{rec.profile_name}</span>
+                      : entry.primary_training_name
+                        ? <span className="text-xs text-amber-600 font-medium" title="Not yet matched to a training item">{entry.primary_training_name}</span>
+                        : <span className="text-xs text-slate-300">-</span>}
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex flex-wrap gap-1">
+                      {compItems.filter(i => i.type !== 'unresolved').map(i => (
+                        <span key={`${i.type}-${i.id}`}
+                          className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{i.title}</span>
+                      ))}
+                      {compItems.filter(i => i.type === 'unresolved').map((i, idx) => (
+                        <span key={`unresolved-${idx}`}
+                          className="text-[10px] bg-amber-50 text-amber-600 border border-amber-200 rounded px-1.5 py-0.5"
+                          title="Not matched to a training item">{i.title}</span>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2">
+                    {entry.tlg_primary
+                      ? <span className={`text-xs font-medium ${isError ? 'text-red-500' : 'text-slate-800'}`}>
+                          {entry.tlg_primary}
+                        </span>
+                      : <span className="text-xs text-slate-300">-</span>}
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex flex-wrap gap-1">
+                      {(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []).map(a => (
+                        <span key={a}
+                          className="text-[10px] bg-teal-50 text-teal-700 border border-teal-100 rounded px-1.5 py-0.5">{a}</span>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="px-2 py-2">
+                    <button onClick={() => setModalEntry(entry)}
+                      className="text-xs text-slate-400 hover:text-blue-600">Fill</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
