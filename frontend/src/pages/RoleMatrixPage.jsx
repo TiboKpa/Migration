@@ -139,7 +139,8 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
+      {/* Modal widened to max-w-4xl to fit two columns side by side */}
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-5">
           <h2 className="text-base font-semibold text-slate-800">Edit rule</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
@@ -187,87 +188,92 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
           </div>
         </div>
 
-        {/* Recommended Primary Training - same style as complementary */}
-        <div className="mb-4">
-          <label className="text-xs text-slate-500 block mb-1">Recommended Primary Training</label>
-          {selectedProfile && (
-            <div className="flex flex-wrap gap-1 mb-2">
-              <span className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full px-2 py-0.5 text-xs">
-                <span className="text-indigo-400 uppercase text-[10px] font-semibold">PLY</span>
-                {selectedProfile.profile_name}
-                <button
-                  onClick={() => setForm(f => ({ ...f, recommended_training_id: '' }))}
-                  className="ml-0.5 text-indigo-400 hover:text-indigo-700 leading-none">&times;</button>
-              </span>
-            </div>
-          )}
-          <input
-            className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1"
-            placeholder="Search primary trainings..."
-            value={primarySearch}
-            onChange={e => setPrimarySearch(e.target.value)}
-          />
-          <div className="border rounded-lg overflow-y-auto max-h-40">
-            {filteredProfiles.length === 0 && (
-              <p className="text-xs text-slate-400 text-center py-3">No primary trainings found</p>
-            )}
-            {filteredProfiles.map(p => (
-              <label key={p.id}
-                className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
-                  String(p.id) === form.recommended_training_id ? 'bg-indigo-50' : ''
-                }`}>
-                <input
-                  type="radio"
-                  name="recommended_training_id"
-                  checked={String(p.id) === form.recommended_training_id}
-                  onChange={() => setForm(f => ({ ...f, recommended_training_id: String(p.id) }))}
-                  className="rounded"
-                />
-                <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">PLY</span>
-                <span className="text-xs text-slate-700">{p.profile_name}</span>
-              </label>
-            ))}
-          </div>
-        </div>
+        {/* Primary Training + Complementary side by side */}
+        <div className="grid grid-cols-2 gap-4 mb-5">
 
-        {/* Complementary items */}
-        <div className="mb-5">
-          <label className="text-xs text-slate-500 block mb-1">Complementary Trainings (modules &amp; curricula)</label>
-          {form.complementary_items.length > 0 && (
-            <div className="flex flex-wrap gap-1 mb-2">
-              {form.complementary_items.map(i => (
-                <span key={`${i.type}-${i.id}`}
-                  className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5 text-xs">
-                  <span className="text-blue-400 uppercase text-[10px] font-semibold">{i.type === 'curriculum' ? 'CUR' : 'MOD'}</span>
-                  {i.title}
-                  <button onClick={() => toggleComplementary(i)} className="ml-0.5 text-blue-400 hover:text-blue-700 leading-none">&times;</button>
+          {/* Left: Recommended Primary Training */}
+          <div className="flex flex-col">
+            <label className="text-xs text-slate-500 block mb-1">Recommended Primary Training</label>
+            {selectedProfile && (
+              <div className="flex flex-wrap gap-1 mb-2">
+                <span className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full px-2 py-0.5 text-xs">
+                  <span className="text-indigo-400 uppercase text-[10px] font-semibold">PLY</span>
+                  {selectedProfile.profile_name}
+                  <button
+                    onClick={() => setForm(f => ({ ...f, recommended_training_id: '' }))}
+                    className="ml-0.5 text-indigo-400 hover:text-indigo-700 leading-none">&times;</button>
                 </span>
+              </div>
+            )}
+            <input
+              className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1"
+              placeholder="Search primary trainings..."
+              value={primarySearch}
+              onChange={e => setPrimarySearch(e.target.value)}
+            />
+            <div className="border rounded-lg overflow-y-auto flex-1" style={{ maxHeight: '11rem' }}>
+              {filteredProfiles.length === 0 && (
+                <p className="text-xs text-slate-400 text-center py-3">No primary trainings found</p>
+              )}
+              {filteredProfiles.map(p => (
+                <label key={p.id}
+                  className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
+                    String(p.id) === form.recommended_training_id ? 'bg-indigo-50' : ''
+                  }`}>
+                  <input
+                    type="radio"
+                    name="recommended_training_id"
+                    checked={String(p.id) === form.recommended_training_id}
+                    onChange={() => setForm(f => ({ ...f, recommended_training_id: String(p.id) }))}
+                    className="rounded"
+                  />
+                  <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">PLY</span>
+                  <span className="text-xs text-slate-700">{p.profile_name}</span>
+                </label>
               ))}
             </div>
-          )}
-          <input
-            className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1"
-            placeholder="Search modules or curricula..."
-            value={itemSearch}
-            onChange={e => setItemSearch(e.target.value)}
-          />
-          <div className="border rounded-lg overflow-y-auto max-h-40">
-            {filteredItems.length === 0 && (
-              <p className="text-xs text-slate-400 text-center py-3">No modules or curricula found</p>
-            )}
-            {filteredItems.map(item => (
-              <label key={`${item.type}-${item.id}`}
-                className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
-                  isSelected(item) ? 'bg-blue-50' : ''
-                }`}>
-                <input type="checkbox" checked={isSelected(item)} onChange={() => toggleComplementary(item)} className="rounded" />
-                <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">
-                  {item.type === 'curriculum' ? 'CUR' : 'MOD'}
-                </span>
-                <span className="text-xs text-slate-700">{item.title}</span>
-              </label>
-            ))}
           </div>
+
+          {/* Right: Complementary Trainings */}
+          <div className="flex flex-col">
+            <label className="text-xs text-slate-500 block mb-1">Complementary Trainings (modules &amp; curricula)</label>
+            {form.complementary_items.length > 0 && (
+              <div className="flex flex-wrap gap-1 mb-2">
+                {form.complementary_items.map(i => (
+                  <span key={`${i.type}-${i.id}`}
+                    className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5 text-xs">
+                    <span className="text-blue-400 uppercase text-[10px] font-semibold">{i.type === 'curriculum' ? 'CUR' : 'MOD'}</span>
+                    {i.title}
+                    <button onClick={() => toggleComplementary(i)} className="ml-0.5 text-blue-400 hover:text-blue-700 leading-none">&times;</button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <input
+              className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1"
+              placeholder="Search modules or curricula..."
+              value={itemSearch}
+              onChange={e => setItemSearch(e.target.value)}
+            />
+            <div className="border rounded-lg overflow-y-auto flex-1" style={{ maxHeight: '11rem' }}>
+              {filteredItems.length === 0 && (
+                <p className="text-xs text-slate-400 text-center py-3">No modules or curricula found</p>
+              )}
+              {filteredItems.map(item => (
+                <label key={`${item.type}-${item.id}`}
+                  className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
+                    isSelected(item) ? 'bg-blue-50' : ''
+                  }`}>
+                  <input type="checkbox" checked={isSelected(item)} onChange={() => toggleComplementary(item)} className="rounded" />
+                  <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">
+                    {item.type === 'curriculum' ? 'CUR' : 'MOD'}
+                  </span>
+                  <span className="text-xs text-slate-700">{item.title}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
         </div>
 
         <div className="flex gap-2 justify-end">
