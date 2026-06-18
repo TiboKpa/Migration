@@ -28,11 +28,14 @@ router.get('/:projectId/role-matrix', authenticate, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET training profiles (primary trainings) for a project
+// GET primary trainings (playlists with is_complementary = false) for the recommended training dropdown
 router.get('/:projectId/role-matrix/training-profiles', authenticate, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, profile_name FROM training_profiles WHERE project_id=$1 ORDER BY profile_name',
+      `SELECT id, title AS profile_name
+       FROM playlists
+       WHERE project_id=$1 AND (is_complementary = false OR is_complementary IS NULL)
+       ORDER BY title`,
       [req.params.projectId]
     );
     res.json(result.rows);
@@ -142,7 +145,6 @@ router.put('/:projectId/role-matrix/:id', authenticate, async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // Rebuild concatenate if structural fields were provided
     let updateQuery, updateParams;
     if (fn !== undefined && role !== undefined) {
       const concatenate = `${fn}-${role}-${pbom_champion ? 'Yes' : 'No'}-${boc_admin ? 'Yes' : 'No'}-${boc_member ? 'Yes' : 'No'}-${eto_user ? 'Yes' : 'No'}-${team_manager ? 'Yes' : 'No'}`;
