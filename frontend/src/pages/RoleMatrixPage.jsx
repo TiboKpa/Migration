@@ -18,6 +18,8 @@ const TLG_ADDON_OPTIONS = [
   'SE_TLG_MPM_Process_Plan',
 ];
 
+const NA_SENTINEL = 'N/A';
+
 const SKIP_COLS = new Set(['Function', 'Role', 'Concatenate', 'PDM Role', 'TLG Group']);
 
 function cleanInfoKeyName(header) {
@@ -228,33 +230,61 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
 // TLG selector
 // ---------------------------------------------------------------------------
 function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
+  const isNA    = tlgPrimary === NA_SENTINEL;
   const isError = tlgPrimary === 'Error';
+  const addonDisabled = isNA || isError;
+
+  function handlePrimaryClick(opt) {
+    // clicking the already-selected option deselects (toggle off)
+    const next = tlgPrimary === opt ? '' : opt;
+    onChange({ tlgPrimary: next, tlgAddon: next === NA_SENTINEL ? [] : tlgAddon });
+  }
+
   return (
     <div className="grid grid-cols-2 gap-3">
       <div>
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Primary TLG Group</p>
         <div className="border rounded-lg overflow-hidden">
+          {/* N/A hardcoded at top */}
+          <label className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b ${
+            isNA ? 'bg-slate-100' : ''
+          }`}>
+            <input type="radio" name="tlg_primary" checked={isNA}
+              onChange={() => handlePrimaryClick(NA_SENTINEL)} />
+            <span className="text-xs text-slate-400 font-semibold">N/A</span>
+          </label>
           {TLG_PRIMARY_OPTIONS.map(opt => (
             <label key={opt}
-              className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
+              className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 ${
+                isNA ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'
+              } ${
                 tlgPrimary === opt ? (opt === 'Error' ? 'bg-red-50' : 'bg-indigo-50') : ''
               }`}>
               <input type="radio" name="tlg_primary" checked={tlgPrimary === opt}
-                onChange={() => onChange({ tlgPrimary: tlgPrimary === opt ? '' : opt, tlgAddon })} />
-              <span className={`text-xs ${opt === 'Error' ? 'text-red-500 font-medium' : 'text-slate-700'}`}>{opt}</span>
+                disabled={isNA}
+                onChange={() => handlePrimaryClick(opt)} />
+              <span className={`text-xs ${
+                isNA ? 'text-slate-400' : opt === 'Error' ? 'text-red-500 font-medium' : 'text-slate-700'
+              }`}>{opt}</span>
             </label>
           ))}
         </div>
       </div>
       <div>
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Add-on TLG Groups</p>
-        <div className="border rounded-lg overflow-hidden">
+        <p className={`text-xs font-semibold uppercase tracking-wide mb-1.5 ${
+          addonDisabled ? 'text-slate-300' : 'text-slate-500'
+        }`}>Add-on TLG Groups</p>
+        <div className={`border rounded-lg overflow-hidden ${
+          addonDisabled ? 'opacity-40' : ''
+        }`}>
           {TLG_ADDON_OPTIONS.map(opt => {
             const checked = tlgAddon.includes(opt);
             return (
               <label key={opt}
-                className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${checked ? 'bg-teal-50' : ''}`}>
-                <input type="checkbox" checked={checked} disabled={isError}
+                className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 ${
+                  addonDisabled ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'
+                } ${checked ? 'bg-teal-50' : ''}`}>
+                <input type="checkbox" checked={checked} disabled={addonDisabled}
                   onChange={() => onChange({ tlgPrimary, tlgAddon: checked ? tlgAddon.filter(x => x !== opt) : [...tlgAddon, opt] })}
                   className="rounded accent-teal-600" />
                 <span className="text-xs text-slate-700">{opt}</span>
@@ -262,7 +292,8 @@ function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
             );
           })}
         </div>
-        {isError && <p className="text-xs text-red-400 mt-1">Add-ons disabled when primary is Error.</p>}
+        {isNA    && <p className="text-xs text-slate-400 mt-1">Add-ons not applicable.</p>}
+        {isError && !isNA && <p className="text-xs text-red-400 mt-1">Add-ons disabled when primary is Error.</p>}
       </div>
     </div>
   );
@@ -276,12 +307,25 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
     ...complementaryOptions.curricula.map(c => ({ ...c, type: 'curriculum' })),
     ...complementaryOptions.modules.map(m => ({ ...m, type: 'module' })),
   ];
-  const [tlgPrimary, setTlgPrimary] = useState(entry.tlg_primary || '');
-  const [tlgAddon, setTlgAddon] = useState(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []);
-  const [recommendedId, setRecommendedId] = useState(entry.recommended_training_id ? String(entry.recommended_training_id) : '');
-  const [complementaryItems, setComplementaryItems] = useState(Array.isArray(entry.complementary_items) ? entry.complementary_items : []);
-  const [primarySearch, setPrimarySearch] = useState('');
-  const [itemSearch, setItemSearch] = useState('');
+
+  // Detect N/A sentinel stored as recommended_training_id === null AND a special flag,
+  // or simply store it as a boolean in local state derived from entry
+  const [tlgPrimary,        setTlgPrimary]        = useState(entry.tlg_primary || '');
+  const [tlgAddon,          setTlgAddon]          = useState(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []);
+  const [naTraining,        setNaTraining]        = useState(entry.na_training === true);
+  const [recommendedId,     setRecommendedId]     = useState(entry.recommended_training_id ? String(entry.recommended_training_id) : '');
+  const [complementaryItems,setComplementaryItems] = useState(Array.isArray(entry.complementary_items) ? entry.complementary_items : []);
+  const [primarySearch,     setPrimarySearch]     = useState('');
+  const [itemSearch,        setItemSearch]        = useState('');
+
+  // When N/A training is toggled on, clear training data
+  function handleNaTraining(val) {
+    setNaTraining(val);
+    if (val) {
+      setRecommendedId('');
+      setComplementaryItems([]);
+    }
+  }
 
   const filteredProfiles = profiles.filter(p => p.profile_name.toLowerCase().includes(primarySearch.toLowerCase()));
   const filteredItems    = allItems.filter(i => i.title.toLowerCase().includes(itemSearch.toLowerCase()));
@@ -317,70 +361,108 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
         </div>
 
+        {/* TLG section with N/A built in */}
         <div className="border rounded-xl p-4 mb-4 bg-slate-50">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">TLG Group</p>
-          <TlgGroupSelector tlgPrimary={tlgPrimary} tlgAddon={tlgAddon}
-            onChange={({ tlgPrimary: p, tlgAddon: a }) => { setTlgPrimary(p); setTlgAddon(a); }} />
+          <TlgGroupSelector
+            tlgPrimary={tlgPrimary}
+            tlgAddon={tlgAddon}
+            onChange={({ tlgPrimary: p, tlgAddon: a }) => { setTlgPrimary(p); setTlgAddon(a); }}
+          />
         </div>
 
-        <div className="grid grid-cols-2 gap-4 mb-5">
-          <div className="flex flex-col">
-            <label className="text-xs text-slate-500 block mb-1">Recommended Primary Training</label>
-            {selectedProfile && (
-              <div className="flex flex-wrap gap-1 mb-2">
-                <span className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full px-2 py-0.5 text-xs">
-                  <span className="text-indigo-400 uppercase text-[10px] font-semibold">PLY</span>
-                  {selectedProfile.profile_name}
-                  <button onClick={() => setRecommendedId('')} className="ml-0.5 text-indigo-400 hover:text-indigo-700 leading-none">&times;</button>
-                </span>
+        {/* Training section */}
+        <div className="mb-5">
+          {/* N/A toggle for training */}
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Trainings</p>
+            <ToggleSwitch
+              checked={naTraining}
+              onChange={handleNaTraining}
+              label="N/A (not applicable)"
+            />
+          </div>
+
+          <div className={`grid grid-cols-2 gap-4 transition-opacity ${
+            naTraining ? 'opacity-40 pointer-events-none select-none' : ''
+          }`}>
+            <div className="flex flex-col">
+              <label className="text-xs text-slate-500 block mb-1">Recommended Primary Training</label>
+              {selectedProfile && !naTraining && (
+                <div className="flex flex-wrap gap-1 mb-2">
+                  <span className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full px-2 py-0.5 text-xs">
+                    <span className="text-indigo-400 uppercase text-[10px] font-semibold">PLY</span>
+                    {selectedProfile.profile_name}
+                    <button onClick={() => setRecommendedId('')} className="ml-0.5 text-indigo-400 hover:text-indigo-700 leading-none">&times;</button>
+                  </span>
+                </div>
+              )}
+              <input className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1" placeholder="Search primary trainings..."
+                value={primarySearch} onChange={e => setPrimarySearch(e.target.value)} disabled={naTraining} />
+              <div className="border rounded-lg overflow-y-auto flex-1" style={{ maxHeight: '11rem' }}>
+                {filteredProfiles.length === 0 && <p className="text-xs text-slate-400 text-center py-3">No primary trainings found</p>}
+                {filteredProfiles.map(p => (
+                  <label key={p.id} className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 ${
+                    naTraining ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'
+                  } ${String(p.id) === recommendedId ? 'bg-indigo-50' : ''}`}>
+                    <input type="radio" name="recommended_training_id" checked={String(p.id) === recommendedId}
+                      disabled={naTraining}
+                      onChange={() => setRecommendedId(String(p.id))} />
+                    <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">PLY</span>
+                    <span className="text-xs text-slate-700">{p.profile_name}</span>
+                  </label>
+                ))}
               </div>
-            )}
-            <input className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1" placeholder="Search primary trainings..."
-              value={primarySearch} onChange={e => setPrimarySearch(e.target.value)} />
-            <div className="border rounded-lg overflow-y-auto flex-1" style={{ maxHeight: '11rem' }}>
-              {filteredProfiles.length === 0 && <p className="text-xs text-slate-400 text-center py-3">No primary trainings found</p>}
-              {filteredProfiles.map(p => (
-                <label key={p.id} className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${String(p.id) === recommendedId ? 'bg-indigo-50' : ''}`}>
-                  <input type="radio" name="recommended_training_id" checked={String(p.id) === recommendedId} onChange={() => setRecommendedId(String(p.id))} />
-                  <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">PLY</span>
-                  <span className="text-xs text-slate-700">{p.profile_name}</span>
-                </label>
-              ))}
+            </div>
+
+            <div className="flex flex-col">
+              <label className="text-xs text-slate-500 block mb-1">Complementary Trainings</label>
+              {complementaryItems.length > 0 && !naTraining && (
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {complementaryItems.map(i => (
+                    <span key={`${i.type}-${i.id}`} className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5 text-xs">
+                      <span className="text-blue-400 uppercase text-[10px] font-semibold">{i.type === 'curriculum' ? 'CUR' : 'MOD'}</span>
+                      {i.title}
+                      <button onClick={() => toggleComp(i)} className="ml-0.5 text-blue-400 hover:text-blue-700 leading-none">&times;</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <input className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1" placeholder="Search modules or curricula..."
+                value={itemSearch} onChange={e => setItemSearch(e.target.value)} disabled={naTraining} />
+              <div className="border rounded-lg overflow-y-auto flex-1" style={{ maxHeight: '11rem' }}>
+                {filteredItems.length === 0 && <p className="text-xs text-slate-400 text-center py-3">No modules or curricula found</p>}
+                {filteredItems.map(item => (
+                  <label key={`${item.type}-${item.id}`} className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 ${
+                    naTraining ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'
+                  } ${complementaryItems.some(i => i.type === item.type && i.id === item.id) ? 'bg-blue-50' : ''}`}>
+                    <input type="checkbox"
+                      checked={complementaryItems.some(i => i.type === item.type && i.id === item.id)}
+                      disabled={naTraining}
+                      onChange={() => toggleComp(item)} className="rounded" />
+                    <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">{item.type === 'curriculum' ? 'CUR' : 'MOD'}</span>
+                    <span className="text-xs text-slate-700">{item.title}</span>
+                  </label>
+                ))}
+              </div>
             </div>
           </div>
 
-          <div className="flex flex-col">
-            <label className="text-xs text-slate-500 block mb-1">Complementary Trainings</label>
-            {complementaryItems.length > 0 && (
-              <div className="flex flex-wrap gap-1 mb-2">
-                {complementaryItems.map(i => (
-                  <span key={`${i.type}-${i.id}`} className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5 text-xs">
-                    <span className="text-blue-400 uppercase text-[10px] font-semibold">{i.type === 'curriculum' ? 'CUR' : 'MOD'}</span>
-                    {i.title}
-                    <button onClick={() => toggleComp(i)} className="ml-0.5 text-blue-400 hover:text-blue-700 leading-none">&times;</button>
-                  </span>
-                ))}
-              </div>
-            )}
-            <input className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1" placeholder="Search modules or curricula..."
-              value={itemSearch} onChange={e => setItemSearch(e.target.value)} />
-            <div className="border rounded-lg overflow-y-auto flex-1" style={{ maxHeight: '11rem' }}>
-              {filteredItems.length === 0 && <p className="text-xs text-slate-400 text-center py-3">No modules or curricula found</p>}
-              {filteredItems.map(item => (
-                <label key={`${item.type}-${item.id}`} className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${complementaryItems.some(i => i.type === item.type && i.id === item.id) ? 'bg-blue-50' : ''}`}>
-                  <input type="checkbox" checked={complementaryItems.some(i => i.type === item.type && i.id === item.id)} onChange={() => toggleComp(item)} className="rounded" />
-                  <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">{item.type === 'curriculum' ? 'CUR' : 'MOD'}</span>
-                  <span className="text-xs text-slate-700">{item.title}</span>
-                </label>
-              ))}
-            </div>
-          </div>
+          {naTraining && (
+            <p className="text-xs text-slate-400 mt-2">Training is marked as not applicable. No primary or complementary training will be saved.</p>
+          )}
         </div>
 
         <div className="flex gap-2 justify-end">
           <button onClick={onClose} className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
           <button
-            onClick={() => onSave({ tlg_primary: tlgPrimary, tlg_addon: tlgAddon, recommended_training_id: recommendedId ? parseInt(recommendedId) : null, complementary_items: complementaryItems })}
+            onClick={() => onSave({
+              tlg_primary: tlgPrimary,
+              tlg_addon: tlgPrimary === NA_SENTINEL ? [] : tlgAddon,
+              na_training: naTraining,
+              recommended_training_id: naTraining ? null : (recommendedId ? parseInt(recommendedId) : null),
+              complementary_items: naTraining ? [] : complementaryItems,
+            })}
             className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700"
           >Save</button>
         </div>
@@ -484,8 +566,8 @@ export default function RoleMatrixPage() {
       row['Concatenate'] = '';
       const rec = profiles.find(p => p.id === e.recommended_training_id);
       const compTitles = Array.isArray(e.complementary_items) ? e.complementary_items.map(i => i.title) : [];
-      row['PDM Role']  = [rec ? rec.profile_name : '', ...compTitles].filter(Boolean).join(' + ');
-      row['TLG Group'] = [e.tlg_primary || '', ...(Array.isArray(e.tlg_addon) ? e.tlg_addon : [])].filter(Boolean).join(' + ');
+      row['PDM Role']  = e.na_training ? 'N/A' : [rec ? rec.profile_name : '', ...compTitles].filter(Boolean).join(' + ');
+      row['TLG Group'] = e.tlg_primary === NA_SENTINEL ? 'N/A' : [e.tlg_primary || '', ...(Array.isArray(e.tlg_addon) ? e.tlg_addon : [])].filter(Boolean).join(' + ');
       return row;
     });
     const ws = XLSX.utils.json_to_sheet(data);
@@ -525,7 +607,6 @@ export default function RoleMatrixPage() {
   }, [entries, selectedFn, selectedRole, selectedInfo]);
 
   const isDimPending = addDimMutation.isPending;
-
   const thClass = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide';
 
   return (
@@ -561,11 +642,7 @@ export default function RoleMatrixPage() {
           <p className="text-sm text-slate-500">{entries.length} rules</p>
         </div>
         <div className="flex gap-3 items-center flex-wrap justify-end">
-          <ToggleSwitch
-            checked={editMode}
-            onChange={setEditMode}
-            label="Edit mode"
-          />
+          <ToggleSwitch checked={editMode} onChange={setEditMode} label="Edit mode" />
           <button onClick={() => fileRef.current.click()} disabled={importMutation.isPending}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
             {importMutation.isPending ? 'Importing...' : 'Import Excel'}
@@ -593,40 +670,23 @@ export default function RoleMatrixPage() {
 
       {/* 3-panel selector */}
       <div className="grid grid-cols-3 gap-4 mb-4 shrink-0" style={{ height: '16rem' }}>
-        <SelectorPanel
-          title="Function" badge="FNC"
-          items={dimensions.functions}
-          selected={selectedFn} multi={false}
-          onChange={setSelectedFn}
-          onAddNew={() => setAddModalType('function')}
-          editMode={editMode}
-        />
-        <SelectorPanel
-          title="Role" badge="ROL"
-          items={dimensions.roles}
-          selected={selectedRole} multi={false}
-          onChange={setSelectedRole}
-          onAddNew={() => setAddModalType('role')}
-          editMode={editMode}
-        />
-        <SelectorPanel
-          title="Additional Info" badge="INF"
-          items={dimensions.info_keys}
-          selected={selectedInfo} multi={true}
-          onChange={setSelectedInfo}
-          onAddNew={() => setAddModalType('info_key')}
-          editMode={editMode}
-        />
+        <SelectorPanel title="Function" badge="FNC" items={dimensions.functions}
+          selected={selectedFn} multi={false} onChange={setSelectedFn}
+          onAddNew={() => setAddModalType('function')} editMode={editMode} />
+        <SelectorPanel title="Role" badge="ROL" items={dimensions.roles}
+          selected={selectedRole} multi={false} onChange={setSelectedRole}
+          onAddNew={() => setAddModalType('role')} editMode={editMode} />
+        <SelectorPanel title="Additional Info" badge="INF" items={dimensions.info_keys}
+          selected={selectedInfo} multi={true} onChange={setSelectedInfo}
+          onAddNew={() => setAddModalType('info_key')} editMode={editMode} />
       </div>
 
       {/* Row count + reset */}
       <div className="flex items-center gap-3 mb-3 shrink-0">
         <span className="text-xs text-slate-400">{filteredEntries.length} rows</span>
         {(selectedFn || selectedRole || selectedInfo.length > 0) && (
-          <button
-            onClick={() => { setSelectedFn(null); setSelectedRole(null); setSelectedInfo([]); }}
-            className="text-xs text-slate-400 hover:text-slate-600"
-          >
+          <button onClick={() => { setSelectedFn(null); setSelectedRole(null); setSelectedInfo([]); }}
+            className="text-xs text-slate-400 hover:text-slate-600">
             Reset filters
           </button>
         )}
@@ -665,6 +725,7 @@ export default function RoleMatrixPage() {
               </td></tr>
             )}
             {filteredEntries.map(entry => {
+              const isTlgNA   = entry.tlg_primary === NA_SENTINEL;
               const isError   = entry.tlg_primary === 'Error';
               const rec       = profiles.find(p => p.id === entry.recommended_training_id);
               const compItems = Array.isArray(entry.complementary_items) ? entry.complementary_items : [];
@@ -683,33 +744,41 @@ export default function RoleMatrixPage() {
                     </td>
                   ))}
                   <td className="px-3 py-2">
-                    {rec
-                      ? <span className="text-xs text-indigo-700 font-medium">{rec.profile_name}</span>
-                      : entry.primary_training_name
-                        ? <span className="text-xs text-amber-600 font-medium" title="Not yet matched">{entry.primary_training_name}</span>
+                    {entry.na_training
+                      ? <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>
+                      : rec
+                        ? <span className="text-xs text-indigo-700 font-medium">{rec.profile_name}</span>
+                        : entry.primary_training_name
+                          ? <span className="text-xs text-amber-600 font-medium" title="Not yet matched">{entry.primary_training_name}</span>
+                          : <span className="text-xs text-slate-300">-</span>}
+                  </td>
+                  <td className="px-3 py-2">
+                    {entry.na_training
+                      ? <span className="text-xs text-slate-300">-</span>
+                      : <div className="flex flex-wrap gap-1">
+                          {compItems.filter(i => i.type !== 'unresolved').map(i => (
+                            <span key={`${i.type}-${i.id}`} className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{i.title}</span>
+                          ))}
+                          {compItems.filter(i => i.type === 'unresolved').map((i, idx) => (
+                            <span key={`unresolved-${idx}`} className="text-[10px] bg-amber-50 text-amber-600 border border-amber-200 rounded px-1.5 py-0.5" title="Not matched">{i.title}</span>
+                          ))}
+                        </div>}
+                  </td>
+                  <td className="px-3 py-2">
+                    {isTlgNA
+                      ? <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>
+                      : entry.tlg_primary
+                        ? <span className={`text-xs font-medium ${isError ? 'text-red-500' : 'text-slate-800'}`}>{entry.tlg_primary}</span>
                         : <span className="text-xs text-slate-300">-</span>}
                   </td>
                   <td className="px-3 py-2">
-                    <div className="flex flex-wrap gap-1">
-                      {compItems.filter(i => i.type !== 'unresolved').map(i => (
-                        <span key={`${i.type}-${i.id}`} className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{i.title}</span>
-                      ))}
-                      {compItems.filter(i => i.type === 'unresolved').map((i, idx) => (
-                        <span key={`unresolved-${idx}`} className="text-[10px] bg-amber-50 text-amber-600 border border-amber-200 rounded px-1.5 py-0.5" title="Not matched">{i.title}</span>
-                      ))}
-                    </div>
-                  </td>
-                  <td className="px-3 py-2">
-                    {entry.tlg_primary
-                      ? <span className={`text-xs font-medium ${isError ? 'text-red-500' : 'text-slate-800'}`}>{entry.tlg_primary}</span>
-                      : <span className="text-xs text-slate-300">-</span>}
-                  </td>
-                  <td className="px-3 py-2">
-                    <div className="flex flex-wrap gap-1">
-                      {(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []).map(a => (
-                        <span key={a} className="text-[10px] bg-teal-50 text-teal-700 border border-teal-100 rounded px-1.5 py-0.5">{a}</span>
-                      ))}
-                    </div>
+                    {isTlgNA
+                      ? <span className="text-xs text-slate-300">-</span>
+                      : <div className="flex flex-wrap gap-1">
+                          {(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []).map(a => (
+                            <span key={a} className="text-[10px] bg-teal-50 text-teal-700 border border-teal-100 rounded px-1.5 py-0.5">{a}</span>
+                          ))}
+                        </div>}
                   </td>
                   <td className="px-2 py-2">
                     <button onClick={() => setModalEntry(entry)} className="text-xs text-slate-400 hover:text-blue-600">Fill</button>
