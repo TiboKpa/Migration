@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
@@ -102,16 +102,28 @@ function matchCombo(combos, profile) {
   ) || null;
 }
 
-// ---- Single-select panel with fixed options + Add new ----
+function entryToForm(entry) {
+  return {
+    function: entry.function || '',
+    role: entry.role || '',
+    pbom_champion: !!entry.pbom_champion,
+    boc_admin: !!entry.boc_admin,
+    boc_member: !!entry.boc_member,
+    eto_user: !!entry.eto_user,
+    team_manager: !!entry.team_manager,
+    tlg_primary: entry.tlg_primary || entry.tlg_group || '',
+    tlg_addon: Array.isArray(entry.tlg_addon) ? entry.tlg_addon : [],
+    recommended_training_id: entry.recommended_training_id ? String(entry.recommended_training_id) : '',
+    complementary_items: Array.isArray(entry.complementary_items) ? entry.complementary_items : [],
+  };
+}
+
 function SingleSelectPanel({ title, placeholder, options, value, onChange, fixedOptions }) {
   const [search, setSearch] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [newValue, setNewValue] = useState('');
 
-  const allOptions = fixedOptions
-    ? [...options]
-    : [...options];
-
+  const allOptions = [...options];
   const filtered = allOptions.filter(o => o.toLowerCase().includes(search.toLowerCase()));
 
   function handleAddNew() {
@@ -189,7 +201,6 @@ function SingleSelectPanel({ title, placeholder, options, value, onChange, fixed
   );
 }
 
-// ---- Multi-select panel (checkbox) ----
 function MultiSelectPanel({ title, placeholder, options, value, onChange }) {
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
@@ -304,13 +315,11 @@ function MultiSelectPanel({ title, placeholder, options, value, onChange }) {
   );
 }
 
-// ---- TLG Group selector: primary (radio from fixed list) + add-on (checkboxes from fixed list) ----
 function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
   const isError = tlgPrimary === 'Error';
 
   return (
     <div className="grid grid-cols-2 gap-3">
-      {/* Primary TLG */}
       <div>
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Primary TLG Group</p>
         <div className="border rounded-lg overflow-hidden">
@@ -334,7 +343,6 @@ function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
         </div>
       </div>
 
-      {/* Add-on TLG */}
       <div>
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Add-on TLG Groups</p>
         {tlgAddon.length > 0 && (
@@ -358,6 +366,7 @@ function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
                 <input
                   type="checkbox"
                   checked={checked}
+                  disabled={isError}
                   onChange={() => onChange({
                     tlgPrimary,
                     tlgAddon: checked ? tlgAddon.filter(x => x !== opt) : [...tlgAddon, opt],
@@ -377,8 +386,7 @@ function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
   );
 }
 
-// ---- Unified Create / Edit Modal ----
-function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uniqueRoles, onSave, onClose }) {
+function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uniqueRoles, entries, onSave, onClose }) {
   const isNew = !entry.id;
 
   const allItems = [
@@ -386,25 +394,39 @@ function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
     ...complementaryOptions.modules.map(m => ({ ...m, type: 'module' })),
   ];
 
-  const [form, setForm] = useState({
-    function: entry.function || '',
-    role: entry.role || '',
-    pbom_champion: !!entry.pbom_champion,
-    boc_admin: !!entry.boc_admin,
-    boc_member: !!entry.boc_member,
-    eto_user: !!entry.eto_user,
-    team_manager: !!entry.team_manager,
-    tlg_primary: entry.tlg_primary || entry.tlg_group || '',
-    tlg_addon: Array.isArray(entry.tlg_addon) ? entry.tlg_addon : [],
-    recommended_training_id: entry.recommended_training_id ? String(entry.recommended_training_id) : '',
-    complementary_items: Array.isArray(entry.complementary_items) ? entry.complementary_items : [],
-  });
+  const [form, setForm] = useState(entryToForm(entry));
+  const [autoFilledFromExisting, setAutoFilledFromExisting] = useState(false);
+
+  useEffect(() => {
+    if (!isNew) return;
+    if (!form.function || !form.role) return;
+
+    const existing = entries.find(e => e.function === form.function && e.role === form.role);
+    if (!existing) return;
+
+    setForm(current => {
+      if (current.function !== form.function || current.role !== form.role) return current;
+      const next = entryToForm(existing);
+      return { ...next, function: form.function, role: form.role };
+    });
+    setAutoFilledFromExisting(true);
+  }, [isNew, form.function, form.role, entries]);
 
   const [primarySearch, setPrimarySearch] = useState('');
   const filteredProfiles = profiles.filter(p =>
     p.profile_name.toLowerCase().includes(primarySearch.toLowerCase())
   );
   const selectedProfile = profiles.find(p => String(p.id) === form.recommended_training_id) || null;
+
+  function handleFunctionChange(v) {
+    setAutoFilledFromExisting(false);
+    setForm(f => ({ ...f, function: v }));
+  }
+
+  function handleRoleChange(v) {
+    setAutoFilledFromExisting(false);
+    setForm(f => ({ ...f, role: v }));
+  }
 
   function toggleComplementary(item) {
     setForm(f => {
@@ -446,21 +468,26 @@ function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
         </div>
 
-        {/* Three-panel: Function / Role / Bool Flags */}
+        {isNew && autoFilledFromExisting && (
+          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            Existing Function + Role found. TLG, Recommended Training, and Complementary Trainings were loaded automatically.
+          </div>
+        )}
+
         <div className="grid grid-cols-3 gap-4 mb-5">
           <SingleSelectPanel
             title="Function"
             placeholder="Search functions..."
             options={uniqueFunctions}
             value={form.function}
-            onChange={v => setForm(f => ({ ...f, function: v }))}
+            onChange={handleFunctionChange}
           />
           <SingleSelectPanel
             title="Role"
             placeholder="Search roles..."
             options={uniqueRoles}
             value={form.role}
-            onChange={v => setForm(f => ({ ...f, role: v }))}
+            onChange={handleRoleChange}
           />
           <MultiSelectPanel
             title="Complementary Info"
@@ -471,7 +498,6 @@ function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
           />
         </div>
 
-        {/* TLG Group section */}
         <div className="border rounded-xl p-4 mb-4 bg-slate-50">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">TLG Group</p>
           <TlgGroupSelector
@@ -481,7 +507,6 @@ function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
           />
         </div>
 
-        {/* Primary Training + Complementary trainings */}
         <div className="grid grid-cols-2 gap-4 mb-5">
           <div className="flex flex-col">
             <label className="text-xs text-slate-500 block mb-1">Recommended Primary Training</label>
@@ -702,12 +727,12 @@ export default function RoleMatrixPage() {
           complementaryOptions={complementaryOptions}
           uniqueFunctions={uniqueFunctions}
           uniqueRoles={uniqueRoles}
+          entries={entries}
           onSave={handleSave}
           onClose={() => setModalEntry(null)}
         />
       )}
 
-      {/* Header */}
       <div className="flex items-center justify-between mb-4 shrink-0">
         <div>
           <h1 className="text-xl font-bold text-slate-800">Role Matrix</h1>
@@ -740,7 +765,6 @@ export default function RoleMatrixPage() {
       {importMutation.isPending && <p className="text-sm text-blue-600 mb-2">Importing...</p>}
       {importMutation.isSuccess && <p className="text-sm text-green-600 mb-2">Import complete</p>}
 
-      {/* PIVOT VIEW */}
       {viewMode === 'pivot' && (
         <>
           <div className="flex items-center gap-6 mb-3 px-4 py-2.5 bg-slate-50 border rounded-xl shrink-0">
@@ -820,7 +844,6 @@ export default function RoleMatrixPage() {
         </>
       )}
 
-      {/* FLAT VIEW */}
       {viewMode === 'flat' && (
         <div className="overflow-auto rounded-xl border bg-white flex-1">
           <table className="min-w-max text-sm border-collapse">
