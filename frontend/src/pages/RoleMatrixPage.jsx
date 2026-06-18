@@ -63,8 +63,8 @@ function parseRoleMatrixExcel(buffer) {
       const val = row[ci];
       additional_info[clean] = val === true || val === 1 || (typeof val === 'string' && val.trim().toLowerCase() === 'yes');
     }
-    const tlgParts  = tlgGroupIdx >= 0 ? splitByPlus(row[tlgGroupIdx]) : [];
-    const pdmParts  = pdmRoleIdx  >= 0 ? splitByPlus(row[pdmRoleIdx])  : [];
+    const tlgParts = tlgGroupIdx >= 0 ? splitByPlus(row[tlgGroupIdx]) : [];
+    const pdmParts = pdmRoleIdx  >= 0 ? splitByPlus(row[pdmRoleIdx])  : [];
     entries.push({
       function: fn, role,
       additional_info,
@@ -79,7 +79,28 @@ function parseRoleMatrixExcel(buffer) {
 }
 
 // ---------------------------------------------------------------------------
-// Add-dimension modal (search + confirm)
+// Toggle switch
+// ---------------------------------------------------------------------------
+function ToggleSwitch({ checked, onChange, label }) {
+  return (
+    <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+      <span className="text-xs text-slate-500">{label}</span>
+      <span
+        onClick={() => onChange(!checked)}
+        className={`relative inline-block w-9 h-5 rounded-full transition-colors duration-200 ${
+          checked ? 'bg-blue-600' : 'bg-slate-300'
+        }`}
+      >
+        <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${
+          checked ? 'translate-x-4' : 'translate-x-0'
+        }`} />
+      </span>
+    </label>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Add-dimension modal
 // ---------------------------------------------------------------------------
 function AddDimModal({ label, badge, existing, onAdd, onClose }) {
   const [search, setSearch] = useState('');
@@ -141,9 +162,9 @@ function AddDimModal({ label, badge, existing, onAdd, onClose }) {
 }
 
 // ---------------------------------------------------------------------------
-// Selector panel -- radio (single) or checkbox (multi)
+// Selector panel
 // ---------------------------------------------------------------------------
-function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNew, disabled }) {
+function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNew, editMode }) {
   const [search, setSearch] = useState('');
   const filtered = items.filter(v => v.toLowerCase().includes(search.toLowerCase()));
 
@@ -189,21 +210,22 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
           </label>
         ))}
       </div>
-      <div className="px-3 py-2 border-t bg-slate-50 shrink-0">
-        <button
-          onClick={onAddNew}
-          disabled={disabled}
-          className="w-full border border-dashed border-slate-300 rounded-lg py-1.5 text-xs text-slate-500 hover:border-blue-400 hover:text-blue-600 disabled:opacity-40"
-        >
-          + Add new
-        </button>
-      </div>
+      {editMode && (
+        <div className="px-3 py-2 border-t bg-slate-50 shrink-0">
+          <button
+            onClick={onAddNew}
+            className="w-full border border-dashed border-slate-300 rounded-lg py-1.5 text-xs text-slate-500 hover:border-blue-400 hover:text-blue-600"
+          >
+            + Add new
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// TLG selector (unchanged)
+// TLG selector
 // ---------------------------------------------------------------------------
 function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
   const isError = tlgPrimary === 'Error';
@@ -247,7 +269,7 @@ function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
 }
 
 // ---------------------------------------------------------------------------
-// Edit modal (unchanged)
+// Edit modal
 // ---------------------------------------------------------------------------
 function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
   const allItems = [
@@ -268,7 +290,9 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
   function toggleComp(item) {
     setComplementaryItems(prev => {
       const exists = prev.some(i => i.type === item.type && i.id === item.id);
-      return exists ? prev.filter(i => !(i.type === item.type && i.id === item.id)) : [...prev, { type: item.type, id: item.id, title: item.title }];
+      return exists
+        ? prev.filter(i => !(i.type === item.type && i.id === item.id))
+        : [...prev, { type: item.type, id: item.id, title: item.title }];
     });
   }
 
@@ -373,15 +397,13 @@ export default function RoleMatrixPage() {
   const qc = useQueryClient();
   const fileRef = useRef();
 
+  const [editMode,     setEditMode]     = useState(false);
   const [selectedFn,   setSelectedFn]   = useState(null);
   const [selectedRole, setSelectedRole] = useState(null);
   const [selectedInfo, setSelectedInfo] = useState([]);
-
   const [modalEntry,   setModalEntry]   = useState(null);
   const [importError,  setImportError]  = useState('');
   const [importStats,  setImportStats]  = useState(null);
-
-  // Which "Add new" modal is open: 'function' | 'role' | 'info_key' | null
   const [addModalType, setAddModalType] = useState(null);
 
   const dimKey    = ['role-matrix-dimensions', projectId];
@@ -415,7 +437,6 @@ export default function RoleMatrixPage() {
     onSuccess: (data, variables) => {
       qc.setQueryData(dimKey, data);
       qc.refetchQueries({ queryKey: matrixKey, exact: true });
-      // Auto-select the newly added dimension
       if (variables.type === 'function') setSelectedFn(variables.value);
       if (variables.type === 'role')     setSelectedRole(variables.value);
       if (variables.type === 'info_key') setSelectedInfo(prev => [...prev, variables.value]);
@@ -494,25 +515,21 @@ export default function RoleMatrixPage() {
       clearAllMutation.mutate();
   }
 
-  // Filtered rows based on the 3-panel selections
   const filteredEntries = useMemo(() => {
     let rows = entries;
     if (selectedFn)           rows = rows.filter(r => r.function === selectedFn);
     if (selectedRole)         rows = rows.filter(r => r.role === selectedRole);
     if (selectedInfo.length > 0)
-      rows = rows.filter(r =>
-        selectedInfo.every(k => r.additional_info && r.additional_info[k])
-      );
+      rows = rows.filter(r => selectedInfo.every(k => r.additional_info && r.additional_info[k]));
     return rows;
   }, [entries, selectedFn, selectedRole, selectedInfo]);
 
   const isDimPending = addDimMutation.isPending;
 
-  const thClass = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
+  const thClass = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide';
 
   return (
     <div className="flex flex-col h-full">
-      {/* Edit modal */}
       {modalEntry !== null && (
         <EditModal
           entry={modalEntry}
@@ -523,7 +540,6 @@ export default function RoleMatrixPage() {
         />
       )}
 
-      {/* Add-dimension modal */}
       {addModalType && (
         <AddDimModal
           label={addModalType === 'function' ? 'Function' : addModalType === 'role' ? 'Role' : 'Info Key'}
@@ -544,17 +560,24 @@ export default function RoleMatrixPage() {
           <h1 className="text-xl font-bold text-slate-800">Role Matrix</h1>
           <p className="text-sm text-slate-500">{entries.length} rules</p>
         </div>
-        <div className="flex gap-2 items-center flex-wrap justify-end">
+        <div className="flex gap-3 items-center flex-wrap justify-end">
+          <ToggleSwitch
+            checked={editMode}
+            onChange={setEditMode}
+            label="Edit mode"
+          />
           <button onClick={() => fileRef.current.click()} disabled={importMutation.isPending}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
             {importMutation.isPending ? 'Importing...' : 'Import Excel'}
           </button>
           <button onClick={handleExport} disabled={entries.length === 0}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">Export Excel</button>
-          <button onClick={handleClearAll} disabled={clearAllMutation.isPending}
-            className="border border-red-200 text-red-600 px-3 py-1.5 rounded-lg text-sm hover:bg-red-50 disabled:opacity-40">
-            {clearAllMutation.isPending ? 'Emptying...' : 'Empty matrix'}
-          </button>
+          {editMode && (
+            <button onClick={handleClearAll} disabled={clearAllMutation.isPending}
+              className="border border-red-200 text-red-600 px-3 py-1.5 rounded-lg text-sm hover:bg-red-50 disabled:opacity-40">
+              {clearAllMutation.isPending ? 'Emptying...' : 'Empty matrix'}
+            </button>
+          )}
           <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleFileChange} />
         </div>
       </div>
@@ -571,34 +594,28 @@ export default function RoleMatrixPage() {
       {/* 3-panel selector */}
       <div className="grid grid-cols-3 gap-4 mb-4 shrink-0" style={{ height: '16rem' }}>
         <SelectorPanel
-          title="Function"
-          badge="FNC"
+          title="Function" badge="FNC"
           items={dimensions.functions}
-          selected={selectedFn}
-          multi={false}
+          selected={selectedFn} multi={false}
           onChange={setSelectedFn}
           onAddNew={() => setAddModalType('function')}
-          disabled={isDimPending}
+          editMode={editMode}
         />
         <SelectorPanel
-          title="Role"
-          badge="ROL"
+          title="Role" badge="ROL"
           items={dimensions.roles}
-          selected={selectedRole}
-          multi={false}
+          selected={selectedRole} multi={false}
           onChange={setSelectedRole}
           onAddNew={() => setAddModalType('role')}
-          disabled={isDimPending}
+          editMode={editMode}
         />
         <SelectorPanel
-          title="Additional Info"
-          badge="INF"
+          title="Additional Info" badge="INF"
           items={dimensions.info_keys}
-          selected={selectedInfo}
-          multi={true}
+          selected={selectedInfo} multi={true}
           onChange={setSelectedInfo}
           onAddNew={() => setAddModalType('info_key')}
-          disabled={isDimPending}
+          editMode={editMode}
         />
       </div>
 
@@ -620,15 +637,17 @@ export default function RoleMatrixPage() {
         <table className="min-w-max text-sm border-collapse w-full">
           <thead className="sticky top-0 z-10 bg-slate-50 border-b">
             <tr>
-              <th className={thClass}>Function</th>
-              <th className={thClass}>Role</th>
+              <th className={`${thClass} whitespace-nowrap`}>Function</th>
+              <th className={`${thClass} whitespace-nowrap`}>Role</th>
               {dimensions.info_keys.map(k => (
-                <th key={k} className={`${thClass} text-center`}>{k}</th>
+                <th key={k} className={`${thClass} text-center`} style={{ maxWidth: '10%', width: '10%' }}>
+                  <span className="block truncate" title={k}>{k}</span>
+                </th>
               ))}
-              <th className={`${thClass} w-52`}>Primary Training</th>
-              <th className={thClass}>Complementary</th>
-              <th className={`${thClass} w-40`}>TLG Group</th>
-              <th className={`${thClass} w-48`}>TLG Add-on</th>
+              <th className={`${thClass} w-52 whitespace-nowrap`}>Primary Training</th>
+              <th className={`${thClass} whitespace-nowrap`}>Complementary</th>
+              <th className={`${thClass} w-40 whitespace-nowrap`}>TLG Group</th>
+              <th className={`${thClass} w-48 whitespace-nowrap`}>TLG Add-on</th>
               <th className="px-2 py-2 w-14"></th>
             </tr>
           </thead>
@@ -657,7 +676,7 @@ export default function RoleMatrixPage() {
                   <td className="px-3 py-2 text-xs font-medium text-slate-700 whitespace-nowrap">{entry.function}</td>
                   <td className="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">{entry.role}</td>
                   {dimensions.info_keys.map(k => (
-                    <td key={k} className="px-3 py-2 text-center">
+                    <td key={k} className="px-3 py-2 text-center" style={{ maxWidth: '10%', width: '10%' }}>
                       <span className={`text-xs font-medium ${entry.additional_info?.[k] ? 'text-blue-600' : 'text-slate-300'}`}>
                         {entry.additional_info?.[k] ? 'Yes' : 'No'}
                       </span>
