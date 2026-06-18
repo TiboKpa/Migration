@@ -3,7 +3,6 @@ const pool = require('../db');
 const authenticate = require('../middleware/auth');
 const router = express.Router();
 
-// Build a stable concatenate key from function, role and the sorted additional_info keys.
 function buildConcatenate(fn, role, additionalInfo) {
   const parts = Object.keys(additionalInfo).sort().map(k => `${k}:${additionalInfo[k] ? 'Yes' : 'No'}`);
   return `${fn}||${role}||${parts.join('|')}`;
@@ -30,6 +29,153 @@ function normalizeRow(row) {
   };
 }
 
+// ── Dimensions ────────────────────────────────────────────────────────────────
+
+// GET dimensions for a project
+router.get('/:projectId/role-matrix/dimensions', authenticate, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM role_matrix_dimensions WHERE project_id=$1 ORDER BY type, value',
+      [req.params.projectId]
+    );
+    const functions = result.rows.filter(r => r.type === 'function').map(r => r.value);
+    const roles = result.rows.filter(r => r.type === 'role').map(r => r.value);
+    const info_keys = result.rows.filter(r => r.type === 'info_key').map(r => r.value);
+    res.json({ functions, roles, info_keys });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST add a dimension value
+router.post('/:projectId/role-matrix/dimensions', authenticate, async (req, res) => {
+  const { type, value } = req.body;
+  if (!['function', 'role', 'info_key'].includes(type))
+    return res.status(400).json({ error: 'Invalid type' });
+  if (!value || !value.trim())
+    return res.status(400).json({ error: 'Value is required' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Insert dimension (ignore duplicate)
+    await client.query(
+      `INSERT INTO role_matrix_dimensions (project_id, type, value)
+       VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+      [req.params.projectId, type, value.trim()]
+    );
+
+    // Fetch current dimension lists after insert
+    const dimResult = await client.query(
+      'SELECT type, value FROM role_matrix_dimensions WHERE project_id=$1',
+      [req.params.projectId]
+    );
+    const functions = dimResult.rows.filter(r => r.type === 'function').map(r => r.value);
+    const roles = dimResult.rows.filter(r => r.type === 'role').map(r => r.value);
+    const info_keys = dimResult.rows.filter(r => r.type === 'info_key').map(r => r.value);
+
+    // Generate all required rows and upsert missing ones
+    await generateMatrixRows(client, req.params.projectId, functions, roles, info_keys);
+
+    await client.query('COMMIT');
+    res.json({ functions, roles, info_keys });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally { client.release(); }
+});
+
+// DELETE a dimension value (and prune orphan rows)
+router.delete('/:projectId/role-matrix/dimensions', authenticate, async (req, res) => {
+  const { type, value } = req.body;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    await client.query(
+      'DELETE FROM role_matrix_dimensions WHERE project_id=$1 AND type=$2 AND value=$3',
+      [req.params.projectId, type, value]
+    );
+
+    // Remove rows that reference the deleted dimension value
+    if (type === 'function') {
+      await client.query(
+        'DELETE FROM role_matrix WHERE project_id=$1 AND function=$2',
+        [req.params.projectId, value]
+      );
+    } else if (type === 'role') {
+      await client.query(
+        'DELETE FROM role_matrix WHERE project_id=$1 AND role=$2',
+        [req.params.projectId, value]
+      );
+    } else if (type === 'info_key') {
+      // Remove rows where additional_info contains this key set to either value
+      // (all rows for any function/role combo that had this info key)
+      // Simplest: delete rows whose additional_info contains the key, then re-generate without it
+      await client.query(
+        `DELETE FROM role_matrix WHERE project_id=$1 AND additional_info::text LIKE $2`,
+        [req.params.projectId, `%"${value}"%`]
+      );
+      // Re-generate without the deleted info_key
+      const dimResult = await client.query(
+        'SELECT type, value FROM role_matrix_dimensions WHERE project_id=$1',
+        [req.params.projectId]
+      );
+      const functions = dimResult.rows.filter(r => r.type === 'function').map(r => r.value);
+      const roles = dimResult.rows.filter(r => r.type === 'role').map(r => r.value);
+      const info_keys = dimResult.rows.filter(r => r.type === 'info_key').map(r => r.value);
+      await generateMatrixRows(client, req.params.projectId, functions, roles, info_keys);
+    }
+
+    await client.query('COMMIT');
+    res.json({ message: 'Deleted' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally { client.release(); }
+});
+
+// ── Matrix row generation helper ──────────────────────────────────────────────
+
+function cartesianInfoCombos(info_keys) {
+  if (info_keys.length === 0) return [{}];
+  const combos = [{}];
+  for (const key of info_keys) {
+    const next = [];
+    for (const combo of combos) {
+      next.push({ ...combo, [key]: false });
+      next.push({ ...combo, [key]: true });
+    }
+    combos.length = 0;
+    combos.push(...next);
+  }
+  return combos;
+}
+
+async function generateMatrixRows(client, projectId, functions, roles, info_keys) {
+  const combos = cartesianInfoCombos(info_keys);
+  for (const fn of functions) {
+    for (const role of roles) {
+      for (const info of combos) {
+        const concatenate = buildConcatenate(fn, role, info);
+        await client.query(
+          `INSERT INTO role_matrix
+             (project_id, function, role, additional_info, concatenate,
+              tlg_primary, tlg_addon, recommended_training_id, complementary_items)
+           VALUES ($1,$2,$3,$4,$5,'',\'[]\',NULL,\'[]\')
+           ON CONFLICT (project_id, concatenate) DO NOTHING`,
+          [
+            projectId, fn, role,
+            JSON.stringify(info),
+            concatenate,
+          ]
+        );
+      }
+    }
+  }
+}
+
+// ── Matrix CRUD ───────────────────────────────────────────────────────────────
+
 // GET all entries for a project
 router.get('/:projectId/role-matrix', authenticate, async (req, res) => {
   try {
@@ -41,7 +187,7 @@ router.get('/:projectId/role-matrix', authenticate, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET primary trainings for the recommended training dropdown
+// GET primary trainings
 router.get('/:projectId/role-matrix/training-profiles', authenticate, async (req, res) => {
   try {
     const result = await pool.query(
@@ -55,7 +201,7 @@ router.get('/:projectId/role-matrix/training-profiles', authenticate, async (req
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET all modules + curricula for complementary items picker
+// GET complementary options
 router.get('/:projectId/role-matrix/complementary-options', authenticate, async (req, res) => {
   try {
     const [mods, currs] = await Promise.all([
@@ -69,115 +215,20 @@ router.get('/:projectId/role-matrix/complementary-options', authenticate, async 
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST single entry
-router.post('/:projectId/role-matrix', authenticate, async (req, res) => {
-  const {
-    function: fn, role,
-    additional_info: rawInfo,
-    tlg_primary, tlg_addon,
-    recommended_training_id, complementary_items,
-  } = req.body;
-
-  const additional_info = parseAdditionalInfo(rawInfo);
-  const concatenate = buildConcatenate(fn, role, additional_info);
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const result = await client.query(
-      `INSERT INTO role_matrix
-         (project_id, function, role, additional_info, concatenate,
-          tlg_primary, tlg_addon, recommended_training_id, complementary_items)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       RETURNING *`,
-      [
-        req.params.projectId, fn, role,
-        JSON.stringify(additional_info),
-        concatenate,
-        tlg_primary || '',
-        JSON.stringify(tlg_addon || []),
-        recommended_training_id || null,
-        JSON.stringify(complementary_items || []),
-      ]
-    );
-    await client.query('COMMIT');
-    res.json(normalizeRow(result.rows[0]));
-  } catch (err) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: err.message });
-  } finally { client.release(); }
-});
-
-// POST bulk import
-router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => {
-  const { entries } = req.body;
-  if (!Array.isArray(entries) || entries.length === 0)
-    return res.status(400).json({ error: 'No entries provided' });
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    for (const e of entries) {
-      const additional_info = e.additional_info && typeof e.additional_info === 'object'
-        ? e.additional_info
-        : {
-            'PBOM Champion': !!e.pbom_champion,
-            'BOC Admin': !!e.boc_admin,
-            'BOC Member': !!e.boc_member,
-            'ETO User': !!e.eto_user,
-            'Team Manager': !!e.team_manager,
-          };
-      const concatenate = buildConcatenate(e.function, e.role, additional_info);
-      await client.query(
-        `INSERT INTO role_matrix
-           (project_id, function, role, additional_info, concatenate,
-            tlg_primary, tlg_addon)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [
-          req.params.projectId, e.function, e.role,
-          JSON.stringify(additional_info),
-          concatenate,
-          e.tlg_primary || e.tlg_group || '',
-          JSON.stringify(e.tlg_addon || []),
-        ]
-      );
-    }
-    await client.query('COMMIT');
-    res.json({ imported: entries.length });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: err.message });
-  } finally { client.release(); }
-});
-
-// PUT single entry
+// PUT single entry (only TLG / training outputs)
 router.put('/:projectId/role-matrix/:id', authenticate, async (req, res) => {
-  const {
-    function: fn, role,
-    additional_info: rawInfo,
-    tlg_primary, tlg_addon,
-    recommended_training_id, complementary_items,
-  } = req.body;
-
-  const additional_info = parseAdditionalInfo(rawInfo);
-  const concatenate = buildConcatenate(fn, role, additional_info);
-
+  const { tlg_primary, tlg_addon, recommended_training_id, complementary_items } = req.body;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const result = await client.query(
       `UPDATE role_matrix SET
-        function=$1, role=$2,
-        additional_info=$3, concatenate=$4,
-        tlg_primary=$5, tlg_addon=$6,
-        recommended_training_id=$7, complementary_items=$8,
+        tlg_primary=$1, tlg_addon=$2,
+        recommended_training_id=$3, complementary_items=$4,
         updated_at=NOW()
-      WHERE id=$9 AND project_id=$10
+      WHERE id=$5 AND project_id=$6
       RETURNING *`,
       [
-        fn, role,
-        JSON.stringify(additional_info),
-        concatenate,
         tlg_primary || '',
         JSON.stringify(tlg_addon || []),
         recommended_training_id || null,
@@ -193,17 +244,6 @@ router.put('/:projectId/role-matrix/:id', authenticate, async (req, res) => {
   } finally { client.release(); }
 });
 
-// DELETE single entry
-router.delete('/:projectId/role-matrix/:id', authenticate, async (req, res) => {
-  try {
-    await pool.query(
-      'DELETE FROM role_matrix WHERE id=$1 AND project_id=$2',
-      [req.params.id, req.params.projectId]
-    );
-    res.json({ message: 'Deleted' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 // DELETE all entries for a project
 router.delete('/:projectId/role-matrix', authenticate, async (req, res) => {
   try {
@@ -215,7 +255,43 @@ router.delete('/:projectId/role-matrix', authenticate, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Lookup (used by training matrix generation)
+// POST bulk import (kept for backwards compat)
+router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => {
+  const { entries } = req.body;
+  if (!Array.isArray(entries) || entries.length === 0)
+    return res.status(400).json({ error: 'No entries provided' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const e of entries) {
+      const additional_info = e.additional_info && typeof e.additional_info === 'object'
+        ? e.additional_info : {};
+      const concatenate = buildConcatenate(e.function, e.role, additional_info);
+      await client.query(
+        `INSERT INTO role_matrix
+           (project_id, function, role, additional_info, concatenate, tlg_primary, tlg_addon)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (project_id, concatenate) DO UPDATE SET
+           tlg_primary=EXCLUDED.tlg_primary,
+           tlg_addon=EXCLUDED.tlg_addon`,
+        [
+          req.params.projectId, e.function, e.role,
+          JSON.stringify(additional_info), concatenate,
+          e.tlg_primary || e.tlg_group || '',
+          JSON.stringify(e.tlg_addon || []),
+        ]
+      );
+    }
+    await client.query('COMMIT');
+    res.json({ imported: entries.length });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally { client.release(); }
+});
+
+// Lookup
 router.post('/:projectId/role-matrix/lookup', authenticate, async (req, res) => {
   const { function: fn, role, additional_info: rawInfo } = req.body;
   const additional_info = parseAdditionalInfo(rawInfo);
