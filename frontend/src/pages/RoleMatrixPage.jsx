@@ -108,6 +108,14 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
     complementary_items: Array.isArray(entry.complementary_items) ? entry.complementary_items : [],
   });
 
+  // Primary training search
+  const [primarySearch, setPrimarySearch] = useState('');
+  const filteredProfiles = profiles.filter(p =>
+    p.profile_name.toLowerCase().includes(primarySearch.toLowerCase())
+  );
+  const selectedProfile = profiles.find(p => String(p.id) === form.recommended_training_id) || null;
+
+  // Complementary items search
   function toggleComplementary(item) {
     setForm(f => {
       const exists = f.complementary_items.some(i => i.type === item.type && i.id === item.id);
@@ -179,16 +187,47 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
           </div>
         </div>
 
-        {/* Recommended training (single select from primary trainings) */}
+        {/* Recommended Primary Training - same style as complementary */}
         <div className="mb-4">
           <label className="text-xs text-slate-500 block mb-1">Recommended Primary Training</label>
-          <select className="border rounded-lg px-2 py-1.5 text-sm w-full" value={form.recommended_training_id}
-            onChange={e => setForm(f => ({ ...f, recommended_training_id: e.target.value }))}>
-            <option value="">-- None --</option>
-            {profiles.map(p => (
-              <option key={p.id} value={String(p.id)}>{p.profile_name}</option>
+          {selectedProfile && (
+            <div className="flex flex-wrap gap-1 mb-2">
+              <span className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full px-2 py-0.5 text-xs">
+                <span className="text-indigo-400 uppercase text-[10px] font-semibold">PLY</span>
+                {selectedProfile.profile_name}
+                <button
+                  onClick={() => setForm(f => ({ ...f, recommended_training_id: '' }))}
+                  className="ml-0.5 text-indigo-400 hover:text-indigo-700 leading-none">&times;</button>
+              </span>
+            </div>
+          )}
+          <input
+            className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1"
+            placeholder="Search primary trainings..."
+            value={primarySearch}
+            onChange={e => setPrimarySearch(e.target.value)}
+          />
+          <div className="border rounded-lg overflow-y-auto max-h-40">
+            {filteredProfiles.length === 0 && (
+              <p className="text-xs text-slate-400 text-center py-3">No primary trainings found</p>
+            )}
+            {filteredProfiles.map(p => (
+              <label key={p.id}
+                className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
+                  String(p.id) === form.recommended_training_id ? 'bg-indigo-50' : ''
+                }`}>
+                <input
+                  type="radio"
+                  name="recommended_training_id"
+                  checked={String(p.id) === form.recommended_training_id}
+                  onChange={() => setForm(f => ({ ...f, recommended_training_id: String(p.id) }))}
+                  className="rounded"
+                />
+                <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">PLY</span>
+                <span className="text-xs text-slate-700">{p.profile_name}</span>
+              </label>
             ))}
-          </select>
+          </div>
         </div>
 
         {/* Complementary items */}
@@ -326,7 +365,6 @@ export default function RoleMatrixPage() {
 
   const thClass = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
 
-  // Resolve recommended training label for a row
   function resolveRecommended(entry) {
     if (!entry.recommended_training_id) return null;
     const p = profiles.find(p => p.id === entry.recommended_training_id);
