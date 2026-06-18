@@ -323,6 +323,22 @@ async function migrate() {
           ALTER TABLE role_matrix
             ADD CONSTRAINT role_matrix_project_concatenate_key UNIQUE (project_id, concatenate);
         END IF;
+
+        -- N/A flags added for TLG and Training
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='role_matrix' AND column_name='na_tlg'
+        ) THEN
+          ALTER TABLE role_matrix ADD COLUMN na_tlg BOOLEAN NOT NULL DEFAULT false;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='role_matrix' AND column_name='na_training'
+        ) THEN
+          ALTER TABLE role_matrix ADD COLUMN na_training BOOLEAN NOT NULL DEFAULT false;
+        END IF;
+
       END$$;
     `);
 
