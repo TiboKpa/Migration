@@ -166,7 +166,7 @@ function AddDimModal({ label, badge, existing, onAdd, onClose }) {
 // ---------------------------------------------------------------------------
 // Selector panel
 // ---------------------------------------------------------------------------
-function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNew, editMode }) {
+function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNew, onRemove, editMode }) {
   const [search, setSearch] = useState('');
   const filtered = items.filter(v => v.toLowerCase().includes(search.toLowerCase()));
 
@@ -196,20 +196,31 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
           <p className="text-xs text-slate-400 text-center py-4">No {title.toLowerCase()} yet</p>
         )}
         {filtered.map(v => (
-          <label key={v}
-            className={`flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
-              isSelected(v) ? 'bg-indigo-50' : ''
+          <div key={v}
+            className={`flex items-center border-b last:border-0 ${
+              isSelected(v) ? 'bg-indigo-50' : 'hover:bg-slate-50'
             }`}>
-            <input
-              type={multi ? 'checkbox' : 'radio'}
-              checked={isSelected(v)}
-              onChange={() => toggle(v)}
-              onClick={!multi ? () => { if (isSelected(v)) onChange(null); } : undefined}
-              className={multi ? 'rounded accent-teal-600' : ''}
-            />
-            <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">{badge}</span>
-            <span className="text-xs text-slate-700">{v}</span>
-          </label>
+            <label className="flex items-center gap-2 px-3 py-2 cursor-pointer flex-1 min-w-0">
+              <input
+                type={multi ? 'checkbox' : 'radio'}
+                checked={isSelected(v)}
+                onChange={() => toggle(v)}
+                onClick={!multi ? () => { if (isSelected(v)) onChange(null); } : undefined}
+                className={multi ? 'rounded accent-teal-600' : ''}
+              />
+              <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">{badge}</span>
+              <span className="text-xs text-slate-700 truncate">{v}</span>
+            </label>
+            {editMode && (
+              <button
+                onClick={e => { e.stopPropagation(); onRemove(v); }}
+                className="pr-3 pl-1 py-2 text-slate-300 hover:text-red-400 shrink-0 leading-none"
+                title={`Remove ${v}`}
+              >
+                &times;
+              </button>
+            )}
+          </div>
         ))}
       </div>
       {editMode && (
@@ -235,7 +246,6 @@ function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
   const addonDisabled = isNA || isError;
 
   function handlePrimaryClick(opt) {
-    // clicking the already-selected option deselects (toggle off)
     const next = tlgPrimary === opt ? '' : opt;
     onChange({ tlgPrimary: next, tlgAddon: next === NA_SENTINEL ? [] : tlgAddon });
   }
@@ -245,7 +255,6 @@ function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
       <div>
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Primary TLG Group</p>
         <div className="border rounded-lg overflow-hidden">
-          {/* N/A hardcoded at top */}
           <label className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b ${
             isNA ? 'bg-slate-100' : ''
           }`}>
@@ -308,23 +317,17 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
     ...complementaryOptions.modules.map(m => ({ ...m, type: 'module' })),
   ];
 
-  // Detect N/A sentinel stored as recommended_training_id === null AND a special flag,
-  // or simply store it as a boolean in local state derived from entry
-  const [tlgPrimary,        setTlgPrimary]        = useState(entry.tlg_primary || '');
-  const [tlgAddon,          setTlgAddon]          = useState(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []);
-  const [naTraining,        setNaTraining]        = useState(entry.na_training === true);
-  const [recommendedId,     setRecommendedId]     = useState(entry.recommended_training_id ? String(entry.recommended_training_id) : '');
-  const [complementaryItems,setComplementaryItems] = useState(Array.isArray(entry.complementary_items) ? entry.complementary_items : []);
-  const [primarySearch,     setPrimarySearch]     = useState('');
-  const [itemSearch,        setItemSearch]        = useState('');
+  const [tlgPrimary,         setTlgPrimary]         = useState(entry.tlg_primary || '');
+  const [tlgAddon,           setTlgAddon]           = useState(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []);
+  const [naTraining,         setNaTraining]         = useState(entry.na_training === true);
+  const [recommendedId,      setRecommendedId]      = useState(entry.recommended_training_id ? String(entry.recommended_training_id) : '');
+  const [complementaryItems, setComplementaryItems] = useState(Array.isArray(entry.complementary_items) ? entry.complementary_items : []);
+  const [primarySearch,      setPrimarySearch]      = useState('');
+  const [itemSearch,         setItemSearch]         = useState('');
 
-  // When N/A training is toggled on, clear training data
   function handleNaTraining(val) {
     setNaTraining(val);
-    if (val) {
-      setRecommendedId('');
-      setComplementaryItems([]);
-    }
+    if (val) { setRecommendedId(''); setComplementaryItems([]); }
   }
 
   const filteredProfiles = profiles.filter(p => p.profile_name.toLowerCase().includes(primarySearch.toLowerCase()));
@@ -361,26 +364,18 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
         </div>
 
-        {/* TLG section with N/A built in */}
         <div className="border rounded-xl p-4 mb-4 bg-slate-50">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">TLG Group</p>
           <TlgGroupSelector
-            tlgPrimary={tlgPrimary}
-            tlgAddon={tlgAddon}
+            tlgPrimary={tlgPrimary} tlgAddon={tlgAddon}
             onChange={({ tlgPrimary: p, tlgAddon: a }) => { setTlgPrimary(p); setTlgAddon(a); }}
           />
         </div>
 
-        {/* Training section */}
         <div className="mb-5">
-          {/* N/A toggle for training */}
           <div className="flex items-center justify-between mb-3">
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Trainings</p>
-            <ToggleSwitch
-              checked={naTraining}
-              onChange={handleNaTraining}
-              label="N/A (not applicable)"
-            />
+            <ToggleSwitch checked={naTraining} onChange={handleNaTraining} label="N/A (not applicable)" />
           </div>
 
           <div className={`grid grid-cols-2 gap-4 transition-opacity ${
@@ -406,8 +401,7 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
                     naTraining ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'
                   } ${String(p.id) === recommendedId ? 'bg-indigo-50' : ''}`}>
                     <input type="radio" name="recommended_training_id" checked={String(p.id) === recommendedId}
-                      disabled={naTraining}
-                      onChange={() => setRecommendedId(String(p.id))} />
+                      disabled={naTraining} onChange={() => setRecommendedId(String(p.id))} />
                     <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">PLY</span>
                     <span className="text-xs text-slate-700">{p.profile_name}</span>
                   </label>
@@ -438,8 +432,7 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
                   } ${complementaryItems.some(i => i.type === item.type && i.id === item.id) ? 'bg-blue-50' : ''}`}>
                     <input type="checkbox"
                       checked={complementaryItems.some(i => i.type === item.type && i.id === item.id)}
-                      disabled={naTraining}
-                      onChange={() => toggleComp(item)} className="rounded" />
+                      disabled={naTraining} onChange={() => toggleComp(item)} className="rounded" />
                     <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">{item.type === 'curriculum' ? 'CUR' : 'MOD'}</span>
                     <span className="text-xs text-slate-700">{item.title}</span>
                   </label>
@@ -526,6 +519,20 @@ export default function RoleMatrixPage() {
     onError: err => console.error('Failed to add dimension:', err),
   });
 
+  const removeDimMutation = useMutation({
+    mutationFn: ({ type, value }) =>
+      client.delete(`/projects/${projectId}/role-matrix/dimensions`, { data: { type, value } }).then(r => r.data),
+    onSuccess: (data, variables) => {
+      qc.setQueryData(dimKey, data);
+      qc.refetchQueries({ queryKey: matrixKey, exact: true });
+      // Deselect if the removed item was selected
+      if (variables.type === 'function' && selectedFn === variables.value)   setSelectedFn(null);
+      if (variables.type === 'role'     && selectedRole === variables.value) setSelectedRole(null);
+      if (variables.type === 'info_key') setSelectedInfo(prev => prev.filter(v => v !== variables.value));
+    },
+    onError: err => console.error('Failed to remove dimension:', err),
+  });
+
   const updateMutation = useMutation({
     mutationFn: ({ id, data }) =>
       client.put(`/projects/${projectId}/role-matrix/${id}`, data).then(r => r.data),
@@ -606,7 +613,7 @@ export default function RoleMatrixPage() {
     return rows;
   }, [entries, selectedFn, selectedRole, selectedInfo]);
 
-  const isDimPending = addDimMutation.isPending;
+  const isDimPending = addDimMutation.isPending || removeDimMutation.isPending;
   const thClass = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide';
 
   return (
@@ -642,6 +649,13 @@ export default function RoleMatrixPage() {
           <p className="text-sm text-slate-500">{entries.length} rules</p>
         </div>
         <div className="flex gap-3 items-center flex-wrap justify-end">
+          {/* Empty matrix sits left of the edit toggle */}
+          {editMode && (
+            <button onClick={handleClearAll} disabled={clearAllMutation.isPending}
+              className="border border-red-200 text-red-600 px-3 py-1.5 rounded-lg text-sm hover:bg-red-50 disabled:opacity-40">
+              {clearAllMutation.isPending ? 'Emptying...' : 'Empty matrix'}
+            </button>
+          )}
           <ToggleSwitch checked={editMode} onChange={setEditMode} label="Edit mode" />
           <button onClick={() => fileRef.current.click()} disabled={importMutation.isPending}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
@@ -649,12 +663,6 @@ export default function RoleMatrixPage() {
           </button>
           <button onClick={handleExport} disabled={entries.length === 0}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">Export Excel</button>
-          {editMode && (
-            <button onClick={handleClearAll} disabled={clearAllMutation.isPending}
-              className="border border-red-200 text-red-600 px-3 py-1.5 rounded-lg text-sm hover:bg-red-50 disabled:opacity-40">
-              {clearAllMutation.isPending ? 'Emptying...' : 'Empty matrix'}
-            </button>
-          )}
           <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleFileChange} />
         </div>
       </div>
@@ -672,13 +680,19 @@ export default function RoleMatrixPage() {
       <div className="grid grid-cols-3 gap-4 mb-4 shrink-0" style={{ height: '16rem' }}>
         <SelectorPanel title="Function" badge="FNC" items={dimensions.functions}
           selected={selectedFn} multi={false} onChange={setSelectedFn}
-          onAddNew={() => setAddModalType('function')} editMode={editMode} />
+          onAddNew={() => setAddModalType('function')}
+          onRemove={v => removeDimMutation.mutate({ type: 'function', value: v })}
+          editMode={editMode} />
         <SelectorPanel title="Role" badge="ROL" items={dimensions.roles}
           selected={selectedRole} multi={false} onChange={setSelectedRole}
-          onAddNew={() => setAddModalType('role')} editMode={editMode} />
+          onAddNew={() => setAddModalType('role')}
+          onRemove={v => removeDimMutation.mutate({ type: 'role', value: v })}
+          editMode={editMode} />
         <SelectorPanel title="Additional Info" badge="INF" items={dimensions.info_keys}
           selected={selectedInfo} multi={true} onChange={setSelectedInfo}
-          onAddNew={() => setAddModalType('info_key')} editMode={editMode} />
+          onAddNew={() => setAddModalType('info_key')}
+          onRemove={v => removeDimMutation.mutate({ type: 'info_key', value: v })}
+          editMode={editMode} />
       </div>
 
       {/* Row count + reset */}
