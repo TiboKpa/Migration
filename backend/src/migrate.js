@@ -220,6 +220,15 @@ async function migrate() {
         sequence_order INT DEFAULT 0,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
+
+      CREATE TABLE IF NOT EXISTS role_matrix_dimensions (
+        id         SERIAL PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        type       TEXT NOT NULL CHECK (type IN ('function', 'role', 'info_key')),
+        value      TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (project_id, type, value)
+      );
     `);
 
     // ALTER TABLE guards for columns added to pre-existing tables
@@ -264,6 +273,34 @@ async function migrate() {
           WHERE table_name='role_matrix' AND column_name='complementary_items'
         ) THEN
           ALTER TABLE role_matrix ADD COLUMN complementary_items JSONB DEFAULT '[]';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='role_matrix' AND column_name='additional_info'
+        ) THEN
+          ALTER TABLE role_matrix ADD COLUMN additional_info JSONB NOT NULL DEFAULT '{}';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='role_matrix' AND column_name='tlg_primary'
+        ) THEN
+          ALTER TABLE role_matrix ADD COLUMN tlg_primary TEXT NOT NULL DEFAULT '';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='role_matrix' AND column_name='tlg_addon'
+        ) THEN
+          ALTER TABLE role_matrix ADD COLUMN tlg_addon JSONB NOT NULL DEFAULT '[]';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='playlists' AND column_name='is_complementary'
+        ) THEN
+          ALTER TABLE playlists ADD COLUMN is_complementary BOOLEAN DEFAULT false;
         END IF;
       END$$;
     `);
