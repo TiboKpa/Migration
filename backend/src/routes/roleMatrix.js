@@ -114,7 +114,6 @@ router.delete('/:projectId/role-matrix/dimensions', authenticate, async (req, re
         await generateMatrixRows(client, req.params.projectId, fns, rls, iks);
       }
     }
-    // Return updated dimensions so the frontend cache can be patched directly
     const afterResult = await client.query(
       'SELECT type, value FROM role_matrix_dimensions WHERE project_id=$1',
       [req.params.projectId]
@@ -265,6 +264,7 @@ router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => 
   try {
     await client.query('BEGIN');
 
+    // STEP 1 -- dimensions
     const fnSet      = new Set();
     const roleSet    = new Set();
     const infoKeySet = new Set();
@@ -301,27 +301,32 @@ router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => 
       dimensionsAdded += r.rowCount;
     }
 
+    // STEP 2 -- upsert rows, respecting N/A for both TLG and Training
     for (const e of entries) {
       const additional_info = (e.additional_info && typeof e.additional_info === 'object')
         ? e.additional_info : {};
       const concatenate = buildConcatenate(e.function, e.role, additional_info);
-      const isNaTlg = e.tlg_primary === 'N/A';
+
+      // Accept both the boolean flag sent by the frontend parser and the sentinel string
+      const isNaTlg = e.na_tlg === true || String(e.tlg_primary || '').trim() === 'N/A';
+      const isNaTrn = e.na_training === true || String(e.primary_training_name || '').trim() === 'N/A';
+
       await client.query(
         `INSERT INTO role_matrix
            (project_id, function, role, additional_info, concatenate,
             tlg_primary, tlg_addon, na_tlg,
             recommended_training_id, complementary_items, na_training,
             primary_training_name, complementary_names)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, '[]', false, $9, $10)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, '[]', $9, $10, $11)
          ON CONFLICT (project_id, concatenate) DO UPDATE SET
            tlg_primary            = EXCLUDED.tlg_primary,
            tlg_addon              = EXCLUDED.tlg_addon,
            na_tlg                 = EXCLUDED.na_tlg,
            primary_training_name  = EXCLUDED.primary_training_name,
            complementary_names    = EXCLUDED.complementary_names,
+           na_training            = EXCLUDED.na_training,
            recommended_training_id = NULL,
            complementary_items    = '[]',
-           na_training            = false,
            updated_at             = NOW()`,
         [
           req.params.projectId,
@@ -331,12 +336,14 @@ router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => 
           isNaTlg ? '' : (e.tlg_primary || ''),
           JSON.stringify(isNaTlg ? [] : (e.tlg_addon || [])),
           isNaTlg,
-          e.primary_training_name || '',
-          JSON.stringify(e.complementary_names || []),
+          isNaTrn,
+          isNaTrn ? '' : (e.primary_training_name || ''),
+          JSON.stringify(isNaTrn ? [] : (e.complementary_names || [])),
         ]
       );
     }
 
+    // STEP 3 -- load training catalogue
     const playlistsRes = await client.query(
       'SELECT id, title FROM playlists WHERE project_id=$1', [req.params.projectId]
     );
@@ -366,12 +373,17 @@ router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => 
       });
     }
 
+    // STEP 4 -- resolve training IDs (skip N/A rows entirely)
     let resolved = 0;
     let unresolved = 0;
     for (const e of entries) {
       const additional_info = (e.additional_info && typeof e.additional_info === 'object')
         ? e.additional_info : {};
       const concatenate = buildConcatenate(e.function, e.role, additional_info);
+      const isNaTrn = e.na_training === true || String(e.primary_training_name || '').trim() === 'N/A';
+
+      if (isNaTrn) continue;
+
       const recommended_training_id = resolveTrainingId(e.primary_training_name);
       const complementary_items     = resolveComplementaryItems(e.complementary_names || []);
       if (recommended_training_id) resolved++;
