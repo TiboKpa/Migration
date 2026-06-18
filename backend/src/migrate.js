@@ -298,9 +298,30 @@ async function migrate() {
 
         IF NOT EXISTS (
           SELECT 1 FROM information_schema.columns
+          WHERE table_name='role_matrix' AND column_name='primary_training_name'
+        ) THEN
+          ALTER TABLE role_matrix ADD COLUMN primary_training_name TEXT NOT NULL DEFAULT '';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='role_matrix' AND column_name='complementary_names'
+        ) THEN
+          ALTER TABLE role_matrix ADD COLUMN complementary_names JSONB NOT NULL DEFAULT '[]';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
           WHERE table_name='playlists' AND column_name='is_complementary'
         ) THEN
           ALTER TABLE playlists ADD COLUMN is_complementary BOOLEAN DEFAULT false;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname='role_matrix_project_concatenate_key'
+        ) THEN
+          ALTER TABLE role_matrix
+            ADD CONSTRAINT role_matrix_project_concatenate_key UNIQUE (project_id, concatenate);
         END IF;
       END$$;
     `);
