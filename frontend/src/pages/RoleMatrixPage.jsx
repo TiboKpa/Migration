@@ -118,19 +118,21 @@ function entryToForm(entry) {
   };
 }
 
-// ---- Mandatory single-select (no deselect, + Add new always available) ----
-function MandatorySingleSelectPanel({ title, placeholder, options, value, onChange }) {
+// ---- Mandatory single-select with Add new, no deselect ----
+function MandatorySingleSelectPanel({ title, placeholder, value, onChange }) {
+  const [options, setOptions] = useState([]);
   const [search, setSearch] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [newValue, setNewValue] = useState('');
-  const [localOptions, setLocalOptions] = useState(options);
 
-  const filtered = localOptions.filter(o => o.toLowerCase().includes(search.toLowerCase()));
+  const filtered = options.filter(o => o.toLowerCase().includes(search.toLowerCase()));
 
   function handleAddNew() {
     const trimmed = newValue.trim();
-    if (trimmed && !localOptions.includes(trimmed)) {
-      setLocalOptions(prev => [...prev, trimmed]);
+    if (trimmed && !options.includes(trimmed)) {
+      setOptions(prev => [...prev, trimmed]);
+      onChange(trimmed);
+    } else if (trimmed && options.includes(trimmed)) {
       onChange(trimmed);
     }
     setShowAddModal(false);
@@ -145,7 +147,7 @@ function MandatorySingleSelectPanel({ title, placeholder, options, value, onChan
         </p>
         {value && (
           <div className="mb-1.5">
-            <span className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full px-2 py-0.5 text-xs font-medium">
+            <span className="inline-flex items-center bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full px-2 py-0.5 text-xs font-medium">
               {value}
             </span>
           </div>
@@ -157,7 +159,10 @@ function MandatorySingleSelectPanel({ title, placeholder, options, value, onChan
           onChange={e => setSearch(e.target.value)}
         />
         <div className="border rounded-lg overflow-y-auto flex-1" style={{ maxHeight: '10rem' }}>
-          {filtered.length === 0 && (
+          {options.length === 0 && (
+            <p className="text-xs text-slate-400 text-center py-3">No options yet. Use + Add new.</p>
+          )}
+          {options.length > 0 && filtered.length === 0 && (
             <p className="text-xs text-slate-400 text-center py-3">No results</p>
           )}
           {filtered.map(opt => (
@@ -211,9 +216,131 @@ function MandatorySingleSelectPanel({ title, placeholder, options, value, onChan
   );
 }
 
+// ---- Multi-select panel (checkboxes, + Add new) ----
+function MultiSelectPanel({ title, placeholder, value, onChange }) {
+  const [options, setOptions] = useState([...BOOL_FLAGS.map(f => f.label)]);
+  const [search, setSearch] = useState('');
+  const [showModal, setShowModal] = useState(false);
+  const [modalSearch, setModalSearch] = useState('');
+  const [modalTemp, setModalTemp] = useState([...value]);
+
+  const isSelected = (opt) => value.includes(opt);
+  const isModalSelected = (opt) => modalTemp.includes(opt);
+
+  const filtered = options.filter(o => o.toLowerCase().includes(search.toLowerCase()));
+  const modalFiltered = options.filter(o => o.toLowerCase().includes(modalSearch.toLowerCase()));
+
+  function toggle(opt) {
+    onChange(isSelected(opt) ? value.filter(v => v !== opt) : [...value, opt]);
+  }
+
+  function toggleModal(opt) {
+    setModalTemp(isModalSelected(opt) ? modalTemp.filter(v => v !== opt) : [...modalTemp, opt]);
+  }
+
+  function openModal() {
+    setModalTemp([...value]);
+    setModalSearch('');
+    setShowModal(true);
+  }
+
+  function confirmModal() {
+    onChange([...modalTemp]);
+    setShowModal(false);
+  }
+
+  function handleAddNew(newVal) {
+    const trimmed = newVal.trim();
+    if (trimmed && !options.includes(trimmed)) {
+      setOptions(prev => [...prev, trimmed]);
+    }
+  }
+
+  return (
+    <>
+      <div className="flex flex-col h-full">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">{title}</p>
+        <input
+          className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1"
+          placeholder={placeholder}
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+        <div className="border rounded-lg overflow-y-auto flex-1" style={{ maxHeight: '10rem' }}>
+          {filtered.length === 0 && (
+            <p className="text-xs text-slate-400 text-center py-3">No results</p>
+          )}
+          {filtered.map(opt => (
+            <label key={opt}
+              className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
+                isSelected(opt) ? 'bg-blue-50' : ''
+              }`}>
+              <input
+                type="checkbox"
+                checked={isSelected(opt)}
+                onChange={() => toggle(opt)}
+                className="rounded accent-blue-600"
+              />
+              <span className="text-xs text-slate-700">{opt}</span>
+            </label>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={openModal}
+          className="mt-1.5 w-full border border-dashed border-slate-300 rounded-lg px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50 hover:border-slate-400"
+        >
+          + Add new
+        </button>
+      </div>
+
+      {showModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40" onClick={() => setShowModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm max-h-[80vh] flex flex-col p-5" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
+              <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
+            </div>
+            <p className="text-xs text-slate-400 mb-2">Multiple selections allowed.</p>
+            <input
+              className="border rounded-lg px-2 py-1.5 text-sm w-full mb-2"
+              placeholder={placeholder}
+              value={modalSearch}
+              autoFocus
+              onChange={e => setModalSearch(e.target.value)}
+            />
+            <div className="border rounded-lg overflow-y-auto flex-1 mb-3">
+              {modalFiltered.length === 0 && (
+                <p className="text-xs text-slate-400 text-center py-3">No results</p>
+              )}
+              {modalFiltered.map(opt => (
+                <label key={opt}
+                  className={`flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
+                    isModalSelected(opt) ? 'bg-blue-50' : ''
+                  }`}>
+                  <input
+                    type="checkbox"
+                    checked={isModalSelected(opt)}
+                    onChange={() => toggleModal(opt)}
+                    className="rounded accent-blue-600"
+                  />
+                  <span className="text-sm text-slate-700">{opt}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setShowModal(false)} className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
+              <button onClick={confirmModal} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">Add selected</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
   const isError = tlgPrimary === 'Error';
-
   return (
     <div className="grid grid-cols-2 gap-3">
       <div>
@@ -222,9 +349,7 @@ function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
           {TLG_PRIMARY_OPTIONS.map(opt => (
             <label key={opt}
               className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
-                tlgPrimary === opt
-                  ? opt === 'Error' ? 'bg-red-50' : 'bg-indigo-50'
-                  : ''
+                tlgPrimary === opt ? (opt === 'Error' ? 'bg-red-50' : 'bg-indigo-50') : ''
               }`}>
               <input
                 type="radio"
@@ -238,7 +363,6 @@ function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
           ))}
         </div>
       </div>
-
       <div>
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Add-on TLG Groups</p>
         {tlgAddon.length > 0 && (
@@ -246,8 +370,7 @@ function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
             {tlgAddon.map(a => (
               <span key={a} className="inline-flex items-center gap-1 bg-teal-50 text-teal-700 border border-teal-200 rounded-full px-2 py-0.5 text-xs">
                 {a}
-                <button
-                  onClick={() => onChange({ tlgPrimary, tlgAddon: tlgAddon.filter(x => x !== a) })}
+                <button onClick={() => onChange({ tlgPrimary, tlgAddon: tlgAddon.filter(x => x !== a) })}
                   className="ml-0.5 text-teal-400 hover:text-teal-700 leading-none">&times;</button>
               </span>
             ))}
@@ -274,15 +397,13 @@ function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
             );
           })}
         </div>
-        {isError && (
-          <p className="text-xs text-red-400 mt-1">Add-ons are disabled when primary is Error.</p>
-        )}
+        {isError && <p className="text-xs text-red-400 mt-1">Add-ons are disabled when primary is Error.</p>}
       </div>
     </div>
   );
 }
 
-function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uniqueRoles, entries, onSave, onClose }) {
+function RuleModal({ entry, profiles, complementaryOptions, entries, onSave, onClose }) {
   const isNew = !entry.id;
 
   const allItems = [
@@ -293,7 +414,16 @@ function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
   const [form, setForm] = useState(entryToForm(entry));
   const [autoFilledFromExisting, setAutoFilledFromExisting] = useState(false);
 
-  // Auto-fill when Function + Role + all booleans match an existing entry
+  // Convert selected flag labels back to bool keys
+  const selectedFlagLabels = BOOL_FLAGS.filter(f => form[f.key]).map(f => f.label);
+
+  function handleFlagsChange(labels) {
+    const updates = {};
+    BOOL_FLAGS.forEach(f => { updates[f.key] = labels.includes(f.label); });
+    setForm(f => ({ ...f, ...updates }));
+  }
+
+  // Auto-fill TLG + trainings when Function + Role + all flags match an existing entry
   useEffect(() => {
     if (!isNew) return;
     if (!form.function || !form.role) {
@@ -374,43 +504,29 @@ function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
           </div>
         )}
 
-        {/* Row 1: Function + Role */}
-        <div className="grid grid-cols-2 gap-4 mb-5">
+        {/* Row 1: Function / Role / Complementary Info */}
+        <div className="grid grid-cols-3 gap-4 mb-5">
           <MandatorySingleSelectPanel
             title="Function"
             placeholder="Search functions..."
-            options={uniqueFunctions}
             value={form.function}
             onChange={v => setForm(f => ({ ...f, function: v }))}
           />
           <MandatorySingleSelectPanel
             title="Role"
             placeholder="Search roles..."
-            options={uniqueRoles}
             value={form.role}
             onChange={v => setForm(f => ({ ...f, role: v }))}
           />
+          <MultiSelectPanel
+            title="Complementary Info"
+            placeholder="Search flags..."
+            value={selectedFlagLabels}
+            onChange={handleFlagsChange}
+          />
         </div>
 
-        {/* Row 2: Complementary Info (boolean flags as checkboxes) */}
-        <div className="border rounded-xl p-4 mb-4 bg-slate-50">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Complementary Info</p>
-          <div className="flex flex-wrap gap-4">
-            {BOOL_FLAGS.map(flag => (
-              <label key={flag.key} className="flex items-center gap-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={form[flag.key]}
-                  onChange={e => setForm(f => ({ ...f, [flag.key]: e.target.checked }))}
-                  className="w-4 h-4 rounded accent-blue-600"
-                />
-                <span className="text-sm text-slate-700">{flag.label}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-
-        {/* Row 3: TLG Group */}
+        {/* Row 2: TLG Group */}
         <div className="border rounded-xl p-4 mb-4 bg-slate-50">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">TLG Group</p>
           <TlgGroupSelector
@@ -420,7 +536,7 @@ function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
           />
         </div>
 
-        {/* Row 4: Recommended + Complementary trainings */}
+        {/* Row 3: Recommended + Complementary trainings */}
         <div className="grid grid-cols-2 gap-4 mb-5">
           <div className="flex flex-col">
             <label className="text-xs text-slate-500 block mb-1">Recommended Primary Training</label>
@@ -607,7 +723,6 @@ export default function RoleMatrixPage() {
 
   const pivot = useMemo(() => buildPivot(entries), [entries]);
   const uniqueFunctions = useMemo(() => [...new Set(pivot.map(r => r.function))].sort(), [pivot]);
-  const uniqueRoles = useMemo(() => [...new Set(entries.map(e => e.role))].sort(), [entries]);
   const filteredPivot = filterFn ? pivot.filter(r => r.function === filterFn) : pivot;
 
   const thClass = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
@@ -642,8 +757,6 @@ export default function RoleMatrixPage() {
           entry={modalEntry}
           profiles={profiles}
           complementaryOptions={complementaryOptions}
-          uniqueFunctions={uniqueFunctions}
-          uniqueRoles={uniqueRoles}
           entries={entries}
           onSave={handleSave}
           onClose={() => setModalEntry(null)}
@@ -730,9 +843,7 @@ export default function RoleMatrixPage() {
                       <td className="px-3 py-2 text-xs font-medium text-slate-700 whitespace-nowrap">{row.function}</td>
                       <td className="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">{row.role}</td>
                       <td className="px-3 py-2">
-                        {match
-                          ? <TlgCell entry={match} />
-                          : <span className="text-xs text-slate-300">No rule for this combination</span>}
+                        {match ? <TlgCell entry={match} /> : <span className="text-xs text-slate-300">No rule for this combination</span>}
                       </td>
                       <td className="px-3 py-2">
                         {recName && <span className="text-xs text-indigo-700 font-medium">{recName}</span>}
@@ -740,16 +851,13 @@ export default function RoleMatrixPage() {
                       <td className="px-3 py-2">
                         <div className="flex flex-wrap gap-1">
                           {compItems.map(i => (
-                            <span key={`${i.type}-${i.id}`} className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">
-                              {i.title}
-                            </span>
+                            <span key={`${i.type}-${i.id}`} className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{i.title}</span>
                           ))}
                         </div>
                       </td>
                       <td className="px-2 py-2">
                         {match && (
-                          <button onClick={() => setModalEntry(match)}
-                            className="text-xs text-slate-400 hover:text-blue-600">Edit</button>
+                          <button onClick={() => setModalEntry(match)} className="text-xs text-slate-400 hover:text-blue-600">Edit</button>
                         )}
                       </td>
                     </tr>
