@@ -150,6 +150,7 @@ async function migrate() {
         title TEXT NOT NULL,
         content_id TEXT,
         duration_min INT DEFAULT 0,
+        link TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE(project_id, title)
@@ -160,6 +161,7 @@ async function migrate() {
         project_id INT REFERENCES projects(id) ON DELETE CASCADE,
         title TEXT NOT NULL,
         content_id TEXT,
+        link TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE(project_id, title)
@@ -232,6 +234,20 @@ async function migrate() {
           SELECT 1 FROM pg_constraint WHERE conname='training_profiles_project_name_unique'
         ) THEN
           ALTER TABLE training_profiles ADD CONSTRAINT training_profiles_project_name_unique UNIQUE (project_id, profile_name);
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='training_modules' AND column_name='link'
+        ) THEN
+          ALTER TABLE training_modules ADD COLUMN link TEXT;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='training_curricula' AND column_name='link'
+        ) THEN
+          ALTER TABLE training_curricula ADD COLUMN link TEXT;
         END IF;
       END$$;
     `);
