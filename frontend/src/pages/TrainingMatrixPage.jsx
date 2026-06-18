@@ -41,6 +41,21 @@ function Sep() {
   return <span className="w-px h-3 bg-slate-300 inline-block" />;
 }
 
+function LinkButton({ href }) {
+  if (!href) return null;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      onClick={e => e.stopPropagation()}
+      className="text-xs text-blue-600 hover:underline shrink-0"
+    >
+      Link
+    </a>
+  );
+}
+
 function DurationInline({ modules }) {
   const { mandLabel, totalLabel } = curriculumDurationParts(modules);
   if (!mandLabel && !totalLabel) return null;
@@ -86,7 +101,7 @@ function FormBox({ title, children, onSave, onCancel, saveDisabled }) {
   );
 }
 
-// ── Reorder toast ─────────────────────────────────────────────────────────────
+// -- Reorder toast -------------------------------------------------------------
 function useReorderToast() {
   const [toast, setToast] = useState(null);
 
@@ -129,7 +144,7 @@ function useReorderToast() {
   return { requestReorder, ToastUI };
 }
 
-// ── Drag-to-reorder list ──────────────────────────────────────────────────────
+// -- Drag-to-reorder list ------------------------------------------------------
 function DraggableList({ items, onReorder, renderItem }) {
   const [dragIdx, setDragIdx] = useState(null);
   const [overIdx, setOverIdx] = useState(null);
@@ -170,12 +185,12 @@ function DraggableList({ items, onReorder, renderItem }) {
   );
 }
 
-// ── Modules tab ───────────────────────────────────────────────────────────────
+// -- Modules tab ---------------------------------------------------------------
 
 function ModulesTab({ projectId }) {
   const [modules, setModules]     = useState([]);
   const [showAdd, setShowAdd]     = useState(false);
-  const [form, setForm]           = useState({ title: '', content_id: '', duration_min: '' });
+  const [form, setForm]           = useState({ title: '', content_id: '', duration_min: '', link: '' });
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm]   = useState({});
 
@@ -189,20 +204,22 @@ function ModulesTab({ projectId }) {
   async function save() {
     if (!form.title.trim()) return;
     await client.post(`/projects/${projectId}/modules`, {
-      title: form.title.trim(),
-      content_id: form.content_id.trim() || null,
+      title:        form.title.trim(),
+      content_id:   form.content_id.trim() || null,
       duration_min: parseInt(form.duration_min) || 0,
+      link:         form.link.trim() || null,
     });
-    setForm({ title: '', content_id: '', duration_min: '' });
+    setForm({ title: '', content_id: '', duration_min: '', link: '' });
     setShowAdd(false);
     load();
   }
 
   async function saveEdit(id) {
     await client.put(`/projects/${projectId}/modules/${id}`, {
-      title: editForm.title.trim(),
-      content_id: editForm.content_id.trim() || null,
+      title:        editForm.title.trim(),
+      content_id:   editForm.content_id.trim() || null,
       duration_min: parseInt(editForm.duration_min) || 0,
+      link:         editForm.link.trim() || null,
     });
     setEditingId(null);
     load();
@@ -222,7 +239,12 @@ function ModulesTab({ projectId }) {
 
   function startEdit(mod) {
     setEditingId(mod.id);
-    setEditForm({ title: mod.title, content_id: mod.content_id || '', duration_min: mod.duration_min || '' });
+    setEditForm({
+      title:        mod.title,
+      content_id:   mod.content_id || '',
+      duration_min: mod.duration_min || '',
+      link:         mod.link || '',
+    });
   }
 
   return (
@@ -251,6 +273,9 @@ function ModulesTab({ projectId }) {
             </div>
             <InlineField label="Content ID" value={form.content_id} onChange={v => setForm(f => ({ ...f, content_id: v }))} />
             <InlineField label="Duration (min)" type="number" min="0" value={form.duration_min} onChange={v => setForm(f => ({ ...f, duration_min: v }))} />
+            <div className="col-span-2">
+              <InlineField label="Link" value={form.link} onChange={v => setForm(f => ({ ...f, link: v }))} />
+            </div>
           </div>
         </FormBox>
       )}
@@ -269,6 +294,9 @@ function ModulesTab({ projectId }) {
                 </div>
                 <InlineField label="Content ID" value={editForm.content_id} onChange={v => setEditForm(f => ({ ...f, content_id: v }))} />
                 <InlineField label="Duration (min)" type="number" min="0" value={editForm.duration_min} onChange={v => setEditForm(f => ({ ...f, duration_min: v }))} />
+                <div className="col-span-2">
+                  <InlineField label="Link" value={editForm.link} onChange={v => setEditForm(f => ({ ...f, link: v }))} />
+                </div>
                 <div className="col-span-3 flex gap-2">
                   <button onClick={() => saveEdit(mod.id)} disabled={!editForm.title.trim()}
                     className="bg-blue-600 text-white px-3 py-1 rounded-lg text-xs font-medium hover:bg-blue-700 disabled:opacity-40">Save</button>
@@ -289,6 +317,8 @@ function ModulesTab({ projectId }) {
                       <Sep />
                     </>
                   )}
+                  <LinkButton href={mod.link} />
+                  {mod.link && <Sep />}
                   <button onClick={() => startEdit(mod)} className="text-xs text-slate-400 hover:text-slate-700">Edit</button>
                   <button onClick={() => del(mod.id)} className="text-xs text-red-300 hover:text-red-500">Delete</button>
                 </div>
@@ -301,13 +331,13 @@ function ModulesTab({ projectId }) {
   );
 }
 
-// ── Curricula tab ─────────────────────────────────────────────────────────────
+// -- Curricula tab -------------------------------------------------------------
 
 function CurriculaTab({ projectId }) {
   const [curricula, setCurricula]     = useState([]);
   const [allModules, setAllModules]   = useState([]);
   const [showAdd, setShowAdd]         = useState(false);
-  const [form, setForm]               = useState({ title: '', content_id: '' });
+  const [form, setForm]               = useState({ title: '', content_id: '', link: '' });
   const [editingId, setEditingId]     = useState(null);
   const [editForm, setEditForm]       = useState({});
   const [openId, setOpenId]           = useState(null);
@@ -327,16 +357,21 @@ function CurriculaTab({ projectId }) {
 
   async function saveCurriculum() {
     if (!form.title.trim()) return;
-    await client.post(`/projects/${projectId}/curricula`, { title: form.title.trim(), content_id: form.content_id.trim() || null });
-    setForm({ title: '', content_id: '' });
+    await client.post(`/projects/${projectId}/curricula`, {
+      title:      form.title.trim(),
+      content_id: form.content_id.trim() || null,
+      link:       form.link.trim() || null,
+    });
+    setForm({ title: '', content_id: '', link: '' });
     setShowAdd(false);
     loadAll();
   }
 
   async function saveEditCurriculum(id) {
     await client.put(`/projects/${projectId}/curricula/${id}`, {
-      title: editForm.title.trim(),
+      title:      editForm.title.trim(),
       content_id: editForm.content_id.trim() || null,
+      link:       editForm.link.trim() || null,
     });
     setEditingId(null);
     loadAll();
@@ -424,6 +459,9 @@ function CurriculaTab({ projectId }) {
               <InlineField label="Title *" value={form.title} onChange={v => setForm(f => ({ ...f, title: v }))} />
             </div>
             <InlineField label="Content ID" value={form.content_id} onChange={v => setForm(f => ({ ...f, content_id: v }))} />
+            <div className="col-span-3">
+              <InlineField label="Link" value={form.link} onChange={v => setForm(f => ({ ...f, link: v }))} />
+            </div>
           </div>
         </FormBox>
       )}
@@ -445,22 +483,32 @@ function CurriculaTab({ projectId }) {
             <div key={cur.id} className="border rounded-xl overflow-hidden bg-white">
               <div className="flex items-center justify-between px-4 py-3 bg-slate-50">
                 {editingId === cur.id ? (
-                  <div className="flex items-center gap-2 flex-1">
-                    <input autoFocus
-                      className="border rounded-lg px-2 py-1 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                      value={editForm.title}
-                      onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))}
-                    />
-                    <input
-                      className="border rounded-lg px-2 py-1 text-sm w-32 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                      placeholder="Content ID"
-                      value={editForm.content_id}
-                      onChange={e => setEditForm(f => ({ ...f, content_id: e.target.value }))}
-                    />
-                    <button onClick={() => saveEditCurriculum(cur.id)} disabled={!editForm.title.trim()}
-                      className="bg-blue-600 text-white px-3 py-1 rounded-lg text-xs font-medium hover:bg-blue-700 disabled:opacity-40">Save</button>
-                    <button onClick={() => setEditingId(null)}
-                      className="border px-3 py-1 rounded-lg text-xs text-slate-600 hover:bg-slate-50">Cancel</button>
+                  <div className="flex flex-col gap-2 flex-1">
+                    <div className="flex items-center gap-2">
+                      <input autoFocus
+                        className="border rounded-lg px-2 py-1 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                        value={editForm.title}
+                        onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))}
+                      />
+                      <input
+                        className="border rounded-lg px-2 py-1 text-sm w-32 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                        placeholder="Content ID"
+                        value={editForm.content_id}
+                        onChange={e => setEditForm(f => ({ ...f, content_id: e.target.value }))}
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        className="border rounded-lg px-2 py-1 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                        placeholder="Link (https://...)"
+                        value={editForm.link}
+                        onChange={e => setEditForm(f => ({ ...f, link: e.target.value }))}
+                      />
+                      <button onClick={() => saveEditCurriculum(cur.id)} disabled={!editForm.title.trim()}
+                        className="bg-blue-600 text-white px-3 py-1 rounded-lg text-xs font-medium hover:bg-blue-700 disabled:opacity-40">Save</button>
+                      <button onClick={() => setEditingId(null)}
+                        className="border px-3 py-1 rounded-lg text-xs text-slate-600 hover:bg-slate-50">Cancel</button>
+                    </div>
                   </div>
                 ) : (
                   <>
@@ -473,7 +521,9 @@ function CurriculaTab({ projectId }) {
                     <div className="flex items-center gap-3 shrink-0 ml-3">
                       <DurationInline modules={sortedMods} />
                       {curriculumDurationParts(sortedMods).mandLabel && <Sep />}
-                      <button onClick={() => { setEditingId(cur.id); setEditForm({ title: cur.title, content_id: cur.content_id || '' }); }}
+                      <LinkButton href={cur.link} />
+                      {cur.link && <Sep />}
+                      <button onClick={() => { setEditingId(cur.id); setEditForm({ title: cur.title, content_id: cur.content_id || '', link: cur.link || '' }); }}
                         className="text-xs text-slate-400 hover:text-slate-700">Edit</button>
                       <button onClick={() => delCurriculum(cur.id)}
                         className="text-xs text-red-300 hover:text-red-500">Delete</button>
@@ -558,7 +608,7 @@ function CurriculaTab({ projectId }) {
   );
 }
 
-// ── Trainings tab ─────────────────────────────────────────────────────────────
+// -- Trainings tab -------------------------------------------------------------
 
 function TrainingsTab({ projectId }) {
   const [playlists, setPlaylists]         = useState([]);
@@ -903,6 +953,8 @@ function TrainingsTab({ projectId }) {
                             <div className="flex items-center gap-3 shrink-0 ml-3">
                               <DurationInline modules={sortedMods} />
                               {hasDuration && <Sep />}
+                              <LinkButton href={item.link} />
+                              {item.link && <Sep />}
                               <button onClick={e => { e.preventDefault(); removeItem(item.playlist_item_id); }}
                                 className="text-xs text-red-300 hover:text-red-500">Remove</button>
                             </div>
@@ -955,6 +1007,8 @@ function TrainingsTab({ projectId }) {
                               <Sep />
                             </>
                           )}
+                          <LinkButton href={item.link} />
+                          {item.link && <Sep />}
                           <button onClick={() => removeItem(item.playlist_item_id)}
                             className="text-xs text-red-300 hover:text-red-500">Remove</button>
                         </div>
@@ -971,7 +1025,7 @@ function TrainingsTab({ projectId }) {
   );
 }
 
-// ── Page shell ────────────────────────────────────────────────────────────────
+// -- Page shell ----------------------------------------------------------------
 
 const TABS = ['Modules', 'Curricula', 'Trainings'];
 

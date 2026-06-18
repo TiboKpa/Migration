@@ -64,14 +64,52 @@ function cellStr(v) {
   return String(v === null || v === undefined ? '' : v).trim();
 }
 
+/**
+ * Extract a URL from a cell, supporting both:
+ *   - plain URL text  (cell value is "https://...")
+ *   - embedded hyperlink  (display text is "LINK" but target is in cell.l.Target)
+ *
+ * sheet  : the XLSX worksheet object
+ * rowIdx : 0-based row index used by sheet_to_json
+ * colIdx : 0-based column index
+ * rawVal : the value already read from the json row array (used as fallback)
+ */
+function getCellLink(sheet, rowIdx, colIdx, rawVal) {
+  // Convert 0-based indices to XLSX cell address (e.g. row 3, col 11 -> "L4")
+  const colLetter = XLSX.utils.encode_col(colIdx);
+  // sheet_to_json with header:1 maps 0-based rowIdx directly — row 0 of the
+  // json array corresponds to the first sheet row (row 1 in XLSX 1-based terms).
+  const cellAddr = colLetter + String(rowIdx + 1);
+  const cell = sheet[cellAddr];
+
+  if (cell) {
+    // Embedded hyperlink stored by XLSX under cell.l.Target
+    if (cell.l && cell.l.Target) {
+      const t = String(cell.l.Target).trim();
+      if (t) return t;
+    }
+    // Some parsers expose the hyperlink on the value object
+    if (cell.v && typeof cell.v === 'object' && cell.v.hyperlink) {
+      const t = String(cell.v.hyperlink).trim();
+      if (t) return t;
+    }
+  }
+
+  // Fallback: the cell value itself may be a plain URL string
+  const raw = cellStr(rawVal);
+  if (/^(https?:\/\/|mailto:)/i.test(raw)) return raw;
+
+  return '';
+}
+
 export function parseTrainingPathFlat(arrayBuffer) {
-  const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+  const workbook = XLSX.read(arrayBuffer, { type: 'array', cellFormula: false, cellHTML: false });
   const sheet = workbook.Sheets['Training Path Flat'];
   if (!sheet) throw new Error('Sheet "Training Path Flat" not found in the workbook');
 
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
 
-  // Playlist column metadata
+  // Playlist column metadata (rows 1-3 in the sheet = indices 1-3 in the json array)
   const titleRow = rows[1] || [];
   const descRow  = rows[2] || [];
   const linkRow  = rows[3] || [];
@@ -84,7 +122,7 @@ export function parseTrainingPathFlat(arrayBuffer) {
       colIndex:    c,
       title,
       description: cellStr(descRow[c]),
-      link:        cellStr(linkRow[c]),
+      link:        getCellLink(sheet, 3, c, linkRow[c]),  // row index 3 = sheet row 4
     });
   }
 
@@ -119,6 +157,13 @@ export function parseTrainingPathFlat(arrayBuffer) {
       type = 'module';
     }
 
+    // Column J (index 9) = content_id, column K (index 10) = content type
+    // Column E (index 4) = title — check for embedded link on the title cell too
+    const titleLink = getCellLink(sheet, r, 4, row[4]);
+    const contentIdLink = getCellLink(sheet, r, 9, row[9]);
+    // Use whichever is a real URL
+    const rowLink = titleLink || contentIdLink || '';
+
     classifiedRows.push({
       rowIndex:    r,
       type,
@@ -126,6 +171,7 @@ export function parseTrainingPathFlat(arrayBuffer) {
       brick:       dNum,
       title,
       content_id:  cellStr(row[9]),
+      link:        rowLink,
       mandatoryMs: hhmmssToMinutes(row[6]),
       totalMs:     hhmmssToMinutes(row[8]),
       rawRow:      row,
@@ -141,14 +187,13 @@ export function parseTrainingPathFlat(arrayBuffer) {
       moduleMap.set(key, {
         title:        cr.title,
         content_id:   cr.content_id,
+        link:         cr.link,
         duration_min: cr.totalMs,
       });
     }
   }
 
   // Pass 2: build curricula and attach modules by file order.
-  // A module row belongs to whichever curriculum header immediately precedes
-  // it in the file — no chapter-number mapping is used.
   const curriculumMap = new Map();
   const curriculaOrder = [];
 
@@ -161,6 +206,7 @@ export function parseTrainingPathFlat(arrayBuffer) {
         const cur = {
           title:      cr.title,
           content_id: cr.content_id,
+          link:       cr.link,
           modules:    [],
         };
         curriculumMap.set(key, cur);
@@ -211,6 +257,7 @@ export function parseTrainingPathFlat(arrayBuffer) {
         if (cur) curricula.push({
           title:          cur.title,
           content_id:     cur.content_id,
+          link:           cur.link,
           sequence_order: item.sequence_order,
           modules:        cur.modules.map(m => ({ ...m })),
         });
@@ -219,6 +266,7 @@ export function parseTrainingPathFlat(arrayBuffer) {
         if (mod) standalone_modules.push({
           title:          mod.title,
           content_id:     mod.content_id,
+          link:           mod.link,
           duration_min:   mod.duration_min,
           sequence_order: item.sequence_order,
         });
