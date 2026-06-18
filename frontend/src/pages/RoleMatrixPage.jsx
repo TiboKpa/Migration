@@ -18,6 +18,108 @@ const TLG_ADDON_OPTIONS = [
   'SE_TLG_MPM_Process_Plan',
 ];
 
+// Columns that are never info keys
+const SKIP_COLS = new Set([
+  'Function', 'Role', 'Concatenate',
+  'PDM Role', 'TLG Group',
+  'TLG Primary', 'TLG Add-on',
+  'Primary Training', 'Complementary Training',
+]);
+
+// Strip suffixes like " (Yes/No)", " (Yes / No)", " (Y/N)" from a header
+function cleanInfoKeyName(header) {
+  return header
+    .replace(/\s*\(yes\s*\/\s*no\)\s*$/i, '')
+    .replace(/\s*\(y\s*\/\s*n\)\s*$/i, '')
+    .trim();
+}
+
+// Split a " + " delimited cell into [primary, ...addons]
+function splitByPlus(raw) {
+  if (!raw || !String(raw).trim()) return [];
+  return String(raw).split('+').map(s => s.trim()).filter(Boolean);
+}
+
+function parseRoleMatrixExcel(buffer) {
+  const wb = XLSX.read(buffer, { type: 'array' });
+  let rawSheet = null;
+  let headerIdx = -1;
+
+  for (const name of wb.SheetNames) {
+    const ws = wb.Sheets[name];
+    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    for (let i = 0; i < Math.min(raw.length, 10); i++) {
+      const row = raw[i].map(c => String(c).trim());
+      if (row.includes('Function') && row.includes('Role')) {
+        rawSheet = raw;
+        headerIdx = i;
+        break;
+      }
+    }
+    if (rawSheet) break;
+  }
+
+  if (!rawSheet || headerIdx === -1)
+    throw new Error('No header row with Function and Role found.');
+
+  const headers = rawSheet[headerIdx].map(c => String(c).trim());
+  const fnIdx   = headers.indexOf('Function');
+  const roleIdx = headers.indexOf('Role');
+
+  // "PDM Role" column -> primary_training_name + complementary_training_names
+  const pdmRoleIdx = headers.findIndex(h => h === 'PDM Role');
+
+  // "TLG Group" column -> tlg_primary + tlg_addon[]
+  const tlgGroupIdx = headers.findIndex(h => h === 'TLG Group');
+
+  // Everything that is not a fixed column and looks like a boolean flag is an info key
+  const infoHeaders = headers
+    .map((h, i) => ({ raw: h, clean: cleanInfoKeyName(h), i }))
+    .filter(({ raw }) => raw && !SKIP_COLS.has(raw) && raw !== 'Concatenate');
+
+  const entries = [];
+
+  for (let i = headerIdx + 1; i < rawSheet.length; i++) {
+    const row  = rawSheet[i];
+    const fn   = String(row[fnIdx]   || '').trim();
+    const role = String(row[roleIdx] || '').trim();
+    if (!fn || !role) continue;
+
+    // Build additional_info using cleaned key names
+    const additional_info = {};
+    for (const { clean, i: ci } of infoHeaders) {
+      const val = row[ci];
+      additional_info[clean] =
+        val === true ||
+        val === 1 ||
+        (typeof val === 'string' && val.trim().toLowerCase() === 'yes');
+    }
+
+    // Parse TLG Group: "Heavy Author L1 + SE_TLG_BOM_Transformation + SE_TLG_MPM_Process_Plan"
+    const tlgParts   = tlgGroupIdx >= 0 ? splitByPlus(row[tlgGroupIdx]) : [];
+    const tlg_primary = tlgParts[0] || '';
+    const tlg_addon   = tlgParts.slice(1);
+
+    // Parse PDM Role: "Primary Training Name + Complementary1 + Complementary2"
+    const pdmParts            = pdmRoleIdx >= 0 ? splitByPlus(row[pdmRoleIdx]) : [];
+    const primary_training_name = pdmParts[0] || '';
+    const complementary_names   = pdmParts.slice(1);
+
+    entries.push({
+      function: fn,
+      role,
+      additional_info,
+      tlg_primary,
+      tlg_addon,
+      primary_training_name,
+      complementary_names,
+    });
+  }
+
+  if (entries.length === 0) throw new Error('No data rows found.');
+  return entries;
+}
+
 function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
   const isError = tlgPrimary === 'Error';
   return (
@@ -291,6 +393,7 @@ export default function RoleMatrixPage() {
   const [filterRole, setFilterRole] = useState('');
   const [modalEntry, setModalEntry] = useState(null);
   const [importError, setImportError] = useState('');
+  const [importStats, setImportStats] = useState(null);
 
   const { data: dimensions = { functions: [], roles: [], info_keys: [] } } = useQuery({
     queryKey: ['role-matrix-dimensions', projectId],
@@ -344,26 +447,36 @@ export default function RoleMatrixPage() {
 
   const clearAllMutation = useMutation({
     mutationFn: () => client.delete(`/projects/${projectId}/role-matrix`),
-    onSuccess: () => qc.invalidateQueries(['role-matrix', projectId]),
+    onSuccess: () => {
+      qc.invalidateQueries(['role-matrix', projectId]);
+      qc.invalidateQueries(['role-matrix-dimensions', projectId]);
+    },
   });
 
   const importMutation = useMutation({
-    mutationFn: e => client.post(`/projects/${projectId}/role-matrix/import`, { entries: e }),
-    onSuccess: () => { qc.invalidateQueries(['role-matrix', projectId]); setImportError(''); },
+    mutationFn: payload =>
+      client.post(`/projects/${projectId}/role-matrix/import`, payload).then(r => r.data),
+    onSuccess: data => {
+      qc.invalidateQueries(['role-matrix', projectId]);
+      qc.invalidateQueries(['role-matrix-dimensions', projectId]);
+      setImportError('');
+      setImportStats(data);
+    },
   });
 
   function handleExport() {
     const data = entries.map(e => {
       const row = { Function: e.function, Role: e.role };
       for (const k of dimensions.info_keys) {
-        row[k] = e.additional_info?.[k] ? 'Yes' : 'No';
+        row[`${k} (Yes/No)`] = e.additional_info?.[k] ? 'Yes' : 'No';
       }
+      row['Concatenate'] = '';
       const rec = profiles.find(p => p.id === e.recommended_training_id);
-      row['Primary Training'] = rec ? rec.profile_name : '';
-      row['Complementary Training'] = Array.isArray(e.complementary_items)
-        ? e.complementary_items.map(i => i.title).join(', ') : '';
-      row['TLG Group'] = e.tlg_primary || '';
-      row['TLG Add-on'] = Array.isArray(e.tlg_addon) ? e.tlg_addon.join(', ') : '';
+      const compTitles = Array.isArray(e.complementary_items)
+        ? e.complementary_items.map(i => i.title) : [];
+      row['PDM Role'] = [rec ? rec.profile_name : '', ...compTitles].filter(Boolean).join(' + ');
+      const addonParts = Array.isArray(e.tlg_addon) ? e.tlg_addon : [];
+      row['TLG Group'] = [e.tlg_primary || '', ...addonParts].filter(Boolean).join(' + ');
       return row;
     });
     const ws = XLSX.utils.json_to_sheet(data);
@@ -373,51 +486,16 @@ export default function RoleMatrixPage() {
   }
 
   function handleFileChange(e) {
-    const file = e.target.files[0]; if (!file) return;
+    const file = e.target.files[0];
+    if (!file) return;
     const reader = new FileReader();
     reader.onload = evt => {
       try {
-        const wb = XLSX.read(evt.target.result, { type: 'array' });
-        let targetSheet = null, headerIdx = -1;
-        for (const sheetName of wb.SheetNames) {
-          const ws = wb.Sheets[sheetName];
-          const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-          for (let i = 0; i < Math.min(raw.length, 10); i++) {
-            const row = raw[i].map(c => String(c).trim());
-            if (row.includes('Function') && row.includes('Role')) {
-              targetSheet = raw; headerIdx = i; break;
-            }
-          }
-          if (targetSheet) break;
-        }
-        if (!targetSheet) throw new Error('No header row with Function and Role found.');
-        const headers = targetSheet[headerIdx].map(c => String(c).trim());
-        const fnIdx = headers.indexOf('Function');
-        const roleIdx = headers.indexOf('Role');
-        const tlgIdx = headers.findIndex(h => h.includes('TLG'));
-        const skipCols = new Set(['Function', 'Role', 'Concatenate', 'TLG', 'TLG Primary', 'TLG Add-on']);
-        const infoHeaders = headers.map((h, i) => ({ h, i })).filter(({ h }) => h && !skipCols.has(h));
-        const parsed = [];
-        for (let i = headerIdx + 1; i < targetSheet.length; i++) {
-          const row = targetSheet[i];
-          const fn = String(row[fnIdx] || '').trim();
-          const role = String(row[roleIdx] || '').trim();
-          if (!fn || !role) continue;
-          const additional_info = {};
-          for (const { h, i: ci } of infoHeaders) {
-            const val = row[ci];
-            additional_info[h] = val === true || val === 1 ||
-              (typeof val === 'string' && val.trim().toLowerCase() === 'yes');
-          }
-          parsed.push({
-            function: fn, role, additional_info,
-            tlg_primary: String(row[tlgIdx] || '').trim(),
-            tlg_addon: [],
-          });
-        }
-        if (parsed.length === 0) throw new Error('No data rows found.');
-        importMutation.mutate(parsed);
-      } catch (err) { setImportError(err.message); }
+        const parsed = parseRoleMatrixExcel(evt.target.result);
+        importMutation.mutate({ entries: parsed });
+      } catch (err) {
+        setImportError(err.message);
+      }
     };
     reader.readAsArrayBuffer(file);
     e.target.value = '';
@@ -425,7 +503,7 @@ export default function RoleMatrixPage() {
 
   function handleClearAll() {
     if (entries.length === 0 || clearAllMutation.isPending) return;
-    if (window.confirm('Empty the entire role matrix? This cannot be undone.'))
+    if (window.confirm('Empty the entire role matrix and its dimensions? This cannot be undone.'))
       clearAllMutation.mutate();
   }
 
@@ -469,7 +547,6 @@ export default function RoleMatrixPage() {
         />
       )}
 
-      {/* Header */}
       <div className="flex items-center justify-between mb-4 shrink-0">
         <div>
           <h1 className="text-xl font-bold text-slate-800">Role Matrix</h1>
@@ -493,11 +570,13 @@ export default function RoleMatrixPage() {
 
       {importError && <p className="text-sm text-red-500 mb-2">{importError}</p>}
       {importMutation.isPending && <p className="text-sm text-blue-600 mb-2">Importing...</p>}
-      {importMutation.isSuccess && <p className="text-sm text-green-600 mb-2">Import complete</p>}
+      {importStats && !importMutation.isPending && (
+        <p className="text-sm text-green-600 mb-2">
+          Import complete: {importStats.imported} rows, {importStats.dimensions_added} new dimension values added.
+        </p>
+      )}
 
-      {/* Dimension builder */}
       <div className="grid grid-cols-3 gap-4 mb-4 shrink-0">
-        {/* Functions */}
         <div className="border rounded-xl p-3 bg-slate-50">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Functions</p>
           <div className="flex flex-wrap gap-1 mb-2 min-h-[1.5rem]">
@@ -509,7 +588,6 @@ export default function RoleMatrixPage() {
           <AddValueInline label="function" onAdd={v => addDimMutation.mutate({ type: 'function', value: v })} />
         </div>
 
-        {/* Roles */}
         <div className="border rounded-xl p-3 bg-slate-50">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Roles</p>
           <div className="flex flex-wrap gap-1 mb-2 min-h-[1.5rem]">
@@ -521,7 +599,6 @@ export default function RoleMatrixPage() {
           <AddValueInline label="role" onAdd={v => addDimMutation.mutate({ type: 'role', value: v })} />
         </div>
 
-        {/* Additional Info Keys */}
         <div className="border rounded-xl p-3 bg-slate-50">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Additional Info</p>
           <div className="flex flex-wrap gap-1 mb-2 min-h-[1.5rem]">
@@ -534,7 +611,6 @@ export default function RoleMatrixPage() {
         </div>
       </div>
 
-      {/* Filter bar */}
       <div className="flex items-center gap-3 mb-3 shrink-0">
         <select value={filterFn} onChange={e => setFilterFn(e.target.value)}
           className="border rounded-lg px-2 py-1 text-xs text-slate-600">
@@ -553,7 +629,6 @@ export default function RoleMatrixPage() {
         <span className="ml-auto text-xs text-slate-400">{filteredEntries.length} rows</span>
       </div>
 
-      {/* Matrix table */}
       <div className="overflow-auto rounded-xl border bg-white flex-1">
         <table className="min-w-max text-sm border-collapse w-full">
           <thead className="sticky top-0 z-10 bg-slate-50 border-b">
@@ -605,14 +680,23 @@ export default function RoleMatrixPage() {
                   <td className="px-3 py-2">
                     {rec
                       ? <span className="text-xs text-indigo-700 font-medium">{rec.profile_name}</span>
-                      : <span className="text-xs text-slate-300">-</span>}
+                      : entry.primary_training_name
+                        ? <span className="text-xs text-indigo-700 font-medium">{entry.primary_training_name}</span>
+                        : <span className="text-xs text-slate-300">-</span>}
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-1">
-                      {compItems.map(i => (
-                        <span key={`${i.type}-${i.id}`}
-                          className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{i.title}</span>
-                      ))}
+                      {compItems.length > 0
+                        ? compItems.map(i => (
+                            <span key={`${i.type}-${i.id}`}
+                              className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{i.title}</span>
+                          ))
+                        : entry.complementary_names && entry.complementary_names.length > 0
+                          ? entry.complementary_names.map((n, idx) => (
+                              <span key={idx}
+                                className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{n}</span>
+                            ))
+                          : null}
                     </div>
                   </td>
                   <td className="px-3 py-2">

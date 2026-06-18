@@ -96,7 +96,6 @@ router.delete('/:projectId/role-matrix/dimensions', authenticate, async (req, re
         [req.params.projectId, value]
       );
     } else if (type === 'info_key') {
-      // Delete all rows that carried this info key, then re-generate without it
       await client.query(
         `DELETE FROM role_matrix WHERE project_id=$1 AND additional_info ? $2`,
         [req.params.projectId, value]
@@ -222,43 +221,142 @@ router.put('/:projectId/role-matrix/:id', authenticate, async (req, res) => {
 // DELETE all rows
 router.delete('/:projectId/role-matrix', authenticate, async (req, res) => {
   try {
-    const result = await pool.query(
-      'DELETE FROM role_matrix WHERE project_id=$1 RETURNING id',
-      [req.params.projectId]
-    );
-    res.json({ deleted: result.rowCount });
+    await pool.query('DELETE FROM role_matrix WHERE project_id=$1', [req.params.projectId]);
+    res.json({ deleted: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST bulk import (backwards compat)
+// POST bulk import
+// Each entry from the frontend parser has:
+//   function, role, additional_info, tlg_primary, tlg_addon[],
+//   primary_training_name (string), complementary_names (string[])
+// The backend resolves training names to IDs from playlists / modules / curricula.
 router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => {
   const { entries } = req.body;
   if (!Array.isArray(entries) || entries.length === 0)
     return res.status(400).json({ error: 'No entries provided' });
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Collect all unique dimension values from the imported data
+    const fnSet      = new Set();
+    const roleSet    = new Set();
+    const infoKeySet = new Set();
+    for (const e of entries) {
+      if (e.function) fnSet.add(e.function);
+      if (e.role)     roleSet.add(e.role);
+      if (e.additional_info && typeof e.additional_info === 'object') {
+        Object.keys(e.additional_info).forEach(k => infoKeySet.add(k));
+      }
+    }
+
+    // Upsert dimensions
+    let dimensionsAdded = 0;
+    for (const value of fnSet) {
+      const r = await client.query(
+        `INSERT INTO role_matrix_dimensions (project_id, type, value)
+         VALUES ($1, 'function', $2) ON CONFLICT DO NOTHING RETURNING id`,
+        [req.params.projectId, value]
+      );
+      dimensionsAdded += r.rowCount;
+    }
+    for (const value of roleSet) {
+      const r = await client.query(
+        `INSERT INTO role_matrix_dimensions (project_id, type, value)
+         VALUES ($1, 'role', $2) ON CONFLICT DO NOTHING RETURNING id`,
+        [req.params.projectId, value]
+      );
+      dimensionsAdded += r.rowCount;
+    }
+    for (const value of infoKeySet) {
+      const r = await client.query(
+        `INSERT INTO role_matrix_dimensions (project_id, type, value)
+         VALUES ($1, 'info_key', $2) ON CONFLICT DO NOTHING RETURNING id`,
+        [req.params.projectId, value]
+      );
+      dimensionsAdded += r.rowCount;
+    }
+
+    // Load playlists and complementary items for name -> id resolution
+    const playlistsRes = await client.query(
+      'SELECT id, title FROM playlists WHERE project_id=$1',
+      [req.params.projectId]
+    );
+    const modulesRes = await client.query(
+      'SELECT id, title FROM training_modules WHERE project_id=$1',
+      [req.params.projectId]
+    );
+    const curriculaRes = await client.query(
+      'SELECT id, title FROM training_curricula WHERE project_id=$1',
+      [req.params.projectId]
+    );
+
+    const playlistMap  = Object.fromEntries(playlistsRes.rows.map(r => [r.title.trim().toLowerCase(), r.id]));
+    const moduleMap    = Object.fromEntries(modulesRes.rows.map(r => [r.title.trim().toLowerCase(), r.id]));
+    const curriculumMap = Object.fromEntries(curriculaRes.rows.map(r => [r.title.trim().toLowerCase(), r.id]));
+
+    function resolveTrainingId(name) {
+      if (!name) return null;
+      return playlistMap[name.trim().toLowerCase()] || null;
+    }
+
+    function resolveComplementaryItems(names) {
+      if (!Array.isArray(names)) return [];
+      const items = [];
+      for (const name of names) {
+        const key = name.trim().toLowerCase();
+        if (curriculumMap[key]) {
+          items.push({ type: 'curriculum', id: curriculumMap[key], title: name.trim() });
+        } else if (moduleMap[key]) {
+          items.push({ type: 'module', id: moduleMap[key], title: name.trim() });
+        } else {
+          // Store as unresolved text so the user can see it was imported
+          items.push({ type: 'unresolved', id: null, title: name.trim() });
+        }
+      }
+      return items;
+    }
+
+    // Upsert each row
+    let imported = 0;
     for (const e of entries) {
       const additional_info = e.additional_info && typeof e.additional_info === 'object'
         ? e.additional_info : {};
       const concatenate = buildConcatenate(e.function, e.role, additional_info);
+
+      const recommended_training_id = resolveTrainingId(e.primary_training_name);
+      const complementary_items     = resolveComplementaryItems(e.complementary_names);
+
       await client.query(
         `INSERT INTO role_matrix
-           (project_id, function, role, additional_info, concatenate, tlg_primary, tlg_addon)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+           (project_id, function, role, additional_info, concatenate,
+            tlg_primary, tlg_addon, recommended_training_id, complementary_items)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (project_id, concatenate) DO UPDATE SET
-           tlg_primary = EXCLUDED.tlg_primary,
-           tlg_addon   = EXCLUDED.tlg_addon`,
+           tlg_primary              = EXCLUDED.tlg_primary,
+           tlg_addon                = EXCLUDED.tlg_addon,
+           recommended_training_id  = EXCLUDED.recommended_training_id,
+           complementary_items      = EXCLUDED.complementary_items,
+           updated_at               = NOW()`,
         [
-          req.params.projectId, e.function, e.role,
-          JSON.stringify(additional_info), concatenate,
-          e.tlg_primary || e.tlg_group || '',
+          req.params.projectId,
+          e.function,
+          e.role,
+          JSON.stringify(additional_info),
+          concatenate,
+          e.tlg_primary || '',
           JSON.stringify(e.tlg_addon || []),
+          recommended_training_id,
+          JSON.stringify(complementary_items),
         ]
       );
+      imported++;
     }
+
     await client.query('COMMIT');
-    res.json({ imported: entries.length });
+    res.json({ imported, dimensions_added: dimensionsAdded });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
