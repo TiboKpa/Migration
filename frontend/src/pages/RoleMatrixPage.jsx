@@ -88,7 +88,7 @@ function matchCombo(combos, profile) {
 }
 
 // ---- Reusable single-select panel (radio) ----
-function SingleSelectPanel({ title, placeholder, options, value, onChange, onAddNew }) {
+function SingleSelectPanel({ title, placeholder, options, value, onChange }) {
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [modalSearch, setModalSearch] = useState('');
@@ -308,8 +308,10 @@ function MultiSelectPanel({ title, placeholder, options, value, onChange }) {
   );
 }
 
-// ---- Edit Modal ----
-function EditModal({ entry, profiles, complementaryOptions, uniqueFunctions, uniqueRoles, onSave, onClose }) {
+// ---- Unified Create / Edit Modal ----
+function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uniqueRoles, onSave, onClose }) {
+  const isNew = !entry.id;
+
   const allItems = [
     ...complementaryOptions.curricula.map(c => ({ ...c, type: 'curriculum' })),
     ...complementaryOptions.modules.map(m => ({ ...m, type: 'module' })),
@@ -329,14 +331,12 @@ function EditModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
     complementary_items: Array.isArray(entry.complementary_items) ? entry.complementary_items : [],
   });
 
-  // Primary training search
   const [primarySearch, setPrimarySearch] = useState('');
   const filteredProfiles = profiles.filter(p =>
     p.profile_name.toLowerCase().includes(primarySearch.toLowerCase())
   );
   const selectedProfile = profiles.find(p => String(p.id) === form.recommended_training_id) || null;
 
-  // Complementary items
   function toggleComplementary(item) {
     setForm(f => {
       const exists = f.complementary_items.some(i => i.type === item.type && i.id === item.id);
@@ -358,7 +358,6 @@ function EditModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
     i.title.toLowerCase().includes(itemSearch.toLowerCase())
   );
 
-  // Complementary bool flags as string labels for the MultiSelectPanel
   const flagOptions = BOOL_FLAGS.map(f => f.label);
   const selectedFlags = BOOL_FLAGS.filter(f => form[f.key]).map(f => f.label);
 
@@ -368,11 +367,13 @@ function EditModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
     setForm(f => ({ ...f, ...updates }));
   }
 
+  const canSave = form.function.trim() !== '' && form.role.trim() !== '';
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-base font-semibold text-slate-800">Edit rule</h2>
+          <h2 className="text-base font-semibold text-slate-800">{isNew ? 'New rule' : 'Edit rule'}</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
         </div>
 
@@ -415,10 +416,8 @@ function EditModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
           </div>
         </div>
 
-        {/* Primary Training + Complementary trainings side by side */}
+        {/* Primary Training + Complementary trainings */}
         <div className="grid grid-cols-2 gap-4 mb-5">
-
-          {/* Left: Recommended Primary Training */}
           <div className="flex flex-col">
             <label className="text-xs text-slate-500 block mb-1">Recommended Primary Training</label>
             {selectedProfile && (
@@ -461,7 +460,6 @@ function EditModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
             </div>
           </div>
 
-          {/* Right: Complementary Trainings */}
           <div className="flex flex-col">
             <label className="text-xs text-slate-500 block mb-1">Complementary Trainings (modules &amp; curricula)</label>
             {form.complementary_items.length > 0 && (
@@ -500,18 +498,20 @@ function EditModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
               ))}
             </div>
           </div>
-
         </div>
 
         <div className="flex gap-2 justify-end">
           <button onClick={onClose} className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
           <button
+            disabled={!canSave}
             onClick={() => onSave({
               ...form,
               recommended_training_id: form.recommended_training_id ? parseInt(form.recommended_training_id) : null,
             })}
-            className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700"
-          >Save</button>
+            className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-40"
+          >
+            {isNew ? 'Create rule' : 'Save'}
+          </button>
         </div>
       </div>
     </div>
@@ -526,10 +526,9 @@ export default function RoleMatrixPage() {
   const [viewMode, setViewMode] = useState('pivot');
   const [profile, setProfile] = useState({ pbom_champion: false, boc_admin: false, boc_member: false, eto_user: false, team_manager: false });
   const [filterFn, setFilterFn] = useState('');
-  const [form, setForm] = useState(EMPTY_FORM);
-  const [editingEntry, setEditingEntry] = useState(null);
+  // null = closed, EMPTY_FORM = new rule, entry object = edit
+  const [modalEntry, setModalEntry] = useState(null);
   const [importError, setImportError] = useState('');
-  const [showAddForm, setShowAddForm] = useState(false);
 
   const { data: entries = [], isLoading } = useQuery({
     queryKey: ['role-matrix', projectId],
@@ -548,7 +547,7 @@ export default function RoleMatrixPage() {
 
   const addMutation = useMutation({
     mutationFn: (data) => client.post(`/projects/${projectId}/role-matrix`, data),
-    onSuccess: () => { qc.invalidateQueries(['role-matrix', projectId]); setForm(EMPTY_FORM); setShowAddForm(false); }
+    onSuccess: () => { qc.invalidateQueries(['role-matrix', projectId]); setModalEntry(null); }
   });
   const importMutation = useMutation({
     mutationFn: (e) => client.post(`/projects/${projectId}/role-matrix/import`, { entries: e }),
@@ -556,12 +555,20 @@ export default function RoleMatrixPage() {
   });
   const updateMutation = useMutation({
     mutationFn: ({ id, data }) => client.put(`/projects/${projectId}/role-matrix/${id}`, data),
-    onSuccess: () => { qc.invalidateQueries(['role-matrix', projectId]); setEditingEntry(null); }
+    onSuccess: () => { qc.invalidateQueries(['role-matrix', projectId]); setModalEntry(null); }
   });
   const deleteMutation = useMutation({
     mutationFn: (id) => client.delete(`/projects/${projectId}/role-matrix/${id}`),
     onSuccess: () => qc.invalidateQueries(['role-matrix', projectId])
   });
+
+  function handleSave(data) {
+    if (modalEntry.id) {
+      updateMutation.mutate({ id: modalEntry.id, data });
+    } else {
+      addMutation.mutate(data);
+    }
+  }
 
   function handleFileChange(e) {
     const file = e.target.files[0]; if (!file) return;
@@ -605,26 +612,17 @@ export default function RoleMatrixPage() {
     return p ? p.profile_name : null;
   }
 
-  // Add form flag state as string array for MultiSelectPanel
-  const flagOptions = BOOL_FLAGS.map(f => f.label);
-  const formSelectedFlags = BOOL_FLAGS.filter(f => form[f.key]).map(f => f.label);
-  function handleFormFlagsChange(labels) {
-    const updates = {};
-    BOOL_FLAGS.forEach(f => { updates[f.key] = labels.includes(f.label); });
-    setForm(f => ({ ...f, ...updates }));
-  }
-
   return (
     <div className="flex flex-col h-full">
-      {editingEntry && (
-        <EditModal
-          entry={editingEntry}
+      {modalEntry !== null && (
+        <RuleModal
+          entry={modalEntry}
           profiles={profiles}
           complementaryOptions={complementaryOptions}
           uniqueFunctions={uniqueFunctions}
           uniqueRoles={uniqueRoles}
-          onSave={(data) => updateMutation.mutate({ id: editingEntry.id, data })}
-          onClose={() => setEditingEntry(null)}
+          onSave={handleSave}
+          onClose={() => setModalEntry(null)}
         />
       )}
 
@@ -645,7 +643,12 @@ export default function RoleMatrixPage() {
             <button onClick={() => setViewMode('flat')}
               className={`px-3 py-1.5 font-medium ${ viewMode === 'flat' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50' }`}>Full list</button>
           </div>
-          <button onClick={() => setShowAddForm(v => !v)} className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">Add rule</button>
+          <button
+            onClick={() => setModalEntry({ ...EMPTY_FORM })}
+            className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700"
+          >
+            Add rule
+          </button>
           <button onClick={() => fileRef.current.click()} className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Import Excel</button>
           <button onClick={handleExport} disabled={entries.length === 0} className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">Export Excel</button>
           <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleFileChange} />
@@ -655,58 +658,6 @@ export default function RoleMatrixPage() {
       {importError && <p className="text-sm text-red-500 mb-2">{importError}</p>}
       {importMutation.isPending && <p className="text-sm text-blue-600 mb-2">Importing...</p>}
       {importMutation.isSuccess && <p className="text-sm text-green-600 mb-2">Import complete</p>}
-
-      {/* Add form */}
-      {showAddForm && (
-        <div className="bg-slate-50 border rounded-xl p-4 mb-4 shrink-0">
-          <h2 className="text-sm font-semibold text-slate-700 mb-3">New rule</h2>
-
-          {/* Three-panel: Function / Role / Complementary Info */}
-          <div className="grid grid-cols-3 gap-4 mb-3">
-            <SingleSelectPanel
-              title="Function"
-              placeholder="Search functions..."
-              options={uniqueFunctions}
-              value={form.function}
-              onChange={v => setForm(f => ({ ...f, function: v }))}
-            />
-            <SingleSelectPanel
-              title="Role"
-              placeholder="Search roles..."
-              options={uniqueRoles}
-              value={form.role}
-              onChange={v => setForm(f => ({ ...f, role: v }))}
-            />
-            <MultiSelectPanel
-              title="Complementary Info"
-              placeholder="Search flags..."
-              options={flagOptions}
-              value={formSelectedFlags}
-              onChange={handleFormFlagsChange}
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 mb-3">
-            <div>
-              <label className="text-xs text-slate-500 block mb-1">PDM Recommended Training</label>
-              <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={form.pdm_role}
-                onChange={e => setForm(f => ({ ...f, pdm_role: e.target.value }))} placeholder="e.g. PDM PBOM MCAD for ETO Authors" />
-            </div>
-            <div>
-              <label className="text-xs text-slate-500 block mb-1">TLG Group</label>
-              <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={form.tlg_group}
-                onChange={e => setForm(f => ({ ...f, tlg_group: e.target.value }))} placeholder="e.g. Heavy Author L1" />
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <button onClick={() => addMutation.mutate(form)}
-              disabled={!form.function || !form.role || addMutation.isPending}
-              className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-40">Save rule</button>
-            <button onClick={() => { setShowAddForm(false); setForm(EMPTY_FORM); }}
-              className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
-          </div>
-        </div>
-      )}
 
       {/* PIVOT VIEW */}
       {viewMode === 'pivot' && (
@@ -739,7 +690,7 @@ export default function RoleMatrixPage() {
                   <th className={`${thClass} w-64`}>PDM Training</th>
                   <th className={`${thClass} w-40`}>TLG Group</th>
                   <th className={`${thClass} w-52`}>Recommended Training</th>
-                  <th className={`${thClass}`}>Complementary</th>
+                  <th className={thClass}>Complementary</th>
                   <th className="px-2 py-2 w-14"></th>
                 </tr>
               </thead>
@@ -779,7 +730,7 @@ export default function RoleMatrixPage() {
                       </td>
                       <td className="px-2 py-2">
                         {match && (
-                          <button onClick={() => setEditingEntry(match)}
+                          <button onClick={() => setModalEntry(match)}
                             className="text-xs text-slate-400 hover:text-blue-600">Edit</button>
                         )}
                       </td>
@@ -804,7 +755,7 @@ export default function RoleMatrixPage() {
                 <th className={`${thClass} w-64`}>PDM Training</th>
                 <th className={`${thClass} w-40`}>TLG Group</th>
                 <th className={`${thClass} w-48`}>Recommended Training</th>
-                <th className={`${thClass}`}>Complementary</th>
+                <th className={thClass}>Complementary</th>
                 <th className="px-2 py-2 w-20"></th>
               </tr>
             </thead>
@@ -837,7 +788,7 @@ export default function RoleMatrixPage() {
                     </td>
                     <td className="px-2 py-1.5">
                       <div className="flex gap-1">
-                        <button onClick={() => setEditingEntry(entry)} className="text-slate-400 hover:text-blue-600 text-xs">Edit</button>
+                        <button onClick={() => setModalEntry(entry)} className="text-slate-400 hover:text-blue-600 text-xs">Edit</button>
                         <button onClick={() => deleteMutation.mutate(entry.id)} className="text-red-300 hover:text-red-500 text-xs">Del</button>
                       </div>
                     </td>
