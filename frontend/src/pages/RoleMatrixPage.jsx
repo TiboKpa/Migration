@@ -291,6 +291,64 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
   );
 }
 
+// ---- Add Form sub-components ----
+
+// Select-or-new for Function and Role
+function SelectOrNew({ label, value, onChange, options, placeholder }) {
+  const NEW_VAL = '__new__';
+  const isNew = value !== '' && !options.includes(value);
+  const selectVal = isNew ? NEW_VAL : value;
+
+  return (
+    <div>
+      <label className="text-xs text-slate-500 block mb-1">{label}</label>
+      <select
+        className="border rounded-lg px-2 py-1.5 text-sm w-full mb-1"
+        value={selectVal}
+        onChange={e => {
+          if (e.target.value === NEW_VAL) onChange('');
+          else onChange(e.target.value);
+        }}
+      >
+        <option value="">-- Select {label} --</option>
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+        <option value={NEW_VAL}>Add new...</option>
+      </select>
+      {(selectVal === NEW_VAL || isNew) && (
+        <input
+          className="border rounded-lg px-2 py-1.5 text-sm w-full"
+          placeholder={placeholder}
+          value={isNew ? value : ''}
+          autoFocus
+          onChange={e => onChange(e.target.value)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Complementary info as flag checklist (OR logic — user picks which flags apply)
+function ComplementaryFlagChecklist({ form, setForm }) {
+  return (
+    <div>
+      <label className="text-xs text-slate-500 block mb-2">Complementary Info</label>
+      <div className="border rounded-lg divide-y">
+        {BOOL_FLAGS.map(flag => (
+          <label key={flag.key} className={`flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-slate-50 ${form[flag.key] ? 'bg-blue-50' : ''}`}>
+            <input
+              type="checkbox"
+              checked={form[flag.key]}
+              onChange={e => setForm(f => ({ ...f, [flag.key]: e.target.checked }))}
+              className="rounded accent-blue-600"
+            />
+            <span className="text-sm text-slate-700">{flag.label}</span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function RoleMatrixPage() {
   const { projectId } = useParams();
   const qc = useQueryClient();
@@ -367,6 +425,7 @@ export default function RoleMatrixPage() {
 
   const pivot = useMemo(() => buildPivot(entries), [entries]);
   const uniqueFunctions = useMemo(() => [...new Set(pivot.map(r => r.function))].sort(), [pivot]);
+  const uniqueRoles = useMemo(() => [...new Set(entries.map(e => e.role))].sort(), [entries]);
   const filteredPivot = filterFn ? pivot.filter(r => r.function === filterFn) : pivot;
 
   const thClass = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
@@ -421,29 +480,30 @@ export default function RoleMatrixPage() {
       {showAddForm && (
         <div className="bg-slate-50 border rounded-xl p-4 mb-4 shrink-0">
           <h2 className="text-sm font-semibold text-slate-700 mb-3">New rule</h2>
+
+          {/* Function + Role — select from existing or add new */}
           <div className="grid grid-cols-2 gap-3 mb-3">
-            <div>
-              <label className="text-xs text-slate-500 block mb-1">Function</label>
-              <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={form.function}
-                placeholder="e.g. Engineering"
-                onChange={e => setForm(f => ({ ...f, function: e.target.value }))} />
-            </div>
-            <div>
-              <label className="text-xs text-slate-500 block mb-1">Role</label>
-              <input className="border rounded-lg px-2 py-1.5 text-sm w-full" value={form.role}
-                placeholder="e.g. Author"
-                onChange={e => setForm(f => ({ ...f, role: e.target.value }))} />
-            </div>
+            <SelectOrNew
+              label="Function"
+              value={form.function}
+              onChange={v => setForm(f => ({ ...f, function: v }))}
+              options={uniqueFunctions}
+              placeholder="e.g. Engineering"
+            />
+            <SelectOrNew
+              label="Role"
+              value={form.role}
+              onChange={v => setForm(f => ({ ...f, role: v }))}
+              options={uniqueRoles}
+              placeholder="e.g. Author"
+            />
           </div>
-          <div className="flex flex-wrap gap-4 mb-3">
-            {BOOL_FLAGS.map(flag => (
-              <label key={flag.key} className="flex items-center gap-1.5 text-sm cursor-pointer">
-                <input type="checkbox" checked={form[flag.key]}
-                  onChange={e => setForm(f => ({ ...f, [flag.key]: e.target.checked }))} className="rounded" />
-                {flag.label}
-              </label>
-            ))}
+
+          {/* Complementary Info — flag checklist (OR logic) */}
+          <div className="mb-3">
+            <ComplementaryFlagChecklist form={form} setForm={setForm} />
           </div>
+
           <div className="grid grid-cols-2 gap-3 mb-3">
             <div>
               <label className="text-xs text-slate-500 block mb-1">PDM Recommended Training</label>
