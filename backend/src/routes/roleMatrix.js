@@ -32,6 +32,71 @@ function normalizeRow(row) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Shared resolve helper -- re-links training names to catalogue IDs.
+// Only updates rows where na_training=false and primary_training_name is set.
+// Does NOT touch rows that were manually assigned via the UI (recommended_training_id
+// set with no primary_training_name) -- those keep their manual link.
+// ---------------------------------------------------------------------------
+async function resolveRoleMatrixTrainings(client, projectId) {
+  const [playlistsRes, modulesRes, curriculaRes] = await Promise.all([
+    client.query('SELECT id, title FROM playlists WHERE project_id=$1', [projectId]),
+    client.query('SELECT id, title FROM training_modules WHERE project_id=$1', [projectId]),
+    client.query('SELECT id, title FROM training_curricula WHERE project_id=$1', [projectId]),
+  ]);
+
+  const playlistMap   = new Map(playlistsRes.rows.map(r => [r.title.trim().toLowerCase(), r.id]));
+  const moduleMap     = new Map(modulesRes.rows.map(r => [r.title.trim().toLowerCase(), r.id]));
+  const curriculumMap = new Map(curriculaRes.rows.map(r => [r.title.trim().toLowerCase(), r.id]));
+
+  function resolveTrainingId(name) {
+    if (!name) return null;
+    const key = name.trim().toLowerCase();
+    return playlistMap.get(key) || moduleMap.get(key) || curriculumMap.get(key) || null;
+  }
+
+  function resolveComplementaryItems(names) {
+    if (!Array.isArray(names)) return [];
+    return names.map(name => {
+      const key = name.trim().toLowerCase();
+      if (curriculumMap.has(key)) return { type: 'curriculum', id: curriculumMap.get(key), title: name.trim() };
+      if (moduleMap.has(key))     return { type: 'module',     id: moduleMap.get(key),     title: name.trim() };
+      if (playlistMap.has(key))   return { type: 'playlist',   id: playlistMap.get(key),   title: name.trim() };
+      return { type: 'unresolved', id: null, title: name.trim() };
+    });
+  }
+
+  // Only re-resolve rows that came from an import (have primary_training_name set)
+  // and are not marked N/A. Manual UI edits (primary_training_name='') are untouched.
+  const rowsRes = await client.query(
+    `SELECT id, primary_training_name, complementary_names
+     FROM role_matrix
+     WHERE project_id=$1 AND na_training=false AND primary_training_name != ''`,
+    [projectId]
+  );
+
+  let resolved = 0;
+  let unresolved = 0;
+
+  for (const row of rowsRes.rows) {
+    const compNames = parseJsonField(row.complementary_names, []);
+    const recommended_training_id = resolveTrainingId(row.primary_training_name);
+    const complementary_items     = resolveComplementaryItems(compNames);
+    if (recommended_training_id) resolved++;
+    else unresolved++;
+    await client.query(
+      `UPDATE role_matrix SET
+         recommended_training_id = $1,
+         complementary_items     = $2,
+         updated_at              = NOW()
+       WHERE id = $3`,
+      [recommended_training_id, JSON.stringify(complementary_items), row.id]
+    );
+  }
+
+  return { resolved, unresolved, total: rowsRes.rows.length };
+}
+
 // -- Dimensions ------------------------------------------------------------
 
 router.get('/:projectId/role-matrix/dimensions', authenticate, async (req, res) => {
@@ -307,7 +372,6 @@ router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => 
         ? e.additional_info : {};
       const concatenate = buildConcatenate(e.function, e.role, additional_info);
 
-      // Accept both the boolean flag sent by the frontend parser and the sentinel string
       const isNaTlg = e.na_tlg === true || String(e.tlg_primary || '').trim() === 'N/A';
       const isNaTrn = e.na_training === true || String(e.primary_training_name || '').trim() === 'N/A';
 
@@ -343,63 +407,27 @@ router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => 
       );
     }
 
-    // STEP 3 -- load training catalogue
-    const playlistsRes = await client.query(
-      'SELECT id, title FROM playlists WHERE project_id=$1', [req.params.projectId]
-    );
-    const modulesRes = await client.query(
-      'SELECT id, title FROM training_modules WHERE project_id=$1', [req.params.projectId]
-    );
-    const curriculaRes = await client.query(
-      'SELECT id, title FROM training_curricula WHERE project_id=$1', [req.params.projectId]
-    );
-    const playlistMap   = new Map(playlistsRes.rows.map(r => [r.title.trim().toLowerCase(), r.id]));
-    const moduleMap     = new Map(modulesRes.rows.map(r => [r.title.trim().toLowerCase(), r.id]));
-    const curriculumMap = new Map(curriculaRes.rows.map(r => [r.title.trim().toLowerCase(), r.id]));
-
-    function resolveTrainingId(name) {
-      if (!name) return null;
-      const key = name.trim().toLowerCase();
-      return playlistMap.get(key) || moduleMap.get(key) || curriculumMap.get(key) || null;
-    }
-    function resolveComplementaryItems(names) {
-      if (!Array.isArray(names)) return [];
-      return names.map(name => {
-        const key = name.trim().toLowerCase();
-        if (curriculumMap.has(key)) return { type: 'curriculum', id: curriculumMap.get(key), title: name.trim() };
-        if (moduleMap.has(key))     return { type: 'module',     id: moduleMap.get(key),     title: name.trim() };
-        if (playlistMap.has(key))   return { type: 'playlist',   id: playlistMap.get(key),   title: name.trim() };
-        return { type: 'unresolved', id: null, title: name.trim() };
-      });
-    }
-
-    // STEP 4 -- resolve training IDs (skip N/A rows entirely)
-    let resolved = 0;
-    let unresolved = 0;
-    for (const e of entries) {
-      const additional_info = (e.additional_info && typeof e.additional_info === 'object')
-        ? e.additional_info : {};
-      const concatenate = buildConcatenate(e.function, e.role, additional_info);
-      const isNaTrn = e.na_training === true || String(e.primary_training_name || '').trim() === 'N/A';
-
-      if (isNaTrn) continue;
-
-      const recommended_training_id = resolveTrainingId(e.primary_training_name);
-      const complementary_items     = resolveComplementaryItems(e.complementary_names || []);
-      if (recommended_training_id) resolved++;
-      else if (e.primary_training_name) unresolved++;
-      await client.query(
-        `UPDATE role_matrix SET
-           recommended_training_id = $1,
-           complementary_items     = $2,
-           updated_at              = NOW()
-         WHERE project_id=$3 AND concatenate=$4`,
-        [recommended_training_id, JSON.stringify(complementary_items), req.params.projectId, concatenate]
-      );
-    }
+    // STEP 3+4 -- resolve via shared helper
+    const { resolved, unresolved } = await resolveRoleMatrixTrainings(client, req.params.projectId);
 
     await client.query('COMMIT');
     res.json({ imported: entries.length, dimensions_added: dimensionsAdded, resolved, unresolved });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally { client.release(); }
+});
+
+// POST re-resolve -- called by the training matrix page after any catalogue change.
+// Re-links all import-sourced rows to the current catalogue without touching
+// manually set rows (those with primary_training_name='') or N/A rows.
+router.post('/:projectId/role-matrix/re-resolve', authenticate, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const stats = await resolveRoleMatrixTrainings(client, req.params.projectId);
+    await client.query('COMMIT');
+    res.json(stats);
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });

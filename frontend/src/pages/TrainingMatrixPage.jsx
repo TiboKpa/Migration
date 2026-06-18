@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import client from '../api/client';
 import { parseTrainingPathFlat } from '../utils/parseTrainingPathFlat';
+import { reResolveRoleMatrix } from '../utils/reResolveRoleMatrix';
 
 const REORDER_SKIP_KEY = 'reorder_confirm_skip';
 function getSkipReorderConfirm() { return localStorage.getItem(REORDER_SKIP_KEY) === 'true'; }
@@ -212,6 +213,7 @@ function ModulesTab({ projectId }) {
     setForm({ title: '', content_id: '', duration_min: '', link: '' });
     setShowAdd(false);
     load();
+    reResolveRoleMatrix(projectId);
   }
 
   async function saveEdit(id) {
@@ -223,18 +225,21 @@ function ModulesTab({ projectId }) {
     });
     setEditingId(null);
     load();
+    reResolveRoleMatrix(projectId);
   }
 
   async function del(id) {
     if (!confirm('Delete this module? It will be removed from all curricula.')) return;
     await client.delete(`/projects/${projectId}/modules/${id}`);
     load();
+    reResolveRoleMatrix(projectId);
   }
 
   async function delAll() {
     if (!confirm('Delete ALL modules? This cannot be undone.')) return;
     await client.delete(`/projects/${projectId}/modules`);
     load();
+    reResolveRoleMatrix(projectId);
   }
 
   function startEdit(mod) {
@@ -365,6 +370,7 @@ function CurriculaTab({ projectId }) {
     setForm({ title: '', content_id: '', link: '' });
     setShowAdd(false);
     loadAll();
+    reResolveRoleMatrix(projectId);
   }
 
   async function saveEditCurriculum(id) {
@@ -375,18 +381,21 @@ function CurriculaTab({ projectId }) {
     });
     setEditingId(null);
     loadAll();
+    reResolveRoleMatrix(projectId);
   }
 
   async function delCurriculum(id) {
     if (!confirm('Delete this curriculum? Modules inside it will not be deleted.')) return;
     await client.delete(`/projects/${projectId}/curricula/${id}`);
     loadAll();
+    reResolveRoleMatrix(projectId);
   }
 
   async function delAll() {
     if (!confirm('Delete ALL curricula? Modules will not be deleted.')) return;
     await client.delete(`/projects/${projectId}/curricula`);
     loadAll();
+    reResolveRoleMatrix(projectId);
   }
 
   async function addModuleToCurriculum(curId) {
@@ -658,6 +667,7 @@ function TrainingsTab({ projectId }) {
     setForm({ title: '', description: '', link: '', content_id: '' });
     setShowAdd(false);
     loadList();
+    reResolveRoleMatrix(projectId);
   }
 
   async function update() {
@@ -665,6 +675,7 @@ function TrainingsTab({ projectId }) {
     setEditMode(false);
     loadList();
     loadDetail(selected);
+    reResolveRoleMatrix(projectId);
   }
 
   async function del() {
@@ -673,6 +684,7 @@ function TrainingsTab({ projectId }) {
     setSelected(null);
     setDetail(null);
     loadList();
+    reResolveRoleMatrix(projectId);
   }
 
   async function delAll() {
@@ -681,6 +693,7 @@ function TrainingsTab({ projectId }) {
     setSelected(null);
     setDetail(null);
     loadList();
+    reResolveRoleMatrix(projectId);
   }
 
   async function addItem() {
@@ -990,7 +1003,6 @@ function TrainingsTab({ projectId }) {
                         </details>
                       );
                     }
-                    // Standalone module row
                     return (
                       <div className="border rounded-xl bg-white flex items-center justify-between px-4 py-2.5 mb-1">
                         <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -1050,6 +1062,7 @@ export default function TrainingMatrixPage() {
         ok:  true,
         msg: `${r.data.imported_modules} modules, ${r.data.imported_curricula} curricula, ${r.data.imported_playlists} trainings imported.`,
       });
+      reResolveRoleMatrix(projectId);
     } catch (err) {
       setImportResult({ ok: false, msg: err.response?.data?.error || err.message });
     } finally {
