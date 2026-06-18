@@ -118,17 +118,20 @@ function entryToForm(entry) {
   };
 }
 
-function SingleSelectPanel({ title, placeholder, options, value, onChange, fixedOptions }) {
+// ---- Mandatory single-select (no deselect, + Add new always available) ----
+function MandatorySingleSelectPanel({ title, placeholder, options, value, onChange }) {
   const [search, setSearch] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [newValue, setNewValue] = useState('');
+  const [localOptions, setLocalOptions] = useState(options);
 
-  const allOptions = [...options];
-  const filtered = allOptions.filter(o => o.toLowerCase().includes(search.toLowerCase()));
+  const filtered = localOptions.filter(o => o.toLowerCase().includes(search.toLowerCase()));
 
   function handleAddNew() {
-    if (newValue.trim() && !allOptions.includes(newValue.trim())) {
-      onChange(newValue.trim());
+    const trimmed = newValue.trim();
+    if (trimmed && !localOptions.includes(trimmed)) {
+      setLocalOptions(prev => [...prev, trimmed]);
+      onChange(trimmed);
     }
     setShowAddModal(false);
     setNewValue('');
@@ -137,7 +140,16 @@ function SingleSelectPanel({ title, placeholder, options, value, onChange, fixed
   return (
     <>
       <div className="flex flex-col h-full">
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">{title}</p>
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">
+          {title} <span className="text-red-400">*</span>
+        </p>
+        {value && (
+          <div className="mb-1.5">
+            <span className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full px-2 py-0.5 text-xs font-medium">
+              {value}
+            </span>
+          </div>
+        )}
         <input
           className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1"
           placeholder={placeholder}
@@ -155,24 +167,22 @@ function SingleSelectPanel({ title, placeholder, options, value, onChange, fixed
               }`}>
               <input
                 type="radio"
-                name={`single-${title}`}
+                name={`mandatory-single-${title}`}
                 checked={value === opt}
-                onChange={() => onChange(value === opt ? '' : opt)}
+                onChange={() => onChange(opt)}
                 className="rounded"
               />
               <span className="text-xs text-slate-700">{opt}</span>
             </label>
           ))}
         </div>
-        {!fixedOptions && (
-          <button
-            type="button"
-            onClick={() => setShowAddModal(true)}
-            className="mt-1.5 w-full border border-dashed border-slate-300 rounded-lg px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50 hover:border-slate-400"
-          >
-            + Add new
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => setShowAddModal(true)}
+          className="mt-1.5 w-full border border-dashed border-slate-300 rounded-lg px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50 hover:border-slate-400"
+        >
+          + Add new
+        </button>
       </div>
 
       {showAddModal && (
@@ -193,120 +203,6 @@ function SingleSelectPanel({ title, placeholder, options, value, onChange, fixed
             <div className="flex gap-2 justify-end">
               <button onClick={() => setShowAddModal(false)} className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
               <button onClick={handleAddNew} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">Add</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-
-function MultiSelectPanel({ title, placeholder, options, value, onChange }) {
-  const [search, setSearch] = useState('');
-  const [showModal, setShowModal] = useState(false);
-  const [modalSearch, setModalSearch] = useState('');
-  const [modalTemp, setModalTemp] = useState([...value]);
-
-  const isSelected = (opt) => value.some(v => v === opt);
-  const isModalSelected = (opt) => modalTemp.some(v => v === opt);
-
-  const filtered = options.filter(o => o.toLowerCase().includes(search.toLowerCase()));
-  const modalFiltered = options.filter(o => o.toLowerCase().includes(modalSearch.toLowerCase()));
-
-  function toggle(opt) {
-    onChange(isSelected(opt) ? value.filter(v => v !== opt) : [...value, opt]);
-  }
-
-  function toggleModal(opt) {
-    setModalTemp(isModalSelected(opt) ? modalTemp.filter(v => v !== opt) : [...modalTemp, opt]);
-  }
-
-  function openModal() {
-    setModalTemp([...value]);
-    setModalSearch('');
-    setShowModal(true);
-  }
-
-  function confirmModal() {
-    onChange([...modalTemp]);
-    setShowModal(false);
-  }
-
-  return (
-    <>
-      <div className="flex flex-col h-full">
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">{title}</p>
-        <input
-          className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1"
-          placeholder={placeholder}
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
-        <div className="border rounded-lg overflow-y-auto flex-1" style={{ maxHeight: '10rem' }}>
-          {filtered.length === 0 && (
-            <p className="text-xs text-slate-400 text-center py-3">No results</p>
-          )}
-          {filtered.map(opt => (
-            <label key={opt}
-              className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
-                isSelected(opt) ? 'bg-blue-50' : ''
-              }`}>
-              <input
-                type="checkbox"
-                checked={isSelected(opt)}
-                onChange={() => toggle(opt)}
-                className="rounded accent-blue-600"
-              />
-              <span className="text-xs text-slate-700">{opt}</span>
-            </label>
-          ))}
-        </div>
-        <button
-          type="button"
-          onClick={openModal}
-          className="mt-1.5 w-full border border-dashed border-slate-300 rounded-lg px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50 hover:border-slate-400"
-        >
-          + Add new
-        </button>
-      </div>
-
-      {showModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40" onClick={() => setShowModal(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm max-h-[80vh] flex flex-col p-5" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
-              <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
-            </div>
-            <p className="text-xs text-slate-400 mb-2">Multiple selections allowed.</p>
-            <input
-              className="border rounded-lg px-2 py-1.5 text-sm w-full mb-2"
-              placeholder={placeholder}
-              value={modalSearch}
-              autoFocus
-              onChange={e => setModalSearch(e.target.value)}
-            />
-            <div className="border rounded-lg overflow-y-auto flex-1 mb-3">
-              {modalFiltered.length === 0 && (
-                <p className="text-xs text-slate-400 text-center py-3">No results</p>
-              )}
-              {modalFiltered.map(opt => (
-                <label key={opt}
-                  className={`flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
-                    isModalSelected(opt) ? 'bg-blue-50' : ''
-                  }`}>
-                  <input
-                    type="checkbox"
-                    checked={isModalSelected(opt)}
-                    onChange={() => toggleModal(opt)}
-                    className="rounded accent-blue-600"
-                  />
-                  <span className="text-sm text-slate-700">{opt}</span>
-                </label>
-              ))}
-            </div>
-            <div className="flex gap-2 justify-end">
-              <button onClick={() => setShowModal(false)} className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
-              <button onClick={confirmModal} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">Add selected</button>
             </div>
           </div>
         </div>
@@ -397,36 +293,49 @@ function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
   const [form, setForm] = useState(entryToForm(entry));
   const [autoFilledFromExisting, setAutoFilledFromExisting] = useState(false);
 
+  // Auto-fill when Function + Role + all booleans match an existing entry
   useEffect(() => {
     if (!isNew) return;
-    if (!form.function || !form.role) return;
-
-    const existing = entries.find(e => e.function === form.function && e.role === form.role);
-    if (!existing) return;
-
-    setForm(current => {
-      if (current.function !== form.function || current.role !== form.role) return current;
-      const next = entryToForm(existing);
-      return { ...next, function: form.function, role: form.role };
-    });
+    if (!form.function || !form.role) {
+      setAutoFilledFromExisting(false);
+      return;
+    }
+    const existing = entries.find(e =>
+      e.function === form.function &&
+      e.role === form.role &&
+      !!e.pbom_champion === form.pbom_champion &&
+      !!e.boc_admin     === form.boc_admin &&
+      !!e.boc_member    === form.boc_member &&
+      !!e.eto_user      === form.eto_user &&
+      !!e.team_manager  === form.team_manager
+    );
+    if (!existing) {
+      setAutoFilledFromExisting(false);
+      return;
+    }
+    setForm(current => ({
+      ...entryToForm(existing),
+      function: current.function,
+      role: current.role,
+      pbom_champion: current.pbom_champion,
+      boc_admin: current.boc_admin,
+      boc_member: current.boc_member,
+      eto_user: current.eto_user,
+      team_manager: current.team_manager,
+    }));
     setAutoFilledFromExisting(true);
-  }, [isNew, form.function, form.role, entries]);
+  }, [
+    isNew,
+    form.function, form.role,
+    form.pbom_champion, form.boc_admin, form.boc_member, form.eto_user, form.team_manager,
+    entries,
+  ]);
 
   const [primarySearch, setPrimarySearch] = useState('');
   const filteredProfiles = profiles.filter(p =>
     p.profile_name.toLowerCase().includes(primarySearch.toLowerCase())
   );
   const selectedProfile = profiles.find(p => String(p.id) === form.recommended_training_id) || null;
-
-  function handleFunctionChange(v) {
-    setAutoFilledFromExisting(false);
-    setForm(f => ({ ...f, function: v }));
-  }
-
-  function handleRoleChange(v) {
-    setAutoFilledFromExisting(false);
-    setForm(f => ({ ...f, role: v }));
-  }
 
   function toggleComplementary(item) {
     setForm(f => {
@@ -449,15 +358,6 @@ function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
     i.title.toLowerCase().includes(itemSearch.toLowerCase())
   );
 
-  const flagOptions = BOOL_FLAGS.map(f => f.label);
-  const selectedFlags = BOOL_FLAGS.filter(f => form[f.key]).map(f => f.label);
-
-  function handleFlagsChange(labels) {
-    const updates = {};
-    BOOL_FLAGS.forEach(f => { updates[f.key] = labels.includes(f.label); });
-    setForm(f => ({ ...f, ...updates }));
-  }
-
   const canSave = form.function.trim() !== '' && form.role.trim() !== '';
 
   return (
@@ -470,34 +370,47 @@ function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
 
         {isNew && autoFilledFromExisting && (
           <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-            Existing Function + Role found. TLG, Recommended Training, and Complementary Trainings were loaded automatically.
+            Existing rule found for this combination. TLG, Recommended Training, and Complementary Trainings were loaded automatically.
           </div>
         )}
 
-        <div className="grid grid-cols-3 gap-4 mb-5">
-          <SingleSelectPanel
+        {/* Row 1: Function + Role */}
+        <div className="grid grid-cols-2 gap-4 mb-5">
+          <MandatorySingleSelectPanel
             title="Function"
             placeholder="Search functions..."
             options={uniqueFunctions}
             value={form.function}
-            onChange={handleFunctionChange}
+            onChange={v => setForm(f => ({ ...f, function: v }))}
           />
-          <SingleSelectPanel
+          <MandatorySingleSelectPanel
             title="Role"
             placeholder="Search roles..."
             options={uniqueRoles}
             value={form.role}
-            onChange={handleRoleChange}
-          />
-          <MultiSelectPanel
-            title="Complementary Info"
-            placeholder="Search flags..."
-            options={flagOptions}
-            value={selectedFlags}
-            onChange={handleFlagsChange}
+            onChange={v => setForm(f => ({ ...f, role: v }))}
           />
         </div>
 
+        {/* Row 2: Complementary Info (boolean flags as checkboxes) */}
+        <div className="border rounded-xl p-4 mb-4 bg-slate-50">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Complementary Info</p>
+          <div className="flex flex-wrap gap-4">
+            {BOOL_FLAGS.map(flag => (
+              <label key={flag.key} className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={form[flag.key]}
+                  onChange={e => setForm(f => ({ ...f, [flag.key]: e.target.checked }))}
+                  className="w-4 h-4 rounded accent-blue-600"
+                />
+                <span className="text-sm text-slate-700">{flag.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Row 3: TLG Group */}
         <div className="border rounded-xl p-4 mb-4 bg-slate-50">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">TLG Group</p>
           <TlgGroupSelector
@@ -507,6 +420,7 @@ function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
           />
         </div>
 
+        {/* Row 4: Recommended + Complementary trainings */}
         <div className="grid grid-cols-2 gap-4 mb-5">
           <div className="flex flex-col">
             <label className="text-xs text-slate-500 block mb-1">Recommended Primary Training</label>
@@ -591,6 +505,9 @@ function RuleModal({ entry, profiles, complementaryOptions, uniqueFunctions, uni
         </div>
 
         <div className="flex gap-2 justify-end">
+          {!canSave && (
+            <p className="text-xs text-red-400 self-center mr-auto">Function and Role are required.</p>
+          )}
           <button onClick={onClose} className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
           <button
             disabled={!canSave}
