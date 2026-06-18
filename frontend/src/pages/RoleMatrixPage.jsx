@@ -4,14 +4,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
 import client from '../api/client';
 
-const BOOL_FLAGS = [
-  { key: 'pbom_champion', label: 'PBOM Champion' },
-  { key: 'boc_admin',     label: 'BOC Admin' },
-  { key: 'boc_member',   label: 'BOC Member' },
-  { key: 'eto_user',     label: 'ETO User' },
-  { key: 'team_manager', label: 'Team Manager' },
-];
-
 const TLG_PRIMARY_OPTIONS = [
   'Heavy Author L1',
   'Medium Author L2',
@@ -27,20 +19,14 @@ const TLG_ADDON_OPTIONS = [
 ];
 
 const EMPTY_FORM = {
-  function: '', role: '',
-  pbom_champion: false, boc_admin: false, boc_member: false,
-  eto_user: false, team_manager: false,
+  function: '',
+  role: '',
+  additional_info: {},
   tlg_primary: '',
   tlg_addon: [],
   recommended_training_id: '',
   complementary_items: [],
 };
-
-function normalizeYesNo(val) {
-  if (val === true || val === 1) return true;
-  if (typeof val === 'string') return val.trim().toLowerCase() === 'yes';
-  return false;
-}
 
 function parseMatrixExcel(buffer) {
   const wb = XLSX.read(buffer, { type: 'array' });
@@ -50,30 +36,46 @@ function parseMatrixExcel(buffer) {
     const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
     for (let i = 0; i < Math.min(raw.length, 10); i++) {
       const row = raw[i].map(c => String(c).trim());
-      if (row.includes('Function') && row.includes('Role') && row.includes('Concatenate')) {
+      if (row.includes('Function') && row.includes('Role')) {
         targetSheet = raw; headerIdx = i; break;
       }
     }
     if (targetSheet) break;
   }
-  if (!targetSheet || headerIdx === -1) throw new Error('Could not find a header row with Function / Role / Concatenate in any sheet.');
+  if (!targetSheet || headerIdx === -1)
+    throw new Error('Could not find a header row with Function and Role in any sheet.');
+
   const headers = targetSheet[headerIdx].map(c => String(c).trim());
-  const idx = (kw) => headers.findIndex(h => h.includes(kw));
-  const fnIdx = headers.indexOf('Function'), roleIdx = headers.indexOf('Role');
+  const fnIdx = headers.indexOf('Function');
+  const roleIdx = headers.indexOf('Role');
+  const tlgIdx = headers.findIndex(h => h.includes('TLG'));
+
+  // All columns that are not Function, Role, Concatenate, TLG are treated as Additional Info
+  const skipCols = new Set(['Function', 'Role', 'Concatenate', 'TLG', 'TLG Primary', 'TLG Add-on']);
+  const infoHeaders = headers
+    .map((h, i) => ({ h, i }))
+    .filter(({ h }) => h && !skipCols.has(h));
+
   const entries = [];
   for (let i = headerIdx + 1; i < targetSheet.length; i++) {
     const row = targetSheet[i];
-    const fn = String(row[fnIdx] || '').trim(), role = String(row[roleIdx] || '').trim();
+    const fn = String(row[fnIdx] || '').trim();
+    const role = String(row[roleIdx] || '').trim();
     if (!fn || !role) continue;
+
+    const additional_info = {};
+    for (const { h, i: ci } of infoHeaders) {
+      const val = row[ci];
+      additional_info[h] = val === true || val === 1 ||
+        (typeof val === 'string' && val.trim().toLowerCase() === 'yes');
+    }
+
     entries.push({
-      function: fn, role,
-      pbom_champion: normalizeYesNo(row[idx('PBOM')]),
-      boc_admin:     normalizeYesNo(row[idx('BOC Admin')]),
-      boc_member:    normalizeYesNo(row[idx('BOC Member')]),
-      eto_user:      normalizeYesNo(row[idx('ETO')]),
-      team_manager:  normalizeYesNo(row[idx('Team Manager')]),
-      tlg_primary:   String(row[idx('TLG')] || '').trim(),
-      tlg_addon:     [],
+      function: fn,
+      role,
+      additional_info,
+      tlg_primary: String(row[tlgIdx] || '').trim(),
+      tlg_addon: [],
     });
   }
   if (entries.length === 0) throw new Error('No data rows found after the header row.');
@@ -93,46 +95,45 @@ function buildPivot(entries) {
 }
 
 function matchCombo(combos, profile) {
-  return combos.find(c =>
-    c.pbom_champion === profile.pbom_champion &&
-    c.boc_admin     === profile.boc_admin &&
-    c.boc_member    === profile.boc_member &&
-    c.eto_user      === profile.eto_user &&
-    c.team_manager  === profile.team_manager
-  ) || null;
+  return combos.find(c => {
+    const info = c.additional_info || {};
+    return Object.keys(profile).every(k => !!info[k] === !!profile[k]);
+  }) || null;
 }
 
 function entryToForm(entry) {
   return {
     function: entry.function || '',
     role: entry.role || '',
-    pbom_champion: !!entry.pbom_champion,
-    boc_admin: !!entry.boc_admin,
-    boc_member: !!entry.boc_member,
-    eto_user: !!entry.eto_user,
-    team_manager: !!entry.team_manager,
-    tlg_primary: entry.tlg_primary || entry.tlg_group || '',
+    additional_info: entry.additional_info && typeof entry.additional_info === 'object'
+      ? entry.additional_info
+      : {},
+    tlg_primary: entry.tlg_primary || '',
     tlg_addon: Array.isArray(entry.tlg_addon) ? entry.tlg_addon : [],
-    recommended_training_id: entry.recommended_training_id ? String(entry.recommended_training_id) : '',
-    complementary_items: Array.isArray(entry.complementary_items) ? entry.complementary_items : [],
+    recommended_training_id: entry.recommended_training_id
+      ? String(entry.recommended_training_id)
+      : '',
+    complementary_items: Array.isArray(entry.complementary_items)
+      ? entry.complementary_items
+      : [],
   };
 }
 
-// ---- Mandatory single-select with Add new, no deselect ----
+// ---- Mandatory single-select: starts empty, user adds via + Add new, no deselect ----
 function MandatorySingleSelectPanel({ title, placeholder, value, onChange }) {
   const [options, setOptions] = useState([]);
   const [search, setSearch] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [newValue, setNewValue] = useState('');
 
-  const filtered = options.filter(o => o.toLowerCase().includes(search.toLowerCase()));
+  const filtered = options.filter(o =>
+    o.toLowerCase().includes(search.toLowerCase())
+  );
 
   function handleAddNew() {
     const trimmed = newValue.trim();
-    if (trimmed && !options.includes(trimmed)) {
-      setOptions(prev => [...prev, trimmed]);
-      onChange(trimmed);
-    } else if (trimmed && options.includes(trimmed)) {
+    if (trimmed) {
+      if (!options.includes(trimmed)) setOptions(prev => [...prev, trimmed]);
       onChange(trimmed);
     }
     setShowAddModal(false);
@@ -175,7 +176,6 @@ function MandatorySingleSelectPanel({ title, placeholder, value, onChange }) {
                 name={`mandatory-single-${title}`}
                 checked={value === opt}
                 onChange={() => onChange(opt)}
-                className="rounded"
               />
               <span className="text-xs text-slate-700">{opt}</span>
             </label>
@@ -191,11 +191,14 @@ function MandatorySingleSelectPanel({ title, placeholder, value, onChange }) {
       </div>
 
       {showAddModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40" onClick={() => setShowAddModal(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
+          onClick={() => setShowAddModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5"
+            onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold text-slate-800">Add new {title}</h3>
-              <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
+              <button onClick={() => setShowAddModal(false)}
+                className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
             </div>
             <input
               className="border rounded-lg px-2 py-1.5 text-sm w-full mb-3"
@@ -206,8 +209,10 @@ function MandatorySingleSelectPanel({ title, placeholder, value, onChange }) {
               onKeyDown={e => e.key === 'Enter' && handleAddNew()}
             />
             <div className="flex gap-2 justify-end">
-              <button onClick={() => setShowAddModal(false)} className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
-              <button onClick={handleAddNew} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">Add</button>
+              <button onClick={() => setShowAddModal(false)}
+                className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
+              <button onClick={handleAddNew}
+                className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">Add</button>
             </div>
           </div>
         </div>
@@ -216,68 +221,71 @@ function MandatorySingleSelectPanel({ title, placeholder, value, onChange }) {
   );
 }
 
-// ---- Multi-select panel (checkboxes, + Add new) ----
-function MultiSelectPanel({ title, placeholder, value, onChange }) {
-  const [options, setOptions] = useState([...BOOL_FLAGS.map(f => f.label)]);
+// ---- Additional Info panel: checkbox multi-select, + Add new creates new keys ----
+function AdditionalInfoPanel({ value, onChange }) {
+  // value is { [label]: boolean }
+  const [options, setOptions] = useState(Object.keys(value));
   const [search, setSearch] = useState('');
-  const [showModal, setShowModal] = useState(false);
-  const [modalSearch, setModalSearch] = useState('');
-  const [modalTemp, setModalTemp] = useState([...value]);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [newKey, setNewKey] = useState('');
 
-  const isSelected = (opt) => value.includes(opt);
-  const isModalSelected = (opt) => modalTemp.includes(opt);
+  // Sync options when value keys change from outside (e.g. edit mode)
+  useEffect(() => {
+    setOptions(prev => {
+      const incoming = Object.keys(value);
+      const merged = [...prev];
+      for (const k of incoming) {
+        if (!merged.includes(k)) merged.push(k);
+      }
+      return merged;
+    });
+  }, []);
 
-  const filtered = options.filter(o => o.toLowerCase().includes(search.toLowerCase()));
-  const modalFiltered = options.filter(o => o.toLowerCase().includes(modalSearch.toLowerCase()));
+  const filtered = options.filter(o =>
+    o.toLowerCase().includes(search.toLowerCase())
+  );
 
-  function toggle(opt) {
-    onChange(isSelected(opt) ? value.filter(v => v !== opt) : [...value, opt]);
+  function toggle(key) {
+    onChange({ ...value, [key]: !value[key] });
   }
 
-  function toggleModal(opt) {
-    setModalTemp(isModalSelected(opt) ? modalTemp.filter(v => v !== opt) : [...modalTemp, opt]);
-  }
-
-  function openModal() {
-    setModalTemp([...value]);
-    setModalSearch('');
-    setShowModal(true);
-  }
-
-  function confirmModal() {
-    onChange([...modalTemp]);
-    setShowModal(false);
-  }
-
-  function handleAddNew(newVal) {
-    const trimmed = newVal.trim();
-    if (trimmed && !options.includes(trimmed)) {
-      setOptions(prev => [...prev, trimmed]);
+  function handleAddNew() {
+    const trimmed = newKey.trim();
+    if (trimmed) {
+      if (!options.includes(trimmed)) setOptions(prev => [...prev, trimmed]);
+      onChange({ ...value, [trimmed]: true });
     }
+    setShowAddModal(false);
+    setNewKey('');
   }
 
   return (
     <>
       <div className="flex flex-col h-full">
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">{title}</p>
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">
+          Additional Info
+        </p>
         <input
           className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1"
-          placeholder={placeholder}
+          placeholder="Search..."
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
         <div className="border rounded-lg overflow-y-auto flex-1" style={{ maxHeight: '10rem' }}>
-          {filtered.length === 0 && (
+          {options.length === 0 && (
+            <p className="text-xs text-slate-400 text-center py-3">None yet. Use + Add new.</p>
+          )}
+          {options.length > 0 && filtered.length === 0 && (
             <p className="text-xs text-slate-400 text-center py-3">No results</p>
           )}
           {filtered.map(opt => (
             <label key={opt}
               className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
-                isSelected(opt) ? 'bg-blue-50' : ''
+                value[opt] ? 'bg-blue-50' : ''
               }`}>
               <input
                 type="checkbox"
-                checked={isSelected(opt)}
+                checked={!!value[opt]}
                 onChange={() => toggle(opt)}
                 className="rounded accent-blue-600"
               />
@@ -287,50 +295,36 @@ function MultiSelectPanel({ title, placeholder, value, onChange }) {
         </div>
         <button
           type="button"
-          onClick={openModal}
+          onClick={() => setShowAddModal(true)}
           className="mt-1.5 w-full border border-dashed border-slate-300 rounded-lg px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50 hover:border-slate-400"
         >
           + Add new
         </button>
       </div>
 
-      {showModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40" onClick={() => setShowModal(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm max-h-[80vh] flex flex-col p-5" onClick={e => e.stopPropagation()}>
+      {showAddModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
+          onClick={() => setShowAddModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5"
+            onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
-              <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
+              <h3 className="text-sm font-semibold text-slate-800">Add Additional Info</h3>
+              <button onClick={() => setShowAddModal(false)}
+                className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
             </div>
-            <p className="text-xs text-slate-400 mb-2">Multiple selections allowed.</p>
             <input
-              className="border rounded-lg px-2 py-1.5 text-sm w-full mb-2"
-              placeholder={placeholder}
-              value={modalSearch}
+              className="border rounded-lg px-2 py-1.5 text-sm w-full mb-3"
+              placeholder="e.g. PBOM Champion"
+              value={newKey}
               autoFocus
-              onChange={e => setModalSearch(e.target.value)}
+              onChange={e => setNewKey(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleAddNew()}
             />
-            <div className="border rounded-lg overflow-y-auto flex-1 mb-3">
-              {modalFiltered.length === 0 && (
-                <p className="text-xs text-slate-400 text-center py-3">No results</p>
-              )}
-              {modalFiltered.map(opt => (
-                <label key={opt}
-                  className={`flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
-                    isModalSelected(opt) ? 'bg-blue-50' : ''
-                  }`}>
-                  <input
-                    type="checkbox"
-                    checked={isModalSelected(opt)}
-                    onChange={() => toggleModal(opt)}
-                    className="rounded accent-blue-600"
-                  />
-                  <span className="text-sm text-slate-700">{opt}</span>
-                </label>
-              ))}
-            </div>
             <div className="flex gap-2 justify-end">
-              <button onClick={() => setShowModal(false)} className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
-              <button onClick={confirmModal} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">Add selected</button>
+              <button onClick={() => setShowAddModal(false)}
+                className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
+              <button onClick={handleAddNew}
+                className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">Add</button>
             </div>
           </div>
         </div>
@@ -356,7 +350,6 @@ function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
                 name="tlg_primary"
                 checked={tlgPrimary === opt}
                 onChange={() => onChange({ tlgPrimary: tlgPrimary === opt ? '' : opt, tlgAddon })}
-                className="rounded"
               />
               <span className={`text-xs ${opt === 'Error' ? 'text-red-500 font-medium' : 'text-slate-700'}`}>{opt}</span>
             </label>
@@ -368,9 +361,11 @@ function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
         {tlgAddon.length > 0 && (
           <div className="flex flex-wrap gap-1 mb-2">
             {tlgAddon.map(a => (
-              <span key={a} className="inline-flex items-center gap-1 bg-teal-50 text-teal-700 border border-teal-200 rounded-full px-2 py-0.5 text-xs">
+              <span key={a}
+                className="inline-flex items-center gap-1 bg-teal-50 text-teal-700 border border-teal-200 rounded-full px-2 py-0.5 text-xs">
                 {a}
-                <button onClick={() => onChange({ tlgPrimary, tlgAddon: tlgAddon.filter(x => x !== a) })}
+                <button
+                  onClick={() => onChange({ tlgPrimary, tlgAddon: tlgAddon.filter(x => x !== a) })}
                   className="ml-0.5 text-teal-400 hover:text-teal-700 leading-none">&times;</button>
               </span>
             ))}
@@ -397,7 +392,9 @@ function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
             );
           })}
         </div>
-        {isError && <p className="text-xs text-red-400 mt-1">Add-ons are disabled when primary is Error.</p>}
+        {isError && (
+          <p className="text-xs text-red-400 mt-1">Add-ons are disabled when primary is Error.</p>
+        )}
       </div>
     </div>
   );
@@ -405,67 +402,42 @@ function TlgGroupSelector({ tlgPrimary, tlgAddon, onChange }) {
 
 function RuleModal({ entry, profiles, complementaryOptions, entries, onSave, onClose }) {
   const isNew = !entry.id;
-
   const allItems = [
     ...complementaryOptions.curricula.map(c => ({ ...c, type: 'curriculum' })),
     ...complementaryOptions.modules.map(m => ({ ...m, type: 'module' })),
   ];
 
   const [form, setForm] = useState(entryToForm(entry));
-  const [autoFilledFromExisting, setAutoFilledFromExisting] = useState(false);
+  const [autoFilled, setAutoFilled] = useState(false);
 
-  // Convert selected flag labels back to bool keys
-  const selectedFlagLabels = BOOL_FLAGS.filter(f => form[f.key]).map(f => f.label);
-
-  function handleFlagsChange(labels) {
-    const updates = {};
-    BOOL_FLAGS.forEach(f => { updates[f.key] = labels.includes(f.label); });
-    setForm(f => ({ ...f, ...updates }));
-  }
-
-  // Auto-fill TLG + trainings when Function + Role + all flags match an existing entry
+  // Auto-fill TLG + trainings when Function + Role + additional_info exactly match an existing entry
   useEffect(() => {
     if (!isNew) return;
-    if (!form.function || !form.role) {
-      setAutoFilledFromExisting(false);
-      return;
-    }
-    const existing = entries.find(e =>
-      e.function === form.function &&
-      e.role === form.role &&
-      !!e.pbom_champion === form.pbom_champion &&
-      !!e.boc_admin     === form.boc_admin &&
-      !!e.boc_member    === form.boc_member &&
-      !!e.eto_user      === form.eto_user &&
-      !!e.team_manager  === form.team_manager
-    );
-    if (!existing) {
-      setAutoFilledFromExisting(false);
-      return;
-    }
+    if (!form.function || !form.role) { setAutoFilled(false); return; }
+    const infoKeys = Object.keys(form.additional_info).sort().join(',');
+    const existing = entries.find(e => {
+      if (e.function !== form.function || e.role !== form.role) return false;
+      const eInfo = e.additional_info || {};
+      const eKeys = Object.keys(eInfo).sort().join(',');
+      if (eKeys !== infoKeys) return false;
+      return Object.keys(form.additional_info).every(k => !!eInfo[k] === !!form.additional_info[k]);
+    });
+    if (!existing) { setAutoFilled(false); return; }
     setForm(current => ({
       ...entryToForm(existing),
       function: current.function,
       role: current.role,
-      pbom_champion: current.pbom_champion,
-      boc_admin: current.boc_admin,
-      boc_member: current.boc_member,
-      eto_user: current.eto_user,
-      team_manager: current.team_manager,
+      additional_info: current.additional_info,
     }));
-    setAutoFilledFromExisting(true);
-  }, [
-    isNew,
-    form.function, form.role,
-    form.pbom_champion, form.boc_admin, form.boc_member, form.eto_user, form.team_manager,
-    entries,
-  ]);
+    setAutoFilled(true);
+  }, [isNew, form.function, form.role, form.additional_info, entries]);
 
   const [primarySearch, setPrimarySearch] = useState('');
   const filteredProfiles = profiles.filter(p =>
     p.profile_name.toLowerCase().includes(primarySearch.toLowerCase())
   );
-  const selectedProfile = profiles.find(p => String(p.id) === form.recommended_training_id) || null;
+  const selectedProfile =
+    profiles.find(p => String(p.id) === form.recommended_training_id) || null;
 
   function toggleComplementary(item) {
     setForm(f => {
@@ -492,19 +464,21 @@ function RuleModal({ entry, profiles, complementaryOptions, entries, onSave, onC
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-y-auto p-6"
+        onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-5">
           <h2 className="text-base font-semibold text-slate-800">{isNew ? 'New rule' : 'Edit rule'}</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
+          <button onClick={onClose}
+            className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
         </div>
 
-        {isNew && autoFilledFromExisting && (
+        {isNew && autoFilled && (
           <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
             Existing rule found for this combination. TLG, Recommended Training, and Complementary Trainings were loaded automatically.
           </div>
         )}
 
-        {/* Row 1: Function / Role / Complementary Info */}
+        {/* Row 1: Function / Role / Additional Info */}
         <div className="grid grid-cols-3 gap-4 mb-5">
           <MandatorySingleSelectPanel
             title="Function"
@@ -518,11 +492,9 @@ function RuleModal({ entry, profiles, complementaryOptions, entries, onSave, onC
             value={form.role}
             onChange={v => setForm(f => ({ ...f, role: v }))}
           />
-          <MultiSelectPanel
-            title="Complementary Info"
-            placeholder="Search flags..."
-            value={selectedFlagLabels}
-            onChange={handleFlagsChange}
+          <AdditionalInfoPanel
+            value={form.additional_info}
+            onChange={info => setForm(f => ({ ...f, additional_info: info }))}
           />
         </div>
 
@@ -532,7 +504,9 @@ function RuleModal({ entry, profiles, complementaryOptions, entries, onSave, onC
           <TlgGroupSelector
             tlgPrimary={form.tlg_primary}
             tlgAddon={form.tlg_addon}
-            onChange={({ tlgPrimary, tlgAddon }) => setForm(f => ({ ...f, tlg_primary: tlgPrimary, tlg_addon: tlgAddon }))}
+            onChange={({ tlgPrimary, tlgAddon }) =>
+              setForm(f => ({ ...f, tlg_primary: tlgPrimary, tlg_addon: tlgAddon }))
+            }
           />
         </div>
 
@@ -570,8 +544,9 @@ function RuleModal({ entry, profiles, complementaryOptions, entries, onSave, onC
                     type="radio"
                     name="recommended_training_id"
                     checked={String(p.id) === form.recommended_training_id}
-                    onChange={() => setForm(f => ({ ...f, recommended_training_id: String(p.id) }))}
-                    className="rounded"
+                    onChange={() =>
+                      setForm(f => ({ ...f, recommended_training_id: String(p.id) }))
+                    }
                   />
                   <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">PLY</span>
                   <span className="text-xs text-slate-700">{p.profile_name}</span>
@@ -587,9 +562,12 @@ function RuleModal({ entry, profiles, complementaryOptions, entries, onSave, onC
                 {form.complementary_items.map(i => (
                   <span key={`${i.type}-${i.id}`}
                     className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5 text-xs">
-                    <span className="text-blue-400 uppercase text-[10px] font-semibold">{i.type === 'curriculum' ? 'CUR' : 'MOD'}</span>
+                    <span className="text-blue-400 uppercase text-[10px] font-semibold">
+                      {i.type === 'curriculum' ? 'CUR' : 'MOD'}
+                    </span>
                     {i.title}
-                    <button onClick={() => toggleComplementary(i)} className="ml-0.5 text-blue-400 hover:text-blue-700 leading-none">&times;</button>
+                    <button onClick={() => toggleComplementary(i)}
+                      className="ml-0.5 text-blue-400 hover:text-blue-700 leading-none">&times;</button>
                   </span>
                 ))}
               </div>
@@ -609,7 +587,12 @@ function RuleModal({ entry, profiles, complementaryOptions, entries, onSave, onC
                   className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-50 border-b last:border-0 ${
                     isCompSelected(item) ? 'bg-blue-50' : ''
                   }`}>
-                  <input type="checkbox" checked={isCompSelected(item)} onChange={() => toggleComplementary(item)} className="rounded" />
+                  <input
+                    type="checkbox"
+                    checked={isCompSelected(item)}
+                    onChange={() => toggleComplementary(item)}
+                    className="rounded"
+                  />
                   <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">
                     {item.type === 'curriculum' ? 'CUR' : 'MOD'}
                   </span>
@@ -624,12 +607,15 @@ function RuleModal({ entry, profiles, complementaryOptions, entries, onSave, onC
           {!canSave && (
             <p className="text-xs text-red-400 self-center mr-auto">Function and Role are required.</p>
           )}
-          <button onClick={onClose} className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
+          <button onClick={onClose}
+            className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
           <button
             disabled={!canSave}
             onClick={() => onSave({
               ...form,
-              recommended_training_id: form.recommended_training_id ? parseInt(form.recommended_training_id) : null,
+              recommended_training_id: form.recommended_training_id
+                ? parseInt(form.recommended_training_id)
+                : null,
             })}
             className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-40"
           >
@@ -647,41 +633,67 @@ export default function RoleMatrixPage() {
   const fileRef = useRef();
 
   const [viewMode, setViewMode] = useState('pivot');
-  const [profile, setProfile] = useState({ pbom_champion: false, boc_admin: false, boc_member: false, eto_user: false, team_manager: false });
   const [filterFn, setFilterFn] = useState('');
+  const [filterRole, setFilterRole] = useState('');
+  const [profile, setProfile] = useState({});
   const [modalEntry, setModalEntry] = useState(null);
   const [importError, setImportError] = useState('');
 
   const { data: entries = [], isLoading } = useQuery({
     queryKey: ['role-matrix', projectId],
-    queryFn: () => client.get(`/projects/${projectId}/role-matrix`).then(r => r.data)
+    queryFn: () => client.get(`/projects/${projectId}/role-matrix`).then(r => r.data),
   });
 
   const { data: profiles = [] } = useQuery({
     queryKey: ['role-matrix-profiles', projectId],
-    queryFn: () => client.get(`/projects/${projectId}/role-matrix/training-profiles`).then(r => r.data)
+    queryFn: () =>
+      client.get(`/projects/${projectId}/role-matrix/training-profiles`).then(r => r.data),
   });
 
   const { data: complementaryOptions = { modules: [], curricula: [] } } = useQuery({
     queryKey: ['role-matrix-complementary', projectId],
-    queryFn: () => client.get(`/projects/${projectId}/role-matrix/complementary-options`).then(r => r.data)
+    queryFn: () =>
+      client.get(`/projects/${projectId}/role-matrix/complementary-options`).then(r => r.data),
   });
 
+  // Derive all known Additional Info keys from saved entries
+  const allInfoKeys = useMemo(() => {
+    const keys = new Set();
+    for (const e of entries) {
+      if (e.additional_info && typeof e.additional_info === 'object') {
+        Object.keys(e.additional_info).forEach(k => keys.add(k));
+      }
+    }
+    return [...keys].sort();
+  }, [entries]);
+
+  // Keep profile in sync when new keys appear
+  useEffect(() => {
+    setProfile(prev => {
+      const next = { ...prev };
+      for (const k of allInfoKeys) {
+        if (!(k in next)) next[k] = false;
+      }
+      return next;
+    });
+  }, [allInfoKeys]);
+
   const addMutation = useMutation({
-    mutationFn: (data) => client.post(`/projects/${projectId}/role-matrix`, data),
-    onSuccess: () => { qc.invalidateQueries(['role-matrix', projectId]); setModalEntry(null); }
+    mutationFn: data => client.post(`/projects/${projectId}/role-matrix`, data),
+    onSuccess: () => { qc.invalidateQueries(['role-matrix', projectId]); setModalEntry(null); },
   });
   const importMutation = useMutation({
-    mutationFn: (e) => client.post(`/projects/${projectId}/role-matrix/import`, { entries: e }),
-    onSuccess: () => { qc.invalidateQueries(['role-matrix', projectId]); setImportError(''); }
+    mutationFn: e => client.post(`/projects/${projectId}/role-matrix/import`, { entries: e }),
+    onSuccess: () => { qc.invalidateQueries(['role-matrix', projectId]); setImportError(''); },
   });
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }) => client.put(`/projects/${projectId}/role-matrix/${id}`, data),
-    onSuccess: () => { qc.invalidateQueries(['role-matrix', projectId]); setModalEntry(null); }
+    mutationFn: ({ id, data }) =>
+      client.put(`/projects/${projectId}/role-matrix/${id}`, data),
+    onSuccess: () => { qc.invalidateQueries(['role-matrix', projectId]); setModalEntry(null); },
   });
   const deleteMutation = useMutation({
-    mutationFn: (id) => client.delete(`/projects/${projectId}/role-matrix/${id}`),
-    onSuccess: () => qc.invalidateQueries(['role-matrix', projectId])
+    mutationFn: id => client.delete(`/projects/${projectId}/role-matrix/${id}`),
+    onSuccess: () => qc.invalidateQueries(['role-matrix', projectId]),
   });
 
   function handleSave(data) {
@@ -695,7 +707,7 @@ export default function RoleMatrixPage() {
   function handleFileChange(e) {
     const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
-    reader.onload = (evt) => {
+    reader.onload = evt => {
       try { importMutation.mutate(parseMatrixExcel(evt.target.result)); }
       catch (err) { setImportError(err.message); }
     };
@@ -704,17 +716,20 @@ export default function RoleMatrixPage() {
   }
 
   function handleExport() {
-    const data = entries.map(e => ({
-      Function: e.function, Role: e.role,
-      'PBOM Champion': e.pbom_champion ? 'Yes' : 'No',
-      'BOC Admin': e.boc_admin ? 'Yes' : 'No',
-      'BOC Member': e.boc_member ? 'Yes' : 'No',
-      'ETO User': e.eto_user ? 'Yes' : 'No',
-      'Team Manager': e.team_manager ? 'Yes' : 'No',
-      Concatenate: e.concatenate,
-      'TLG Primary': e.tlg_primary,
-      'TLG Add-on': Array.isArray(e.tlg_addon) ? e.tlg_addon.join(', ') : '',
-    }));
+    const data = entries.map(e => {
+      const row = { Function: e.function, Role: e.role };
+      for (const k of allInfoKeys) {
+        row[k] = e.additional_info?.[k] ? 'Yes' : 'No';
+      }
+      const recName = resolveRecommended(e);
+      row['Primary Training'] = recName || '';
+      row['Complementary Training'] = Array.isArray(e.complementary_items)
+        ? e.complementary_items.map(i => i.title).join(', ')
+        : '';
+      row['TLG Group'] = e.tlg_primary || '';
+      row['TLG Add-on'] = Array.isArray(e.tlg_addon) ? e.tlg_addon.join(', ') : '';
+      return row;
+    });
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Role Matrix');
@@ -722,10 +737,18 @@ export default function RoleMatrixPage() {
   }
 
   const pivot = useMemo(() => buildPivot(entries), [entries]);
-  const uniqueFunctions = useMemo(() => [...new Set(pivot.map(r => r.function))].sort(), [pivot]);
-  const filteredPivot = filterFn ? pivot.filter(r => r.function === filterFn) : pivot;
+  const uniqueFunctions = useMemo(() => [...new Set(entries.map(e => e.function))].sort(), [entries]);
+  const uniqueRoles = useMemo(() => [...new Set(entries.map(e => e.role))].sort(), [entries]);
 
-  const thClass = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
+  const filteredPivot = useMemo(() => {
+    let rows = pivot;
+    if (filterFn) rows = rows.filter(r => r.function === filterFn);
+    if (filterRole) rows = rows.filter(r => r.role === filterRole);
+    return rows;
+  }, [pivot, filterFn, filterRole]);
+
+  const thClass =
+    'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
 
   function resolveRecommended(entry) {
     if (!entry.recommended_training_id) return null;
@@ -735,16 +758,21 @@ export default function RoleMatrixPage() {
 
   function TlgCell({ entry }) {
     if (!entry) return null;
-    const primary = entry.tlg_primary || entry.tlg_group || '';
+    const primary = entry.tlg_primary || '';
     const addon = Array.isArray(entry.tlg_addon) ? entry.tlg_addon : [];
     const isError = primary === 'Error';
     return (
       <div className="flex flex-col gap-0.5">
         {primary && (
-          <span className={`text-xs font-medium ${isError ? 'text-red-500' : 'text-slate-800'}`}>{primary}</span>
+          <span className={`text-xs font-medium ${isError ? 'text-red-500' : 'text-slate-800'}`}>
+            {primary}
+          </span>
         )}
         {addon.map(a => (
-          <span key={a} className="text-[10px] bg-teal-50 text-teal-700 border border-teal-100 rounded px-1.5 py-0.5 w-fit">{a}</span>
+          <span key={a}
+            className="text-[10px] bg-teal-50 text-teal-700 border border-teal-100 rounded px-1.5 py-0.5 w-fit">
+            {a}
+          </span>
         ))}
       </div>
     );
@@ -775,9 +803,13 @@ export default function RoleMatrixPage() {
         <div className="flex gap-2 items-center">
           <div className="flex border rounded-lg overflow-hidden text-xs">
             <button onClick={() => setViewMode('pivot')}
-              className={`px-3 py-1.5 font-medium ${ viewMode === 'pivot' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50' }`}>Pivot</button>
+              className={`px-3 py-1.5 font-medium ${
+                viewMode === 'pivot' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'
+              }`}>Pivot</button>
             <button onClick={() => setViewMode('flat')}
-              className={`px-3 py-1.5 font-medium ${ viewMode === 'flat' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50' }`}>Full list</button>
+              className={`px-3 py-1.5 font-medium ${
+                viewMode === 'flat' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'
+              }`}>Full list</button>
           </div>
           <button
             onClick={() => setModalEntry({ ...EMPTY_FORM })}
@@ -785,8 +817,10 @@ export default function RoleMatrixPage() {
           >
             Add rule
           </button>
-          <button onClick={() => fileRef.current.click()} className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Import Excel</button>
-          <button onClick={handleExport} disabled={entries.length === 0} className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">Export Excel</button>
+          <button onClick={() => fileRef.current.click()}
+            className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Import Excel</button>
+          <button onClick={handleExport} disabled={entries.length === 0}
+            className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">Export Excel</button>
           <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleFileChange} />
         </div>
       </div>
@@ -795,25 +829,46 @@ export default function RoleMatrixPage() {
       {importMutation.isPending && <p className="text-sm text-blue-600 mb-2">Importing...</p>}
       {importMutation.isSuccess && <p className="text-sm text-green-600 mb-2">Import complete</p>}
 
+      {/* ---- PIVOT VIEW ---- */}
       {viewMode === 'pivot' && (
         <>
-          <div className="flex items-center gap-6 mb-3 px-4 py-2.5 bg-slate-50 border rounded-xl shrink-0">
+          <div className="flex flex-wrap items-center gap-4 mb-3 px-4 py-2.5 bg-slate-50 border rounded-xl shrink-0">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide shrink-0">Profile preview</span>
-            {BOOL_FLAGS.map(flag => (
-              <label key={flag.key} className="flex items-center gap-1.5 text-sm cursor-pointer select-none">
-                <input type="checkbox" checked={profile[flag.key]}
-                  onChange={e => setProfile(p => ({ ...p, [flag.key]: e.target.checked }))}
-                  className="w-4 h-4 rounded accent-blue-600" />
-                {flag.label}
-              </label>
-            ))}
-            <button onClick={() => setProfile({ pbom_champion: false, boc_admin: false, boc_member: false, eto_user: false, team_manager: false })}
-              className="ml-auto text-xs text-slate-400 hover:text-slate-600">Reset</button>
+
             <select value={filterFn} onChange={e => setFilterFn(e.target.value)}
               className="border rounded-lg px-2 py-1 text-xs text-slate-600">
               <option value="">All functions</option>
               {uniqueFunctions.map(fn => <option key={fn} value={fn}>{fn}</option>)}
             </select>
+
+            <select value={filterRole} onChange={e => setFilterRole(e.target.value)}
+              className="border rounded-lg px-2 py-1 text-xs text-slate-600">
+              <option value="">All roles</option>
+              {uniqueRoles.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+
+            {allInfoKeys.length > 0 && (
+              <div className="flex flex-wrap gap-3">
+                {allInfoKeys.map(k => (
+                  <label key={k} className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={!!profile[k]}
+                      onChange={e => setProfile(p => ({ ...p, [k]: e.target.checked }))}
+                      className="w-4 h-4 rounded accent-blue-600"
+                    />
+                    {k}
+                  </label>
+                ))}
+              </div>
+            )}
+
+            <button
+              onClick={() => setProfile(Object.fromEntries(allInfoKeys.map(k => [k, false])))}
+              className="ml-auto text-xs text-slate-400 hover:text-slate-600"
+            >
+              Reset
+            </button>
           </div>
 
           <div className="overflow-auto rounded-xl border bg-white flex-1">
@@ -822,42 +877,69 @@ export default function RoleMatrixPage() {
                 <tr>
                   <th className={thClass}>Function</th>
                   <th className={thClass}>Role</th>
-                  <th className={`${thClass} w-48`}>TLG Group</th>
-                  <th className={`${thClass} w-52`}>Recommended Training</th>
-                  <th className={thClass}>Complementary</th>
+                  <th className={`${thClass} w-52`}>Primary Training</th>
+                  <th className={thClass}>Complementary Training</th>
+                  <th className={`${thClass} w-40`}>TLG Group</th>
+                  <th className={`${thClass} w-48`}>TLG Add-on</th>
                   <th className="px-2 py-2 w-14"></th>
                 </tr>
               </thead>
               <tbody>
-                {isLoading && <tr><td colSpan={6} className="px-3 py-8 text-center text-slate-400">Loading...</td></tr>}
+                {isLoading && (
+                  <tr><td colSpan={7} className="px-3 py-8 text-center text-slate-400">Loading...</td></tr>
+                )}
                 {!isLoading && filteredPivot.length === 0 && (
-                  <tr><td colSpan={6} className="px-3 py-8 text-center text-slate-400">No rules yet. Import the Excel template or add rules manually.</td></tr>
+                  <tr><td colSpan={7} className="px-3 py-8 text-center text-slate-400">
+                    No rules yet. Import an Excel file or add rules manually.
+                  </td></tr>
                 )}
                 {filteredPivot.map(row => {
                   const match = matchCombo(row.combos, profile);
-                  const isError = (match?.tlg_primary || match?.tlg_group) === 'Error';
+                  const isError = match?.tlg_primary === 'Error';
                   const recName = match ? resolveRecommended(match) : null;
-                  const compItems = match && Array.isArray(match.complementary_items) ? match.complementary_items : [];
+                  const compItems = match && Array.isArray(match.complementary_items)
+                    ? match.complementary_items : [];
                   return (
-                    <tr key={`${row.function}-${row.role}`} className={`border-b hover:bg-slate-50/50 ${ isError ? 'bg-red-50' : '' }`}>
+                    <tr key={`${row.function}-${row.role}`}
+                      className={`border-b hover:bg-slate-50/50 ${isError ? 'bg-red-50' : ''}`}>
                       <td className="px-3 py-2 text-xs font-medium text-slate-700 whitespace-nowrap">{row.function}</td>
                       <td className="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">{row.role}</td>
                       <td className="px-3 py-2">
-                        {match ? <TlgCell entry={match} /> : <span className="text-xs text-slate-300">No rule for this combination</span>}
-                      </td>
-                      <td className="px-3 py-2">
-                        {recName && <span className="text-xs text-indigo-700 font-medium">{recName}</span>}
+                        {recName
+                          ? <span className="text-xs text-indigo-700 font-medium">{recName}</span>
+                          : <span className="text-xs text-slate-300">-</span>}
                       </td>
                       <td className="px-3 py-2">
                         <div className="flex flex-wrap gap-1">
                           {compItems.map(i => (
-                            <span key={`${i.type}-${i.id}`} className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{i.title}</span>
+                            <span key={`${i.type}-${i.id}`}
+                              className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">
+                              {i.title}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2">
+                        {match
+                          ? <span className={`text-xs font-medium ${isError ? 'text-red-500' : 'text-slate-800'}`}>
+                              {match.tlg_primary}
+                            </span>
+                          : <span className="text-xs text-slate-300">No rule for this combination</span>}
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="flex flex-wrap gap-1">
+                          {(match?.tlg_addon || []).map(a => (
+                            <span key={a}
+                              className="text-[10px] bg-teal-50 text-teal-700 border border-teal-100 rounded px-1.5 py-0.5">
+                              {a}
+                            </span>
                           ))}
                         </div>
                       </td>
                       <td className="px-2 py-2">
                         {match && (
-                          <button onClick={() => setModalEntry(match)} className="text-xs text-slate-400 hover:text-blue-600">Edit</button>
+                          <button onClick={() => setModalEntry(match)}
+                            className="text-xs text-slate-400 hover:text-blue-600">Edit</button>
                         )}
                       </td>
                     </tr>
@@ -869,6 +951,7 @@ export default function RoleMatrixPage() {
         </>
       )}
 
+      {/* ---- FULL LIST VIEW ---- */}
       {viewMode === 'flat' && (
         <div className="overflow-auto rounded-xl border bg-white flex-1">
           <table className="min-w-max text-sm border-collapse">
@@ -876,43 +959,76 @@ export default function RoleMatrixPage() {
               <tr>
                 <th className={thClass}>Function</th>
                 <th className={thClass}>Role</th>
-                {BOOL_FLAGS.map(f => <th key={f.key} className={`${thClass} text-center w-24`}>{f.label}</th>)}
-                <th className={`${thClass} w-48`}>TLG Group</th>
-                <th className={`${thClass} w-48`}>Recommended Training</th>
-                <th className={thClass}>Complementary</th>
+                {allInfoKeys.map(k => (
+                  <th key={k} className={`${thClass} text-center`}>{k}</th>
+                ))}
+                <th className={`${thClass} w-48`}>Primary Training</th>
+                <th className={thClass}>Complementary Training</th>
+                <th className={`${thClass} w-40`}>TLG Group</th>
+                <th className={`${thClass} w-48`}>TLG Add-on</th>
                 <th className="px-2 py-2 w-20"></th>
               </tr>
             </thead>
             <tbody>
-              {isLoading && <tr><td colSpan={11} className="px-3 py-8 text-center text-slate-400">Loading...</td></tr>}
-              {!isLoading && entries.length === 0 && <tr><td colSpan={11} className="px-3 py-8 text-center text-slate-400">No rules yet.</td></tr>}
+              {isLoading && (
+                <tr><td colSpan={6 + allInfoKeys.length} className="px-3 py-8 text-center text-slate-400">Loading...</td></tr>
+              )}
+              {!isLoading && entries.length === 0 && (
+                <tr><td colSpan={6 + allInfoKeys.length} className="px-3 py-8 text-center text-slate-400">No rules yet.</td></tr>
+              )}
               {entries.map(entry => {
                 const recName = resolveRecommended(entry);
-                const compItems = Array.isArray(entry.complementary_items) ? entry.complementary_items : [];
+                const compItems = Array.isArray(entry.complementary_items)
+                  ? entry.complementary_items : [];
+                const isError = entry.tlg_primary === 'Error';
                 return (
-                  <tr key={entry.id} className={`border-b hover:bg-slate-50/50 ${(entry.tlg_primary || entry.tlg_group) === 'Error' ? 'bg-red-50' : ''}`}>
+                  <tr key={entry.id}
+                    className={`border-b hover:bg-slate-50/50 ${isError ? 'bg-red-50' : ''}`}>
                     <td className="px-3 py-1.5 text-xs font-medium text-slate-700">{entry.function}</td>
                     <td className="px-3 py-1.5 text-xs text-slate-600">{entry.role}</td>
-                    {BOOL_FLAGS.map(f => (
-                      <td key={f.key} className="px-3 py-1.5 text-center">
-                        <span className={`text-xs font-medium ${entry[f.key] ? 'text-green-600' : 'text-slate-300'}`}>{entry[f.key] ? 'Yes' : 'No'}</span>
+                    {allInfoKeys.map(k => (
+                      <td key={k} className="px-3 py-1.5 text-center">
+                        <span className={`text-xs font-medium ${
+                          entry.additional_info?.[k] ? 'text-green-600' : 'text-slate-300'
+                        }`}>
+                          {entry.additional_info?.[k] ? 'Yes' : 'No'}
+                        </span>
                       </td>
                     ))}
-                    <td className="px-3 py-1.5"><TlgCell entry={entry} /></td>
                     <td className="px-3 py-1.5">
-                      {recName && <span className="text-xs text-indigo-700 font-medium">{recName}</span>}
+                      {recName
+                        ? <span className="text-xs text-indigo-700 font-medium">{recName}</span>
+                        : <span className="text-xs text-slate-300">-</span>}
                     </td>
                     <td className="px-3 py-1.5">
                       <div className="flex flex-wrap gap-1">
                         {compItems.map(i => (
-                          <span key={`${i.type}-${i.id}`} className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{i.title}</span>
+                          <span key={`${i.type}-${i.id}`}
+                            className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">
+                            {i.title}
+                          </span>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <TlgCell entry={entry} />
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <div className="flex flex-wrap gap-1">
+                        {(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []).map(a => (
+                          <span key={a}
+                            className="text-[10px] bg-teal-50 text-teal-700 border border-teal-100 rounded px-1.5 py-0.5">
+                            {a}
+                          </span>
                         ))}
                       </div>
                     </td>
                     <td className="px-2 py-1.5">
                       <div className="flex gap-1">
-                        <button onClick={() => setModalEntry(entry)} className="text-slate-400 hover:text-blue-600 text-xs">Edit</button>
-                        <button onClick={() => deleteMutation.mutate(entry.id)} className="text-red-300 hover:text-red-500 text-xs">Del</button>
+                        <button onClick={() => setModalEntry(entry)}
+                          className="text-slate-400 hover:text-blue-600 text-xs">Edit</button>
+                        <button onClick={() => deleteMutation.mutate(entry.id)}
+                          className="text-red-300 hover:text-red-500 text-xs">Del</button>
                       </div>
                     </td>
                   </tr>

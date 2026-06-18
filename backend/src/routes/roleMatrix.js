@@ -3,18 +3,31 @@ const pool = require('../db');
 const authenticate = require('../middleware/auth');
 const router = express.Router();
 
-function isErrorRole(pdmRole) {
-  return !pdmRole || String(pdmRole).toLowerCase().startsWith('error');
+// Build a stable concatenate key from function, role and the sorted additional_info keys.
+function buildConcatenate(fn, role, additionalInfo) {
+  const parts = Object.keys(additionalInfo).sort().map(k => `${k}:${additionalInfo[k] ? 'Yes' : 'No'}`);
+  return `${fn}||${role}||${parts.join('|')}`;
 }
 
-async function upsertPlaylist(client, projectId, pdmRole) {
-  if (isErrorRole(pdmRole)) return;
-  await client.query(
-    `INSERT INTO training_profiles (project_id, profile_name)
-     VALUES ($1, $2)
-     ON CONFLICT (project_id, profile_name) DO NOTHING`,
-    [projectId, pdmRole]
-  );
+function parseAdditionalInfo(raw) {
+  if (!raw) return {};
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  try { return JSON.parse(raw); } catch { return {}; }
+}
+
+function parseJsonField(raw, fallback) {
+  if (Array.isArray(raw)) return raw;
+  if (!raw) return fallback;
+  try { return JSON.parse(raw); } catch { return fallback; }
+}
+
+function normalizeRow(row) {
+  return {
+    ...row,
+    additional_info:    parseAdditionalInfo(row.additional_info),
+    tlg_addon:          parseJsonField(row.tlg_addon, []),
+    complementary_items: parseJsonField(row.complementary_items, []),
+  };
 }
 
 // GET all entries for a project
@@ -24,11 +37,11 @@ router.get('/:projectId/role-matrix', authenticate, async (req, res) => {
       'SELECT * FROM role_matrix WHERE project_id=$1 ORDER BY function, role',
       [req.params.projectId]
     );
-    res.json(result.rows);
+    res.json(result.rows.map(normalizeRow));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET primary trainings (playlists with is_complementary = false) for the recommended training dropdown
+// GET primary trainings for the recommended training dropdown
 router.get('/:projectId/role-matrix/training-profiles', authenticate, async (req, res) => {
   try {
     const result = await pool.query(
@@ -60,40 +73,57 @@ router.get('/:projectId/role-matrix/complementary-options', authenticate, async 
 router.post('/:projectId/role-matrix', authenticate, async (req, res) => {
   const {
     function: fn, role,
-    pbom_champion, boc_admin, boc_member, eto_user, team_manager,
-    pdm_role, tlg_group,
+    additional_info: rawInfo,
+    tlg_primary, tlg_addon,
     recommended_training_id, complementary_items,
   } = req.body;
-  const concatenate = `${fn}-${role}-${pbom_champion ? 'Yes' : 'No'}-${boc_admin ? 'Yes' : 'No'}-${boc_member ? 'Yes' : 'No'}-${eto_user ? 'Yes' : 'No'}-${team_manager ? 'Yes' : 'No'}`;
+
+  const additional_info = parseAdditionalInfo(rawInfo);
+  const concatenate = buildConcatenate(fn, role, additional_info);
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const result = await client.query(
       `INSERT INTO role_matrix
-         (project_id, function, role, pbom_champion, boc_admin, boc_member, eto_user, team_manager,
-          concatenate, pdm_role, tlg_group, recommended_training_id, complementary_items)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-       ON CONFLICT (project_id, concatenate) DO UPDATE SET
-         function=EXCLUDED.function, role=EXCLUDED.role,
-         pbom_champion=EXCLUDED.pbom_champion, boc_admin=EXCLUDED.boc_admin,
-         boc_member=EXCLUDED.boc_member, eto_user=EXCLUDED.eto_user,
-         team_manager=EXCLUDED.team_manager, pdm_role=EXCLUDED.pdm_role,
-         tlg_group=EXCLUDED.tlg_group,
-         recommended_training_id=EXCLUDED.recommended_training_id,
-         complementary_items=EXCLUDED.complementary_items,
-         updated_at=NOW()
+         (project_id, function, role, additional_info, concatenate,
+          tlg_primary, tlg_addon, recommended_training_id, complementary_items)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT DO NOTHING
        RETURNING *`,
       [
         req.params.projectId, fn, role,
-        pbom_champion, boc_admin, boc_member, eto_user, team_manager,
-        concatenate, pdm_role, tlg_group,
+        JSON.stringify(additional_info),
+        concatenate,
+        tlg_primary || '',
+        JSON.stringify(tlg_addon || []),
         recommended_training_id || null,
         JSON.stringify(complementary_items || []),
       ]
     );
-    await upsertPlaylist(client, req.params.projectId, pdm_role);
+    // If nothing was inserted (no unique conflict support), do a plain insert
+    let row = result.rows[0];
+    if (!row) {
+      const r2 = await client.query(
+        `INSERT INTO role_matrix
+           (project_id, function, role, additional_info, concatenate,
+            tlg_primary, tlg_addon, recommended_training_id, complementary_items)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         RETURNING *`,
+        [
+          req.params.projectId, fn, role,
+          JSON.stringify(additional_info),
+          concatenate,
+          tlg_primary || '',
+          JSON.stringify(tlg_addon || []),
+          recommended_training_id || null,
+          JSON.stringify(complementary_items || []),
+        ]
+      );
+      row = r2.rows[0];
+    }
     await client.query('COMMIT');
-    res.json(result.rows[0]);
+    res.json(normalizeRow(row));
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
@@ -103,83 +133,84 @@ router.post('/:projectId/role-matrix', authenticate, async (req, res) => {
 // POST bulk import
 router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => {
   const { entries } = req.body;
-  if (!Array.isArray(entries) || entries.length === 0) return res.status(400).json({ error: 'No entries provided' });
+  if (!Array.isArray(entries) || entries.length === 0)
+    return res.status(400).json({ error: 'No entries provided' });
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const playlistNames = new Set();
     for (const e of entries) {
-      const concatenate = `${e.function}-${e.role}-${e.pbom_champion ? 'Yes' : 'No'}-${e.boc_admin ? 'Yes' : 'No'}-${e.boc_member ? 'Yes' : 'No'}-${e.eto_user ? 'Yes' : 'No'}-${e.team_manager ? 'Yes' : 'No'}`;
+      // Support old fixed-boolean format from Excel import
+      const additional_info = e.additional_info && typeof e.additional_info === 'object'
+        ? e.additional_info
+        : {
+            'PBOM Champion': !!e.pbom_champion,
+            'BOC Admin':     !!e.boc_admin,
+            'BOC Member':    !!e.boc_member,
+            'ETO User':      !!e.eto_user,
+            'Team Manager':  !!e.team_manager,
+          };
+      const concatenate = buildConcatenate(e.function, e.role, additional_info);
       await client.query(
         `INSERT INTO role_matrix
-           (project_id, function, role, pbom_champion, boc_admin, boc_member, eto_user, team_manager,
-            concatenate, pdm_role, tlg_group)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-         ON CONFLICT (project_id, concatenate) DO UPDATE SET
-           pdm_role=EXCLUDED.pdm_role, tlg_group=EXCLUDED.tlg_group, updated_at=NOW()`,
-        [req.params.projectId, e.function, e.role, e.pbom_champion, e.boc_admin, e.boc_member, e.eto_user, e.team_manager, concatenate, e.pdm_role, e.tlg_group]
+           (project_id, function, role, additional_info, concatenate,
+            tlg_primary, tlg_addon)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT DO NOTHING`,
+        [
+          req.params.projectId, e.function, e.role,
+          JSON.stringify(additional_info),
+          concatenate,
+          e.tlg_primary || e.tlg_group || '',
+          JSON.stringify(e.tlg_addon || []),
+        ]
       );
-      if (!isErrorRole(e.pdm_role)) playlistNames.add(e.pdm_role);
-    }
-    for (const name of playlistNames) {
-      await upsertPlaylist(client, req.params.projectId, name);
     }
     await client.query('COMMIT');
-    res.json({ imported: entries.length, playlists_created: playlistNames.size });
+    res.json({ imported: entries.length });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
   } finally { client.release(); }
 });
 
-// PUT single entry - full update of all fields
+// PUT single entry
 router.put('/:projectId/role-matrix/:id', authenticate, async (req, res) => {
   const {
     function: fn, role,
-    pbom_champion, boc_admin, boc_member, eto_user, team_manager,
-    pdm_role, tlg_group,
+    additional_info: rawInfo,
+    tlg_primary, tlg_addon,
     recommended_training_id, complementary_items,
   } = req.body;
+
+  const additional_info = parseAdditionalInfo(rawInfo);
+  const concatenate = buildConcatenate(fn, role, additional_info);
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-
-    let updateQuery, updateParams;
-    if (fn !== undefined && role !== undefined) {
-      const concatenate = `${fn}-${role}-${pbom_champion ? 'Yes' : 'No'}-${boc_admin ? 'Yes' : 'No'}-${boc_member ? 'Yes' : 'No'}-${eto_user ? 'Yes' : 'No'}-${team_manager ? 'Yes' : 'No'}`;
-      updateQuery = `UPDATE role_matrix SET
+    const result = await client.query(
+      `UPDATE role_matrix SET
         function=$1, role=$2,
-        pbom_champion=$3, boc_admin=$4, boc_member=$5, eto_user=$6, team_manager=$7,
-        concatenate=$8, pdm_role=$9, tlg_group=$10,
-        recommended_training_id=$11, complementary_items=$12,
+        additional_info=$3, concatenate=$4,
+        tlg_primary=$5, tlg_addon=$6,
+        recommended_training_id=$7, complementary_items=$8,
         updated_at=NOW()
-      WHERE id=$13 AND project_id=$14 RETURNING *`;
-      updateParams = [
-        fn, role, pbom_champion, boc_admin, boc_member, eto_user, team_manager,
-        concatenate, pdm_role, tlg_group,
+      WHERE id=$9 AND project_id=$10
+      RETURNING *`,
+      [
+        fn, role,
+        JSON.stringify(additional_info),
+        concatenate,
+        tlg_primary || '',
+        JSON.stringify(tlg_addon || []),
         recommended_training_id || null,
         JSON.stringify(complementary_items || []),
         req.params.id, req.params.projectId,
-      ];
-    } else {
-      updateQuery = `UPDATE role_matrix SET
-        pdm_role=$1, tlg_group=$2,
-        recommended_training_id=$3, complementary_items=$4,
-        updated_at=NOW()
-      WHERE id=$5 AND project_id=$6 RETURNING *`;
-      updateParams = [
-        pdm_role, tlg_group,
-        recommended_training_id || null,
-        JSON.stringify(complementary_items || []),
-        req.params.id, req.params.projectId,
-      ];
-    }
-
-    const result = await client.query(updateQuery, updateParams);
-    await upsertPlaylist(client, req.params.projectId, pdm_role);
+      ]
+    );
     await client.query('COMMIT');
-    res.json(result.rows[0]);
+    res.json(normalizeRow(result.rows[0]));
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
@@ -189,27 +220,26 @@ router.put('/:projectId/role-matrix/:id', authenticate, async (req, res) => {
 // DELETE single entry
 router.delete('/:projectId/role-matrix/:id', authenticate, async (req, res) => {
   try {
-    await pool.query('DELETE FROM role_matrix WHERE id=$1 AND project_id=$2', [req.params.id, req.params.projectId]);
+    await pool.query(
+      'DELETE FROM role_matrix WHERE id=$1 AND project_id=$2',
+      [req.params.id, req.params.projectId]
+    );
     res.json({ message: 'Deleted' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Lookup
+// Lookup (used by training matrix generation)
 router.post('/:projectId/role-matrix/lookup', authenticate, async (req, res) => {
-  const { function: fn, role, pbom_champion, boc_admin, boc_member, eto_user, team_manager } = req.body;
-  const yesNo = v => (v === true || v === 'Yes' || v === 'yes' || v === 1) ? 'Yes' : 'No';
-  const concatenate = `${fn}-${role}-${yesNo(pbom_champion)}-${yesNo(boc_admin)}-${yesNo(boc_member)}-${yesNo(eto_user)}-${yesNo(team_manager)}`;
+  const { function: fn, role, additional_info: rawInfo } = req.body;
+  const additional_info = parseAdditionalInfo(rawInfo);
+  const concatenate = buildConcatenate(fn, role, additional_info);
   try {
     const result = await pool.query(
-      'SELECT pdm_role, tlg_group FROM role_matrix WHERE project_id=$1 AND concatenate=$2',
+      'SELECT * FROM role_matrix WHERE project_id=$1 AND concatenate=$2',
       [req.params.projectId, concatenate]
     );
-    if (result.rows.length === 0) return res.json({ pdm_role: null, tlg_group: null, found: false });
-    const row = result.rows[0];
-    if (isErrorRole(row.pdm_role)) {
-      return res.json({ pdm_role: 'Error (invalid role for this function)', tlg_group: 'Error', found: true, is_error: true });
-    }
-    res.json({ ...row, found: true, is_error: false });
+    if (result.rows.length === 0) return res.json({ found: false });
+    res.json({ ...normalizeRow(result.rows[0]), found: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
