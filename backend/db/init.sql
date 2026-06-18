@@ -128,3 +128,32 @@ CREATE TABLE IF NOT EXISTS campaigns (
   status TEXT DEFAULT 'drafted' CHECK (status IN ('drafted','exported','sent','cancelled')),
   notes TEXT
 );
+
+-- Role matrix dimensions (functions, roles, info_keys per project)
+CREATE TABLE IF NOT EXISTS role_matrix_dimensions (
+  id SERIAL PRIMARY KEY,
+  project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+  type TEXT NOT NULL CHECK (type IN ('function','role','info_key')),
+  value TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(project_id, type, value)
+);
+
+-- Role matrix rows (one row per unique combination of function + role + additional_info)
+CREATE TABLE IF NOT EXISTS role_matrix (
+  id SERIAL PRIMARY KEY,
+  project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+  function TEXT NOT NULL,
+  role TEXT NOT NULL,
+  additional_info JSONB NOT NULL DEFAULT '{}',
+  concatenate TEXT NOT NULL,
+  tlg_primary TEXT NOT NULL DEFAULT '',
+  tlg_addon JSONB NOT NULL DEFAULT '[]',
+  recommended_training_id INT REFERENCES playlists(id) ON DELETE SET NULL,
+  complementary_items JSONB NOT NULL DEFAULT '[]',
+  primary_training_name TEXT NOT NULL DEFAULT '',
+  complementary_names JSONB NOT NULL DEFAULT '[]',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(project_id, concatenate)
+);
