@@ -86,17 +86,6 @@ function parseRoleMatrixExcel(buffer) {
 // ---------------------------------------------------------------------------
 // Row status helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Returns one of: 'na' | 'empty' | 'unresolved' | 'comp-unresolved' | 'ok'
- *
- * Priority (highest first):
- *  'na'              - both na_training AND na_tlg are true  => grey
- *  'empty'           - na_training=false AND no primary set  => red
- *  'unresolved'      - primary name set but no resolved ID   => orange
- *  'comp-unresolved' - primary resolved, but a comp is not   => yellow
- *  'ok'              - everything is resolved or blank       => white
- */
 function rowStatus(entry) {
   if (entry.na_training && entry.na_tlg) return 'na';
   if (!entry.na_training) {
@@ -113,19 +102,19 @@ function rowStatus(entry) {
 }
 
 const ROW_BG = {
-  na:              'bg-slate-100',
-  empty:           'bg-red-50',
-  unresolved:      'bg-orange-50',
+  na:                'bg-slate-100',
+  empty:             'bg-red-50',
+  unresolved:        'bg-orange-50',
   'comp-unresolved': 'bg-yellow-50',
-  ok:              '',
+  ok:                '',
 };
 
 const ROW_HOVER = {
-  na:              'hover:bg-slate-200/60',
-  empty:           'hover:bg-red-100/60',
-  unresolved:      'hover:bg-orange-100/60',
+  na:                'hover:bg-slate-200/60',
+  empty:             'hover:bg-red-100/60',
+  unresolved:        'hover:bg-orange-100/60',
   'comp-unresolved': 'hover:bg-yellow-100/60',
-  ok:              'hover:bg-slate-50/50',
+  ok:                'hover:bg-slate-50/50',
 };
 
 // ---------------------------------------------------------------------------
@@ -511,23 +500,76 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
 }
 
 // ---------------------------------------------------------------------------
-// Legend
+// Status bar: row count + clickable chips
 // ---------------------------------------------------------------------------
-function StatusLegend() {
-  const items = [
-    { bg: 'bg-red-50',    border: 'border-red-200',    label: 'No primary training set' },
-    { bg: 'bg-orange-50', border: 'border-orange-200', label: 'Primary training not matched' },
-    { bg: 'bg-yellow-50', border: 'border-yellow-200', label: 'Complementary training not matched' },
-    { bg: 'bg-slate-100', border: 'border-slate-300',  label: 'N/A' },
-  ];
+const STATUS_CHIPS = [
+  {
+    status: 'empty',
+    bg:        'bg-red-50',
+    border:    'border-red-200',
+    text:      'text-red-600',
+    activeBg:  'bg-red-100',
+    label:     'No primary training set',
+  },
+  {
+    status: 'unresolved',
+    bg:        'bg-orange-50',
+    border:    'border-orange-200',
+    text:      'text-orange-600',
+    activeBg:  'bg-orange-100',
+    label:     'Primary training not matched',
+  },
+  {
+    status: 'comp-unresolved',
+    bg:        'bg-yellow-50',
+    border:    'border-yellow-200',
+    text:      'text-yellow-700',
+    activeBg:  'bg-yellow-100',
+    label:     'Complementary not matched',
+  },
+  {
+    status: 'na',
+    bg:        'bg-slate-100',
+    border:    'border-slate-300',
+    text:      'text-slate-500',
+    activeBg:  'bg-slate-200',
+    label:     'N/A',
+  },
+];
+
+function StatusBar({ counts, activeStatus, onToggle, totalShown, totalAll }) {
   return (
-    <div className="flex items-center gap-3 flex-wrap mb-3 shrink-0">
-      {items.map(({ bg, border, label }) => (
-        <span key={label} className="flex items-center gap-1.5 text-xs text-slate-500">
-          <span className={`inline-block w-3 h-3 rounded-sm border ${bg} ${border}`} />
-          {label}
-        </span>
-      ))}
+    <div className="flex items-center gap-2 flex-wrap mb-3 shrink-0">
+      <span className="text-xs text-slate-400 shrink-0">{totalShown} rows</span>
+      <span className="text-slate-200 text-xs select-none">|</span>
+      {STATUS_CHIPS.map(({ status, bg, border, text, activeBg, label }) => {
+        const count  = counts[status] || 0;
+        const active = activeStatus === status;
+        if (count === 0) return null;
+        return (
+          <button
+            key={status}
+            onClick={() => onToggle(status)}
+            title={active ? 'Clear filter' : `Show only: ${label}`}
+            className={`inline-flex items-center gap-1.5 border rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors ${border} ${text} ${
+              active ? activeBg : bg
+            } hover:${activeBg} cursor-pointer`}
+          >
+            <span className={`inline-block w-1.5 h-1.5 rounded-full ${active ? 'bg-current' : 'bg-current opacity-50'}`} />
+            {label}
+            <span className="font-semibold">{count}</span>
+            {active && <span className="ml-0.5 opacity-60">&times;</span>}
+          </button>
+        );
+      })}
+      {(activeStatus || totalShown < totalAll) && (
+        <button
+          onClick={() => onToggle(null)}
+          className="text-xs text-slate-400 hover:text-slate-600 underline"
+        >
+          Reset
+        </button>
+      )}
     </div>
   );
 }
@@ -540,14 +582,15 @@ export default function RoleMatrixPage() {
   const qc = useQueryClient();
   const fileRef = useRef();
 
-  const [editMode,     setEditMode]     = useState(false);
-  const [selectedFn,   setSelectedFn]   = useState(null);
-  const [selectedRole, setSelectedRole] = useState(null);
-  const [selectedInfo, setSelectedInfo] = useState([]);
-  const [modalEntry,   setModalEntry]   = useState(null);
-  const [importError,  setImportError]  = useState('');
-  const [importStats,  setImportStats]  = useState(null);
-  const [addModalType, setAddModalType] = useState(null);
+  const [editMode,      setEditMode]      = useState(false);
+  const [selectedFn,    setSelectedFn]    = useState(null);
+  const [selectedRole,  setSelectedRole]  = useState(null);
+  const [selectedInfo,  setSelectedInfo]  = useState([]);
+  const [statusFilter,  setStatusFilter]  = useState(null);
+  const [modalEntry,    setModalEntry]    = useState(null);
+  const [importError,   setImportError]   = useState('');
+  const [importStats,   setImportStats]   = useState(null);
+  const [addModalType,  setAddModalType]  = useState(null);
 
   const dimKey    = ['role-matrix-dimensions', projectId];
   const matrixKey = ['role-matrix', projectId];
@@ -618,6 +661,7 @@ export default function RoleMatrixPage() {
       setSelectedFn(null);
       setSelectedRole(null);
       setSelectedInfo([]);
+      setStatusFilter(null);
     },
   });
 
@@ -671,7 +715,8 @@ export default function RoleMatrixPage() {
       clearAllMutation.mutate();
   }
 
-  const filteredEntries = useMemo(() => {
+  // Entries filtered by dimension selectors (not status)
+  const dimFilteredEntries = useMemo(() => {
     let rows = entries;
     if (selectedFn)           rows = rows.filter(r => r.function === selectedFn);
     if (selectedRole)         rows = rows.filter(r => r.role === selectedRole);
@@ -679,6 +724,26 @@ export default function RoleMatrixPage() {
       rows = rows.filter(r => selectedInfo.every(k => r.additional_info && r.additional_info[k]));
     return rows;
   }, [entries, selectedFn, selectedRole, selectedInfo]);
+
+  // Count by status across dimension-filtered rows
+  const statusCounts = useMemo(() => {
+    const counts = {};
+    for (const e of dimFilteredEntries) {
+      const s = rowStatus(e);
+      counts[s] = (counts[s] || 0) + 1;
+    }
+    return counts;
+  }, [dimFilteredEntries]);
+
+  // Final filtered entries shown in table
+  const filteredEntries = useMemo(() => {
+    if (!statusFilter) return dimFilteredEntries;
+    return dimFilteredEntries.filter(e => rowStatus(e) === statusFilter);
+  }, [dimFilteredEntries, statusFilter]);
+
+  function handleStatusToggle(status) {
+    setStatusFilter(prev => (prev === status ? null : status));
+  }
 
   const isDimPending = addDimMutation.isPending || removeDimMutation.isPending;
   const thClass = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide';
@@ -745,34 +810,30 @@ export default function RoleMatrixPage() {
       {/* 3-panel selector */}
       <div className="grid grid-cols-3 gap-4 mb-4 shrink-0" style={{ height: '16rem' }}>
         <SelectorPanel title="Function" badge="FNC" items={dimensions.functions}
-          selected={selectedFn} multi={false} onChange={setSelectedFn}
+          selected={selectedFn} multi={false} onChange={v => { setSelectedFn(v); setStatusFilter(null); }}
           onAddNew={() => setAddModalType('function')}
           onRemove={v => removeDimMutation.mutate({ type: 'function', value: v })}
           editMode={editMode} />
         <SelectorPanel title="Role" badge="ROL" items={dimensions.roles}
-          selected={selectedRole} multi={false} onChange={setSelectedRole}
+          selected={selectedRole} multi={false} onChange={v => { setSelectedRole(v); setStatusFilter(null); }}
           onAddNew={() => setAddModalType('role')}
           onRemove={v => removeDimMutation.mutate({ type: 'role', value: v })}
           editMode={editMode} />
         <SelectorPanel title="Additional Info" badge="INF" items={dimensions.info_keys}
-          selected={selectedInfo} multi={true} onChange={setSelectedInfo}
+          selected={selectedInfo} multi={true} onChange={v => { setSelectedInfo(v); setStatusFilter(null); }}
           onAddNew={() => setAddModalType('info_key')}
           onRemove={v => removeDimMutation.mutate({ type: 'info_key', value: v })}
           editMode={editMode} />
       </div>
 
-      {/* Row count + reset */}
-      <div className="flex items-center gap-3 mb-2 shrink-0">
-        <span className="text-xs text-slate-400">{filteredEntries.length} rows</span>
-        {(selectedFn || selectedRole || selectedInfo.length > 0) && (
-          <button onClick={() => { setSelectedFn(null); setSelectedRole(null); setSelectedInfo([]); }}
-            className="text-xs text-slate-400 hover:text-slate-600">
-            Reset filters
-          </button>
-        )}
-      </div>
-
-      <StatusLegend />
+      {/* Status bar: row count + chips */}
+      <StatusBar
+        counts={statusCounts}
+        activeStatus={statusFilter}
+        onToggle={handleStatusToggle}
+        totalShown={filteredEntries.length}
+        totalAll={dimFilteredEntries.length}
+      />
 
       {/* Table */}
       <div className="overflow-auto rounded-xl border bg-white flex-1">
