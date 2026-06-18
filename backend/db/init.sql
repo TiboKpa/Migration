@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS training_references (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Training profiles
+-- Training profiles (legacy)
 CREATE TABLE IF NOT EXISTS training_profiles (
   id SERIAL PRIMARY KEY,
   project_id INT REFERENCES projects(id) ON DELETE CASCADE,
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS training_profiles (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Profile-training mappings
+-- Profile-training mappings (legacy)
 CREATE TABLE IF NOT EXISTS profile_training_mappings (
   id SERIAL PRIMARY KEY,
   profile_id INT REFERENCES training_profiles(id) ON DELETE CASCADE,
@@ -129,6 +129,43 @@ CREATE TABLE IF NOT EXISTS campaigns (
   notes TEXT
 );
 
+-- Training modules (used in Training Matrix page)
+CREATE TABLE IF NOT EXISTS training_modules (
+  id SERIAL PRIMARY KEY,
+  project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT,
+  duration_hhmm TEXT,
+  content_type TEXT,
+  learning_url TEXT,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Training curricula (used in Training Matrix page)
+CREATE TABLE IF NOT EXISTS training_curricula (
+  id SERIAL PRIMARY KEY,
+  project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Playlists / primary training profiles (used in Role Matrix)
+CREATE TABLE IF NOT EXISTS playlists (
+  id SERIAL PRIMARY KEY,
+  project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT,
+  is_complementary BOOLEAN DEFAULT false,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Role matrix dimensions (functions, roles, info_keys per project)
 CREATE TABLE IF NOT EXISTS role_matrix_dimensions (
   id SERIAL PRIMARY KEY,
@@ -139,7 +176,9 @@ CREATE TABLE IF NOT EXISTS role_matrix_dimensions (
   UNIQUE(project_id, type, value)
 );
 
--- Role matrix rows (one row per unique combination of function + role + additional_info)
+-- Role matrix rows
+-- recommended_training_id is a soft reference stored as plain INT (no FK)
+-- so missing playlists never block table creation or row inserts.
 CREATE TABLE IF NOT EXISTS role_matrix (
   id SERIAL PRIMARY KEY,
   project_id INT REFERENCES projects(id) ON DELETE CASCADE,
@@ -149,7 +188,7 @@ CREATE TABLE IF NOT EXISTS role_matrix (
   concatenate TEXT NOT NULL,
   tlg_primary TEXT NOT NULL DEFAULT '',
   tlg_addon JSONB NOT NULL DEFAULT '[]',
-  recommended_training_id INT REFERENCES playlists(id) ON DELETE SET NULL,
+  recommended_training_id INT,
   complementary_items JSONB NOT NULL DEFAULT '[]',
   primary_training_name TEXT NOT NULL DEFAULT '',
   complementary_names JSONB NOT NULL DEFAULT '[]',

@@ -26,6 +26,7 @@ function normalizeRow(row) {
     additional_info: parseAdditionalInfo(row.additional_info),
     tlg_addon: parseJsonField(row.tlg_addon, []),
     complementary_items: parseJsonField(row.complementary_items, []),
+    complementary_names: parseJsonField(row.complementary_names, []),
   };
 }
 
@@ -67,7 +68,10 @@ router.post('/:projectId/role-matrix/dimensions', authenticate, async (req, res)
     const functions = dimResult.rows.filter(r => r.type === 'function').map(r => r.value);
     const roles     = dimResult.rows.filter(r => r.type === 'role').map(r => r.value);
     const info_keys = dimResult.rows.filter(r => r.type === 'info_key').map(r => r.value);
-    await generateMatrixRows(client, req.params.projectId, functions, roles, info_keys);
+    // Only generate rows when both functions and roles exist
+    if (functions.length > 0 && roles.length > 0) {
+      await generateMatrixRows(client, req.params.projectId, functions, roles, info_keys);
+    }
     await client.query('COMMIT');
     res.json({ functions, roles, info_keys });
   } catch (err) {
@@ -103,11 +107,10 @@ router.delete('/:projectId/role-matrix/dimensions', authenticate, async (req, re
       const functions = dimResult.rows.filter(r => r.type === 'function').map(r => r.value);
       const roles     = dimResult.rows.filter(r => r.type === 'role').map(r => r.value);
       const info_keys = dimResult.rows.filter(r => r.type === 'info_key').map(r => r.value);
-      await client.query(
-        'DELETE FROM role_matrix WHERE project_id=$1',
-        [req.params.projectId]
-      );
-      await generateMatrixRows(client, req.params.projectId, functions, roles, info_keys);
+      await client.query('DELETE FROM role_matrix WHERE project_id=$1', [req.params.projectId]);
+      if (functions.length > 0 && roles.length > 0) {
+        await generateMatrixRows(client, req.params.projectId, functions, roles, info_keys);
+      }
     }
     await client.query('COMMIT');
     res.json({ message: 'Deleted' });
@@ -134,6 +137,7 @@ function cartesianInfoCombos(info_keys) {
 }
 
 async function generateMatrixRows(client, projectId, functions, roles, info_keys) {
+  if (functions.length === 0 || roles.length === 0) return;
   const combos = cartesianInfoCombos(info_keys);
   for (const fn of functions) {
     for (const role of roles) {
@@ -235,12 +239,11 @@ router.delete('/:projectId/role-matrix', authenticate, async (req, res) => {
 });
 
 // POST bulk import
-// Import order (critical):
-//   1. Upsert all dimension values (functions, roles, info_keys)
-//   2. Upsert all matrix rows with inputs (function, role, additional_info, tlg_primary, tlg_addon)
-//      and store raw training name strings (primary_training_name, complementary_names)
-//   3. Load training catalogue (playlists, modules, curricula) and attempt to resolve names to IDs
-//   4. Update each row with resolved IDs / complementary_items
+// Import order:
+//   1. Upsert dimensions (functions, roles, info_keys)
+//   2. Upsert matrix rows with inputs + raw training name strings
+//   3. Load training catalogue
+//   4. Update rows with resolved IDs
 router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => {
   const { entries } = req.body;
   if (!Array.isArray(entries) || entries.length === 0)
@@ -250,16 +253,15 @@ router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => 
   try {
     await client.query('BEGIN');
 
-    // --- STEP 1: collect and upsert all dimension values ---
+    // STEP 1 -- dimensions
     const fnSet      = new Set();
     const roleSet    = new Set();
     const infoKeySet = new Set();
     for (const e of entries) {
       if (e.function) fnSet.add(String(e.function).trim());
       if (e.role)     roleSet.add(String(e.role).trim());
-      if (e.additional_info && typeof e.additional_info === 'object') {
+      if (e.additional_info && typeof e.additional_info === 'object')
         Object.keys(e.additional_info).forEach(k => infoKeySet.add(k));
-      }
     }
 
     let dimensionsAdded = 0;
@@ -288,13 +290,11 @@ router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => 
       dimensionsAdded += r.rowCount;
     }
 
-    // --- STEP 2: upsert all matrix rows with inputs + raw training names ---
-    // Training resolution happens in step 3; here we just store the raw strings.
+    // STEP 2 -- upsert rows with inputs
     for (const e of entries) {
       const additional_info = (e.additional_info && typeof e.additional_info === 'object')
         ? e.additional_info : {};
       const concatenate = buildConcatenate(e.function, e.role, additional_info);
-
       await client.query(
         `INSERT INTO role_matrix
            (project_id, function, role, additional_info, concatenate,
@@ -324,24 +324,20 @@ router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => 
       );
     }
 
-    // --- STEP 3: load training catalogue and resolve names to IDs ---
-    const playlistsRes  = await client.query(
-      'SELECT id, title FROM playlists WHERE project_id=$1',
-      [req.params.projectId]
+    // STEP 3 -- load catalogue
+    const playlistsRes = await client.query(
+      'SELECT id, title FROM playlists WHERE project_id=$1', [req.params.projectId]
     );
-    const modulesRes    = await client.query(
-      'SELECT id, title FROM training_modules WHERE project_id=$1',
-      [req.params.projectId]
+    const modulesRes = await client.query(
+      'SELECT id, title FROM training_modules WHERE project_id=$1', [req.params.projectId]
     );
-    const curriculaRes  = await client.query(
-      'SELECT id, title FROM training_curricula WHERE project_id=$1',
-      [req.params.projectId]
+    const curriculaRes = await client.query(
+      'SELECT id, title FROM training_curricula WHERE project_id=$1', [req.params.projectId]
     );
 
-    // Case-insensitive lookup maps
-    const playlistMap   = new Map(playlistsRes.rows.map(r  => [r.title.trim().toLowerCase(),  r.id]));
-    const moduleMap     = new Map(modulesRes.rows.map(r    => [r.title.trim().toLowerCase(),  r.id]));
-    const curriculumMap = new Map(curriculaRes.rows.map(r  => [r.title.trim().toLowerCase(),  r.id]));
+    const playlistMap   = new Map(playlistsRes.rows.map(r => [r.title.trim().toLowerCase(), r.id]));
+    const moduleMap     = new Map(modulesRes.rows.map(r => [r.title.trim().toLowerCase(), r.id]));
+    const curriculumMap = new Map(curriculaRes.rows.map(r => [r.title.trim().toLowerCase(), r.id]));
 
     function resolveTrainingId(name) {
       if (!name) return null;
@@ -353,53 +349,36 @@ router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => 
       if (!Array.isArray(names)) return [];
       return names.map(name => {
         const key = name.trim().toLowerCase();
-        if (curriculumMap.has(key))
-          return { type: 'curriculum', id: curriculumMap.get(key), title: name.trim() };
-        if (moduleMap.has(key))
-          return { type: 'module', id: moduleMap.get(key), title: name.trim() };
-        if (playlistMap.has(key))
-          return { type: 'playlist', id: playlistMap.get(key), title: name.trim() };
+        if (curriculumMap.has(key)) return { type: 'curriculum', id: curriculumMap.get(key), title: name.trim() };
+        if (moduleMap.has(key))     return { type: 'module',     id: moduleMap.get(key),     title: name.trim() };
+        if (playlistMap.has(key))   return { type: 'playlist',   id: playlistMap.get(key),   title: name.trim() };
         return { type: 'unresolved', id: null, title: name.trim() };
       });
     }
 
-    // --- STEP 4: update rows with resolved IDs ---
-    let resolved   = 0;
+    // STEP 4 -- resolve IDs
+    let resolved = 0;
     let unresolved = 0;
-
     for (const e of entries) {
       const additional_info = (e.additional_info && typeof e.additional_info === 'object')
         ? e.additional_info : {};
       const concatenate = buildConcatenate(e.function, e.role, additional_info);
-
       const recommended_training_id = resolveTrainingId(e.primary_training_name);
       const complementary_items     = resolveComplementaryItems(e.complementary_names || []);
-
       if (recommended_training_id) resolved++;
       else if (e.primary_training_name) unresolved++;
-
       await client.query(
         `UPDATE role_matrix SET
            recommended_training_id = $1,
            complementary_items     = $2,
            updated_at              = NOW()
          WHERE project_id=$3 AND concatenate=$4`,
-        [
-          recommended_training_id,
-          JSON.stringify(complementary_items),
-          req.params.projectId,
-          concatenate,
-        ]
+        [recommended_training_id, JSON.stringify(complementary_items), req.params.projectId, concatenate]
       );
     }
 
     await client.query('COMMIT');
-    res.json({
-      imported: entries.length,
-      dimensions_added: dimensionsAdded,
-      resolved,
-      unresolved,
-    });
+    res.json({ imported: entries.length, dimensions_added: dimensionsAdded, resolved, unresolved });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
