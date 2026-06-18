@@ -33,6 +33,11 @@
  * CURRICULUM rows can be added as curriculum items in a training.
  * STANDALONE_MODULE and MODULE rows (including curriculum-owned ones) can be
  * added as standalone module items in a training when their cell is filled.
+ *
+ * recommended_primary_training on a curriculum or module row is resolved only
+ * when its value matches (case-insensitive) one of the primary training titles
+ * parsed from the playlist columns of the same sheet. Unrecognised values are
+ * silently dropped so the import never references a training that does not exist.
  */
 
 import * as XLSX from 'xlsx';
@@ -75,31 +80,44 @@ function cellStr(v) {
  * rawVal : the value already read from the json row array (used as fallback)
  */
 function getCellLink(sheet, rowIdx, colIdx, rawVal) {
-  // Convert 0-based indices to XLSX cell address (e.g. row 3, col 11 -> "L4")
   const colLetter = XLSX.utils.encode_col(colIdx);
-  // sheet_to_json with header:1 maps 0-based rowIdx directly — row 0 of the
-  // json array corresponds to the first sheet row (row 1 in XLSX 1-based terms).
   const cellAddr = colLetter + String(rowIdx + 1);
   const cell = sheet[cellAddr];
 
   if (cell) {
-    // Embedded hyperlink stored by XLSX under cell.l.Target
     if (cell.l && cell.l.Target) {
       const t = String(cell.l.Target).trim();
       if (t) return t;
     }
-    // Some parsers expose the hyperlink on the value object
     if (cell.v && typeof cell.v === 'object' && cell.v.hyperlink) {
       const t = String(cell.v.hyperlink).trim();
       if (t) return t;
     }
   }
 
-  // Fallback: the cell value itself may be a plain URL string
   const raw = cellStr(rawVal);
   if (/^(https?:\/\/|mailto:)/i.test(raw)) return raw;
 
   return '';
+}
+
+/**
+ * Resolve a raw "recommended primary training" cell value to a canonical title.
+ *
+ * The value is accepted only when it matches (case-insensitive) one of the
+ * primary training titles that were parsed from the playlist columns of the
+ * same sheet. This prevents the import from referencing trainings that do not
+ * exist in the workbook.
+ *
+ * primaryTitleSet : Set<string>  — lower-cased titles from playlistCols
+ * primaryTitleMap : Map<string, string> — lower-cased title -> canonical title
+ * rawVal          : the raw cell value (may be a plain string or a hyperlink cell)
+ */
+function resolveRecommendedTraining(primaryTitleSet, primaryTitleMap, rawVal) {
+  const raw = cellStr(rawVal).toLowerCase();
+  if (!raw) return null;
+  if (primaryTitleSet.has(raw)) return primaryTitleMap.get(raw);
+  return null;
 }
 
 export function parseTrainingPathFlat(arrayBuffer) {
@@ -125,6 +143,11 @@ export function parseTrainingPathFlat(arrayBuffer) {
       link:        getCellLink(sheet, 3, c, linkRow[c]),  // row index 3 = sheet row 4
     });
   }
+
+  // Build a lookup for validating recommended_primary_training values.
+  // Keys are lower-cased titles; values are the canonical (original-case) titles.
+  const primaryTitleSet = new Set(playlistCols.map(pc => pc.title.toLowerCase()));
+  const primaryTitleMap = new Map(playlistCols.map(pc => [pc.title.toLowerCase(), pc.title]));
 
   // Find data start row
   let dataStart = -1;
@@ -157,11 +180,8 @@ export function parseTrainingPathFlat(arrayBuffer) {
       type = 'module';
     }
 
-    // Column J (index 9) = content_id, column K (index 10) = content type
-    // Column E (index 4) = title — check for embedded link on the title cell too
     const titleLink = getCellLink(sheet, r, 4, row[4]);
     const contentIdLink = getCellLink(sheet, r, 9, row[9]);
-    // Use whichever is a real URL
     const rowLink = titleLink || contentIdLink || '';
 
     classifiedRows.push({
@@ -281,6 +301,29 @@ export function parseTrainingPathFlat(arrayBuffer) {
       curricula,
       standalone_modules,
     });
+  }
+
+  // Pass 4: attach recommended_primary_training to each curriculum and module.
+  // The value is only kept when it matches one of the primary training titles
+  // parsed above — unrecognised values are dropped to null.
+  for (const cur of curriculaOrder) {
+    const raw = cur.recommended_primary_training_raw ?? null;
+    cur.recommended_primary_training = resolveRecommendedTraining(
+      primaryTitleSet,
+      primaryTitleMap,
+      raw
+    );
+    delete cur.recommended_primary_training_raw;
+  }
+
+  for (const [, mod] of moduleMap) {
+    const raw = mod.recommended_primary_training_raw ?? null;
+    mod.recommended_primary_training = resolveRecommendedTraining(
+      primaryTitleSet,
+      primaryTitleMap,
+      raw
+    );
+    delete mod.recommended_primary_training_raw;
   }
 
   return {
