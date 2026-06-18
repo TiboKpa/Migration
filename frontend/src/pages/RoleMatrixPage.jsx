@@ -204,8 +204,16 @@ function AddDimModal({ label, badge, existing, onAdd, onClose }) {
 // Selector panel
 // ---------------------------------------------------------------------------
 function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNew, onRemove, editMode }) {
-  const [search, setSearch] = useState('');
-  const filtered = items.filter(v => v.toLowerCase().includes(search.toLowerCase()));
+  const [search,  setSearch]  = useState('');
+  const [sortAZ,  setSortAZ]  = useState(false);
+
+  const displayed = useMemo(() => {
+    let list = items.filter(v => v.toLowerCase().includes(search.toLowerCase()));
+    if (sortAZ) list = [...list].sort((a, b) => a.localeCompare(b));
+    return list;
+  }, [items, search, sortAZ]);
+
+  const hasSelection = multi ? selected.length > 0 : selected !== null;
 
   function toggle(v) {
     if (multi) {
@@ -215,12 +223,40 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
     }
   }
 
+  function handleReset() {
+    onChange(multi ? [] : null);
+  }
+
   const isSelected = v => multi ? selected.includes(v) : selected === v;
 
   return (
     <div className="flex flex-col border rounded-xl bg-white overflow-hidden" style={{ minHeight: 0 }}>
       <div className="px-3 pt-3 pb-2 border-b bg-slate-50 shrink-0">
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">{title}</p>
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{title}</p>
+          <div className="flex items-center gap-2">
+            {hasSelection && (
+              <button
+                onClick={handleReset}
+                className="text-[10px] text-slate-400 hover:text-red-500 underline leading-none"
+                title="Clear selection"
+              >
+                Reset
+              </button>
+            )}
+            <button
+              onClick={() => setSortAZ(s => !s)}
+              title={sortAZ ? 'Back to original order' : 'Sort A to Z'}
+              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border transition-colors ${
+                sortAZ
+                  ? 'bg-blue-50 border-blue-200 text-blue-600'
+                  : 'bg-white border-slate-200 text-slate-400 hover:border-slate-300 hover:text-slate-600'
+              }`}
+            >
+              A-Z
+            </button>
+          </div>
+        </div>
         <input
           className="border rounded-lg px-2 py-1.5 text-xs w-full"
           placeholder={`Search ${title.toLowerCase()}...`}
@@ -229,10 +265,10 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
         />
       </div>
       <div className="overflow-y-auto flex-1">
-        {filtered.length === 0 && (
+        {displayed.length === 0 && (
           <p className="text-xs text-slate-400 text-center py-4">No {title.toLowerCase()} yet</p>
         )}
-        {filtered.map(v => (
+        {displayed.map(v => (
           <div key={v}
             className={`flex items-center border-b last:border-0 ${
               isSelected(v) ? 'bg-indigo-50' : 'hover:bg-slate-50'
@@ -504,36 +540,36 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
 // ---------------------------------------------------------------------------
 const STATUS_CHIPS = [
   {
-    status: 'empty',
-    bg:        'bg-red-50',
-    border:    'border-red-200',
-    text:      'text-red-600',
-    activeBg:  'bg-red-100',
-    label:     'No primary training set',
+    status:   'empty',
+    bg:       'bg-red-50',
+    border:   'border-red-200',
+    text:     'text-red-600',
+    activeBg: 'bg-red-100',
+    label:    'No primary training set',
   },
   {
-    status: 'unresolved',
-    bg:        'bg-orange-50',
-    border:    'border-orange-200',
-    text:      'text-orange-600',
-    activeBg:  'bg-orange-100',
-    label:     'Primary training not matched',
+    status:   'unresolved',
+    bg:       'bg-orange-50',
+    border:   'border-orange-200',
+    text:     'text-orange-600',
+    activeBg: 'bg-orange-100',
+    label:    'Primary training not matched',
   },
   {
-    status: 'comp-unresolved',
-    bg:        'bg-yellow-50',
-    border:    'border-yellow-200',
-    text:      'text-yellow-700',
-    activeBg:  'bg-yellow-100',
-    label:     'Complementary not matched',
+    status:   'comp-unresolved',
+    bg:       'bg-yellow-50',
+    border:   'border-yellow-200',
+    text:     'text-yellow-700',
+    activeBg: 'bg-yellow-100',
+    label:    'Complementary not matched',
   },
   {
-    status: 'na',
-    bg:        'bg-slate-100',
-    border:    'border-slate-300',
-    text:      'text-slate-500',
-    activeBg:  'bg-slate-200',
-    label:     'N/A',
+    status:   'na',
+    bg:       'bg-slate-100',
+    border:   'border-slate-300',
+    text:     'text-slate-500',
+    activeBg: 'bg-slate-200',
+    label:    'N/A',
   },
 ];
 
@@ -553,16 +589,16 @@ function StatusBar({ counts, activeStatus, onToggle, totalShown, totalAll }) {
             title={active ? 'Clear filter' : `Show only: ${label}`}
             className={`inline-flex items-center gap-1.5 border rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors ${border} ${text} ${
               active ? activeBg : bg
-            } hover:${activeBg} cursor-pointer`}
+            } cursor-pointer`}
           >
-            <span className={`inline-block w-1.5 h-1.5 rounded-full ${active ? 'bg-current' : 'bg-current opacity-50'}`} />
+            <span className={`inline-block w-1.5 h-1.5 rounded-full bg-current ${ active ? '' : 'opacity-50'}`} />
             {label}
             <span className="font-semibold">{count}</span>
             {active && <span className="ml-0.5 opacity-60">&times;</span>}
           </button>
         );
       })}
-      {(activeStatus || totalShown < totalAll) && (
+      {activeStatus !== null && (
         <button
           onClick={() => onToggle(null)}
           className="text-xs text-slate-400 hover:text-slate-600 underline"
@@ -715,7 +751,6 @@ export default function RoleMatrixPage() {
       clearAllMutation.mutate();
   }
 
-  // Entries filtered by dimension selectors (not status)
   const dimFilteredEntries = useMemo(() => {
     let rows = entries;
     if (selectedFn)           rows = rows.filter(r => r.function === selectedFn);
@@ -725,7 +760,6 @@ export default function RoleMatrixPage() {
     return rows;
   }, [entries, selectedFn, selectedRole, selectedInfo]);
 
-  // Count by status across dimension-filtered rows
   const statusCounts = useMemo(() => {
     const counts = {};
     for (const e of dimFilteredEntries) {
@@ -735,7 +769,6 @@ export default function RoleMatrixPage() {
     return counts;
   }, [dimFilteredEntries]);
 
-  // Final filtered entries shown in table
   const filteredEntries = useMemo(() => {
     if (!statusFilter) return dimFilteredEntries;
     return dimFilteredEntries.filter(e => rowStatus(e) === statusFilter);
@@ -826,7 +859,7 @@ export default function RoleMatrixPage() {
           editMode={editMode} />
       </div>
 
-      {/* Status bar: row count + chips */}
+      {/* Status bar */}
       <StatusBar
         counts={statusCounts}
         activeStatus={statusFilter}
@@ -924,24 +957,15 @@ export default function RoleMatrixPage() {
                       : compItems.length === 0
                         ? <span className="text-xs text-slate-300">-</span>
                         : (
-                          <div
-                            style={{ overflowX: 'auto', whiteSpace: 'nowrap' }}
-                            className="flex gap-1 items-center"
-                          >
+                          <div style={{ overflowX: 'auto', whiteSpace: 'nowrap' }} className="flex gap-1 items-center">
                             {compItems.filter(i => i.type !== 'unresolved').map(i => (
-                              <span
-                                key={`${i.type}-${i.id}`}
-                                className="inline-flex shrink-0 items-center text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5"
-                              >
+                              <span key={`${i.type}-${i.id}`} className="inline-flex shrink-0 items-center text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">
                                 {i.title}
                               </span>
                             ))}
                             {compItems.filter(i => i.type === 'unresolved').map((i, idx) => (
-                              <span
-                                key={`unresolved-${idx}`}
-                                title="Not matched"
-                                className="inline-flex shrink-0 items-center text-[10px] bg-amber-50 text-amber-600 border border-amber-200 rounded px-1.5 py-0.5"
-                              >
+                              <span key={`unresolved-${idx}`} title="Not matched"
+                                className="inline-flex shrink-0 items-center text-[10px] bg-amber-50 text-amber-600 border border-amber-200 rounded px-1.5 py-0.5">
                                 {i.title}
                               </span>
                             ))}
