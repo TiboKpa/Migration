@@ -1,0 +1,2 @@
+ALTER TABLE training_modules ADD COLUMN IF NOT EXISTS link TEXT;
+ALTER TABLE training_curricula ADD COLUMN IF NOT EXISTS link TEXT;

@@ -138,28 +138,29 @@ router.get('/:projectId/modules', authenticate, async (req, res) => {
 });
 
 router.post('/:projectId/modules', authenticate, async (req, res) => {
-  const { title, content_id, duration_min } = req.body;
+  const { title, content_id, duration_min, link } = req.body;
   if (!title) return res.status(400).json({ error: 'title is required' });
   try {
     const r = await pool.query(
-      `INSERT INTO training_modules (project_id, title, content_id, duration_min)
-       VALUES ($1,$2,$3,$4)
+      `INSERT INTO training_modules (project_id, title, content_id, duration_min, link)
+       VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (project_id, title) DO UPDATE
-         SET content_id=EXCLUDED.content_id, duration_min=EXCLUDED.duration_min, updated_at=NOW()
+         SET content_id=EXCLUDED.content_id, duration_min=EXCLUDED.duration_min,
+             link=EXCLUDED.link, updated_at=NOW()
        RETURNING *`,
-      [req.params.projectId, title, content_id || null, duration_min || 0]
+      [req.params.projectId, title, content_id || null, duration_min || 0, link || null]
     );
     res.status(201).json(r.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.put('/:projectId/modules/:moduleId', authenticate, async (req, res) => {
-  const { title, content_id, duration_min } = req.body;
+  const { title, content_id, duration_min, link } = req.body;
   try {
     const r = await pool.query(
-      `UPDATE training_modules SET title=$1, content_id=$2, duration_min=$3, updated_at=NOW()
-       WHERE id=$4 AND project_id=$5 RETURNING *`,
-      [title, content_id || null, duration_min || 0, req.params.moduleId, req.params.projectId]
+      `UPDATE training_modules SET title=$1, content_id=$2, duration_min=$3, link=$4, updated_at=NOW()
+       WHERE id=$5 AND project_id=$6 RETURNING *`,
+      [title, content_id || null, duration_min || 0, link || null, req.params.moduleId, req.params.projectId]
     );
     res.json(r.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -189,7 +190,8 @@ router.get('/:projectId/curricula', authenticate, async (req, res) => {
     )).rows;
 
     const items = curricula.length === 0 ? [] : (await pool.query(
-      `SELECT cmi.*, tm.title AS module_title, tm.content_id AS module_content_id, tm.duration_min
+      `SELECT cmi.*, tm.title AS module_title, tm.content_id AS module_content_id,
+              tm.duration_min, tm.link AS module_link
        FROM curriculum_module_items cmi
        JOIN training_modules tm ON tm.id = cmi.module_id
        WHERE cmi.curriculum_id = ANY($1::int[])
@@ -209,7 +211,8 @@ router.get('/:projectId/curricula/:curriculumId', authenticate, async (req, res)
     )).rows[0];
     if (!cur) return res.status(404).json({ error: 'Not found' });
     const modules = (await pool.query(
-      `SELECT cmi.*, tm.title AS module_title, tm.content_id AS module_content_id, tm.duration_min
+      `SELECT cmi.*, tm.title AS module_title, tm.content_id AS module_content_id,
+              tm.duration_min, tm.link AS module_link
        FROM curriculum_module_items cmi
        JOIN training_modules tm ON tm.id = cmi.module_id
        WHERE cmi.curriculum_id=$1 ORDER BY cmi.sequence_order`,
@@ -220,28 +223,29 @@ router.get('/:projectId/curricula/:curriculumId', authenticate, async (req, res)
 });
 
 router.post('/:projectId/curricula', authenticate, async (req, res) => {
-  const { title, content_id } = req.body;
+  const { title, content_id, link } = req.body;
   if (!title) return res.status(400).json({ error: 'title is required' });
   try {
     const r = await pool.query(
-      `INSERT INTO training_curricula (project_id, title, content_id)
-       VALUES ($1,$2,$3)
-       ON CONFLICT (project_id, title) DO UPDATE SET content_id=EXCLUDED.content_id, updated_at=NOW()
+      `INSERT INTO training_curricula (project_id, title, content_id, link)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (project_id, title) DO UPDATE
+         SET content_id=EXCLUDED.content_id, link=EXCLUDED.link, updated_at=NOW()
        RETURNING *`,
-      [req.params.projectId, title, content_id || null]
+      [req.params.projectId, title, content_id || null, link || null]
     );
     res.status(201).json(r.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.put('/:projectId/curricula/:curriculumId', authenticate, async (req, res) => {
-  const { title, content_id } = req.body;
+  const { title, content_id, link } = req.body;
   if (!title) return res.status(400).json({ error: 'title is required' });
   try {
     const r = await pool.query(
-      `UPDATE training_curricula SET title=$1, content_id=$2, updated_at=NOW()
-       WHERE id=$3 AND project_id=$4 RETURNING *`,
-      [title, content_id || null, req.params.curriculumId, req.params.projectId]
+      `UPDATE training_curricula SET title=$1, content_id=$2, link=$3, updated_at=NOW()
+       WHERE id=$4 AND project_id=$5 RETURNING *`,
+      [title, content_id || null, link || null, req.params.curriculumId, req.params.projectId]
     );
     if (!r.rows[0]) return res.status(404).json({ error: 'Not found' });
     res.json(r.rows[0]);
@@ -366,7 +370,9 @@ router.get('/:projectId/playlists/:playlistId', authenticate, async (req, res) =
     const items = (await pool.query(
       `SELECT pi.*,
               tc.title AS curriculum_title, tc.content_id AS curriculum_content_id,
-              tm.title AS module_title, tm.content_id AS module_content_id, tm.duration_min
+              tc.link  AS curriculum_link,
+              tm.title AS module_title, tm.content_id AS module_content_id,
+              tm.duration_min, tm.link AS module_link
        FROM playlist_items pi
        LEFT JOIN training_curricula tc ON tc.id = pi.curriculum_id
        LEFT JOIN training_modules   tm ON tm.id = pi.module_id
@@ -377,7 +383,8 @@ router.get('/:projectId/playlists/:playlistId', authenticate, async (req, res) =
 
     const curriculumIds = [...new Set(items.filter(i => i.curriculum_id).map(i => i.curriculum_id))];
     const curriculumModules = curriculumIds.length === 0 ? [] : (await pool.query(
-      `SELECT cmi.*, tm.title AS module_title, tm.content_id AS module_content_id, tm.duration_min
+      `SELECT cmi.*, tm.title AS module_title, tm.content_id AS module_content_id,
+              tm.duration_min, tm.link AS module_link
        FROM curriculum_module_items cmi
        JOIN training_modules tm ON tm.id = cmi.module_id
        WHERE cmi.curriculum_id = ANY($1::int[])
@@ -393,6 +400,7 @@ router.get('/:projectId/playlists/:playlistId', authenticate, async (req, res) =
           curriculum_id:    i.curriculum_id,
           title:            i.curriculum_title,
           content_id:       i.curriculum_content_id,
+          link:             i.curriculum_link,
           sequence_order:   i.sequence_order,
           modules:          curriculumModules.filter(m => m.curriculum_id === i.curriculum_id),
         };
@@ -403,6 +411,7 @@ router.get('/:projectId/playlists/:playlistId', authenticate, async (req, res) =
         module_id:        i.module_id,
         title:            i.module_title,
         content_id:       i.module_content_id,
+        link:             i.module_link,
         duration_min:     i.duration_min,
         sequence_order:   i.sequence_order,
       };
@@ -557,12 +566,13 @@ router.post('/:projectId/playlists/import', authenticate, async (req, res) => {
     for (const mod of modules) {
       if (!mod.title) continue;
       const r = await db.query(
-        `INSERT INTO training_modules (project_id, title, content_id, duration_min)
-         VALUES ($1,$2,$3,$4)
+        `INSERT INTO training_modules (project_id, title, content_id, duration_min, link)
+         VALUES ($1,$2,$3,$4,$5)
          ON CONFLICT (project_id, title) DO UPDATE
-           SET content_id=EXCLUDED.content_id, duration_min=EXCLUDED.duration_min, updated_at=NOW()
+           SET content_id=EXCLUDED.content_id, duration_min=EXCLUDED.duration_min,
+               link=EXCLUDED.link, updated_at=NOW()
          RETURNING id, title`,
-        [projectId, mod.title, mod.content_id || null, mod.duration_min || 0]
+        [projectId, mod.title, mod.content_id || null, mod.duration_min || 0, mod.link || null]
       );
       moduleIdByTitle.set(r.rows[0].title.toLowerCase(), r.rows[0].id);
     }
@@ -571,11 +581,12 @@ router.post('/:projectId/playlists/import', authenticate, async (req, res) => {
     for (const cur of curricula) {
       if (!cur.title) continue;
       const r = await db.query(
-        `INSERT INTO training_curricula (project_id, title, content_id)
-         VALUES ($1,$2,$3)
-         ON CONFLICT (project_id, title) DO UPDATE SET content_id=EXCLUDED.content_id, updated_at=NOW()
+        `INSERT INTO training_curricula (project_id, title, content_id, link)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (project_id, title) DO UPDATE
+           SET content_id=EXCLUDED.content_id, link=EXCLUDED.link, updated_at=NOW()
          RETURNING id, title`,
-        [projectId, cur.title, cur.content_id || null]
+        [projectId, cur.title, cur.content_id || null, cur.link || null]
       );
       const curId = r.rows[0].id;
       curriculumIdByTitle.set(r.rows[0].title.toLowerCase(), curId);
