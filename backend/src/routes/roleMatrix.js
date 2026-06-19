@@ -1,6 +1,7 @@
 const express = require('express');
 const pool = require('../db');
 const authenticate = require('../middleware/auth');
+const requireMember = require('../middleware/requireMember');
 const router = express.Router();
 
 function buildConcatenate(fn, role, additionalInfo) {
@@ -32,12 +33,6 @@ function normalizeRow(row) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Shared resolve helper -- re-links training names to catalogue IDs.
-// Only updates rows where na_training=false and primary_training_name is set.
-// Does NOT touch rows that were manually assigned via the UI (recommended_training_id
-// set with no primary_training_name) -- those keep their manual link.
-// ---------------------------------------------------------------------------
 async function resolveRoleMatrixTrainings(client, projectId) {
   const [playlistsRes, modulesRes, curriculaRes] = await Promise.all([
     client.query('SELECT id, title FROM playlists WHERE project_id=$1', [projectId]),
@@ -66,8 +61,6 @@ async function resolveRoleMatrixTrainings(client, projectId) {
     });
   }
 
-  // Only re-resolve rows that came from an import (have primary_training_name set)
-  // and are not marked N/A. Manual UI edits (primary_training_name='') are untouched.
   const rowsRes = await client.query(
     `SELECT id, primary_training_name, complementary_names
      FROM role_matrix
@@ -99,7 +92,7 @@ async function resolveRoleMatrixTrainings(client, projectId) {
 
 // -- Dimensions ------------------------------------------------------------
 
-router.get('/:projectId/role-matrix/dimensions', authenticate, async (req, res) => {
+router.get('/:projectId/role-matrix/dimensions', authenticate, requireMember(), async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT type, value FROM role_matrix_dimensions WHERE project_id=$1 ORDER BY type, value',
@@ -110,16 +103,18 @@ router.get('/:projectId/role-matrix/dimensions', authenticate, async (req, res) 
       roles:     result.rows.filter(r => r.type === 'role').map(r => r.value),
       info_keys: result.rows.filter(r => r.type === 'info_key').map(r => r.value),
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error('[GET role-matrix/dimensions]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-router.post('/:projectId/role-matrix/dimensions', authenticate, async (req, res) => {
+router.post('/:projectId/role-matrix/dimensions', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
   const { type, value } = req.body;
   if (!['function', 'role', 'info_key'].includes(type))
     return res.status(400).json({ error: 'Invalid type' });
   if (!value || !String(value).trim())
     return res.status(400).json({ error: 'Value is required' });
-
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -142,12 +137,12 @@ router.post('/:projectId/role-matrix/dimensions', authenticate, async (req, res)
     res.json({ functions, roles, info_keys });
   } catch (err) {
     await client.query('ROLLBACK');
-    res.status(500).json({ error: err.message });
+    console.error('[POST role-matrix/dimensions]', err);
+    res.status(500).json({ error: 'Internal server error' });
   } finally { client.release(); }
 });
 
-// DELETE a single dimension -- returns updated dimensions object
-router.delete('/:projectId/role-matrix/dimensions', authenticate, async (req, res) => {
+router.delete('/:projectId/role-matrix/dimensions', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
   const { type, value } = req.body;
   const client = await pool.connect();
   try {
@@ -157,19 +152,12 @@ router.delete('/:projectId/role-matrix/dimensions', authenticate, async (req, re
       [req.params.projectId, type, value]
     );
     if (type === 'function') {
-      await client.query(
-        'DELETE FROM role_matrix WHERE project_id=$1 AND function=$2',
-        [req.params.projectId, value]
-      );
+      await client.query('DELETE FROM role_matrix WHERE project_id=$1 AND function=$2', [req.params.projectId, value]);
     } else if (type === 'role') {
-      await client.query(
-        'DELETE FROM role_matrix WHERE project_id=$1 AND role=$2',
-        [req.params.projectId, value]
-      );
+      await client.query('DELETE FROM role_matrix WHERE project_id=$1 AND role=$2', [req.params.projectId, value]);
     } else if (type === 'info_key') {
       const dimResult = await client.query(
-        'SELECT type, value FROM role_matrix_dimensions WHERE project_id=$1',
-        [req.params.projectId]
+        'SELECT type, value FROM role_matrix_dimensions WHERE project_id=$1', [req.params.projectId]
       );
       const fns  = dimResult.rows.filter(r => r.type === 'function').map(r => r.value);
       const rls  = dimResult.rows.filter(r => r.type === 'role').map(r => r.value);
@@ -180,8 +168,7 @@ router.delete('/:projectId/role-matrix/dimensions', authenticate, async (req, re
       }
     }
     const afterResult = await client.query(
-      'SELECT type, value FROM role_matrix_dimensions WHERE project_id=$1',
-      [req.params.projectId]
+      'SELECT type, value FROM role_matrix_dimensions WHERE project_id=$1', [req.params.projectId]
     );
     await client.query('COMMIT');
     res.json({
@@ -191,11 +178,10 @@ router.delete('/:projectId/role-matrix/dimensions', authenticate, async (req, re
     });
   } catch (err) {
     await client.query('ROLLBACK');
-    res.status(500).json({ error: err.message });
+    console.error('[DELETE role-matrix/dimensions]', err);
+    res.status(500).json({ error: 'Internal server error' });
   } finally { client.release(); }
 });
-
-// -- Row generation helper -------------------------------------------------
 
 function cartesianInfoCombos(info_keys) {
   if (info_keys.length === 0) return [{}];
@@ -233,31 +219,33 @@ async function generateMatrixRows(client, projectId, functions, roles, info_keys
   }
 }
 
-// -- Matrix CRUD -----------------------------------------------------------
-
-router.get('/:projectId/role-matrix', authenticate, async (req, res) => {
+router.get('/:projectId/role-matrix', authenticate, requireMember(), async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT * FROM role_matrix WHERE project_id=$1 ORDER BY function, role',
       [req.params.projectId]
     );
     res.json(result.rows.map(normalizeRow));
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error('[GET role-matrix]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-router.get('/:projectId/role-matrix/training-profiles', authenticate, async (req, res) => {
+router.get('/:projectId/role-matrix/training-profiles', authenticate, requireMember(), async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, title AS profile_name FROM playlists
-       WHERE project_id=$1
-       ORDER BY title`,
+      `SELECT id, title AS profile_name FROM playlists WHERE project_id=$1 ORDER BY title`,
       [req.params.projectId]
     );
     res.json(result.rows);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error('[GET role-matrix/training-profiles]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-router.get('/:projectId/role-matrix/complementary-options', authenticate, async (req, res) => {
+router.get('/:projectId/role-matrix/complementary-options', authenticate, requireMember(), async (req, res) => {
   try {
     const [mods, currs] = await Promise.all([
       pool.query('SELECT id, title FROM training_modules WHERE project_id=$1 ORDER BY title', [req.params.projectId]),
@@ -267,15 +255,14 @@ router.get('/:projectId/role-matrix/complementary-options', authenticate, async 
       modules:   mods.rows.map(r => ({ ...r, type: 'module' })),
       curricula: currs.rows.map(r => ({ ...r, type: 'curriculum' })),
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error('[GET role-matrix/complementary-options]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-// PUT - persist TLG + training outputs including N/A flags
-router.put('/:projectId/role-matrix/:id', authenticate, async (req, res) => {
-  const {
-    tlg_primary, tlg_addon, na_tlg,
-    na_training, recommended_training_id, complementary_items,
-  } = req.body;
+router.put('/:projectId/role-matrix/:id', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
+  const { tlg_primary, tlg_addon, na_tlg, na_training, recommended_training_id, complementary_items } = req.body;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -300,12 +287,12 @@ router.put('/:projectId/role-matrix/:id', authenticate, async (req, res) => {
     res.json(normalizeRow(result.rows[0]));
   } catch (err) {
     await client.query('ROLLBACK');
-    res.status(500).json({ error: err.message });
+    console.error('[PUT role-matrix/:id]', err);
+    res.status(500).json({ error: 'Internal server error' });
   } finally { client.release(); }
 });
 
-// DELETE all -- wipes both role_matrix AND role_matrix_dimensions
-router.delete('/:projectId/role-matrix', authenticate, async (req, res) => {
+router.delete('/:projectId/role-matrix', authenticate, requireMember(['owner']), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -315,23 +302,22 @@ router.delete('/:projectId/role-matrix', authenticate, async (req, res) => {
     res.json({ deleted: true });
   } catch (err) {
     await client.query('ROLLBACK');
-    res.status(500).json({ error: err.message });
+    console.error('[DELETE role-matrix]', err);
+    res.status(500).json({ error: 'Internal server error' });
   } finally { client.release(); }
 });
 
-// POST bulk import
-router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => {
+router.post('/:projectId/role-matrix/import', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
   const { entries } = req.body;
   if (!Array.isArray(entries) || entries.length === 0)
     return res.status(400).json({ error: 'No entries provided' });
-
+  if (entries.length > 10000)
+    return res.status(400).json({ error: 'Maximum 10000 entries per import' });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-
-    // STEP 1 -- dimensions
-    const fnSet      = new Set();
-    const roleSet    = new Set();
+    const fnSet = new Set();
+    const roleSet = new Set();
     const infoKeySet = new Set();
     for (const e of entries) {
       if (e.function) fnSet.add(String(e.function).trim());
@@ -339,42 +325,33 @@ router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => 
       if (e.additional_info && typeof e.additional_info === 'object')
         Object.keys(e.additional_info).forEach(k => infoKeySet.add(k));
     }
-
     let dimensionsAdded = 0;
     for (const value of fnSet) {
       const r = await client.query(
-        `INSERT INTO role_matrix_dimensions (project_id, type, value)
-         VALUES ($1, 'function', $2) ON CONFLICT DO NOTHING RETURNING id`,
+        `INSERT INTO role_matrix_dimensions (project_id, type, value) VALUES ($1, 'function', $2) ON CONFLICT DO NOTHING RETURNING id`,
         [req.params.projectId, value]
       );
       dimensionsAdded += r.rowCount;
     }
     for (const value of roleSet) {
       const r = await client.query(
-        `INSERT INTO role_matrix_dimensions (project_id, type, value)
-         VALUES ($1, 'role', $2) ON CONFLICT DO NOTHING RETURNING id`,
+        `INSERT INTO role_matrix_dimensions (project_id, type, value) VALUES ($1, 'role', $2) ON CONFLICT DO NOTHING RETURNING id`,
         [req.params.projectId, value]
       );
       dimensionsAdded += r.rowCount;
     }
     for (const value of infoKeySet) {
       const r = await client.query(
-        `INSERT INTO role_matrix_dimensions (project_id, type, value)
-         VALUES ($1, 'info_key', $2) ON CONFLICT DO NOTHING RETURNING id`,
+        `INSERT INTO role_matrix_dimensions (project_id, type, value) VALUES ($1, 'info_key', $2) ON CONFLICT DO NOTHING RETURNING id`,
         [req.params.projectId, value]
       );
       dimensionsAdded += r.rowCount;
     }
-
-    // STEP 2 -- upsert rows, respecting N/A for both TLG and Training
     for (const e of entries) {
-      const additional_info = (e.additional_info && typeof e.additional_info === 'object')
-        ? e.additional_info : {};
+      const additional_info = (e.additional_info && typeof e.additional_info === 'object') ? e.additional_info : {};
       const concatenate = buildConcatenate(e.function, e.role, additional_info);
-
       const isNaTlg = e.na_tlg === true || String(e.tlg_primary || '').trim() === 'N/A';
       const isNaTrn = e.na_training === true || String(e.primary_training_name || '').trim() === 'N/A';
-
       await client.query(
         `INSERT INTO role_matrix
            (project_id, function, role, additional_info, concatenate,
@@ -383,45 +360,27 @@ router.post('/:projectId/role-matrix/import', authenticate, async (req, res) => 
             primary_training_name, complementary_names)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, '[]', $9, $10, $11)
          ON CONFLICT (project_id, concatenate) DO UPDATE SET
-           tlg_primary            = EXCLUDED.tlg_primary,
-           tlg_addon              = EXCLUDED.tlg_addon,
-           na_tlg                 = EXCLUDED.na_tlg,
-           primary_training_name  = EXCLUDED.primary_training_name,
-           complementary_names    = EXCLUDED.complementary_names,
-           na_training            = EXCLUDED.na_training,
-           recommended_training_id = NULL,
-           complementary_items    = '[]',
-           updated_at             = NOW()`,
+           tlg_primary=EXCLUDED.tlg_primary, tlg_addon=EXCLUDED.tlg_addon, na_tlg=EXCLUDED.na_tlg,
+           primary_training_name=EXCLUDED.primary_training_name, complementary_names=EXCLUDED.complementary_names,
+           na_training=EXCLUDED.na_training, recommended_training_id=NULL, complementary_items='[]', updated_at=NOW()`,
         [
-          req.params.projectId,
-          e.function, e.role,
-          JSON.stringify(additional_info),
-          concatenate,
-          isNaTlg ? '' : (e.tlg_primary || ''),
-          JSON.stringify(isNaTlg ? [] : (e.tlg_addon || [])),
-          isNaTlg,
-          isNaTrn,
-          isNaTrn ? '' : (e.primary_training_name || ''),
-          JSON.stringify(isNaTrn ? [] : (e.complementary_names || [])),
+          req.params.projectId, e.function, e.role, JSON.stringify(additional_info), concatenate,
+          isNaTlg ? '' : (e.tlg_primary || ''), JSON.stringify(isNaTlg ? [] : (e.tlg_addon || [])), isNaTlg,
+          isNaTrn, isNaTrn ? '' : (e.primary_training_name || ''), JSON.stringify(isNaTrn ? [] : (e.complementary_names || [])),
         ]
       );
     }
-
-    // STEP 3+4 -- resolve via shared helper
     const { resolved, unresolved } = await resolveRoleMatrixTrainings(client, req.params.projectId);
-
     await client.query('COMMIT');
     res.json({ imported: entries.length, dimensions_added: dimensionsAdded, resolved, unresolved });
   } catch (err) {
     await client.query('ROLLBACK');
-    res.status(500).json({ error: err.message });
+    console.error('[POST role-matrix/import]', err);
+    res.status(500).json({ error: 'Internal server error' });
   } finally { client.release(); }
 });
 
-// POST re-resolve -- called by the training matrix page after any catalogue change.
-// Re-links all import-sourced rows to the current catalogue without touching
-// manually set rows (those with primary_training_name='') or N/A rows.
-router.post('/:projectId/role-matrix/re-resolve', authenticate, async (req, res) => {
+router.post('/:projectId/role-matrix/re-resolve', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -430,12 +389,12 @@ router.post('/:projectId/role-matrix/re-resolve', authenticate, async (req, res)
     res.json(stats);
   } catch (err) {
     await client.query('ROLLBACK');
-    res.status(500).json({ error: err.message });
+    console.error('[POST role-matrix/re-resolve]', err);
+    res.status(500).json({ error: 'Internal server error' });
   } finally { client.release(); }
 });
 
-// Lookup
-router.post('/:projectId/role-matrix/lookup', authenticate, async (req, res) => {
+router.post('/:projectId/role-matrix/lookup', authenticate, requireMember(), async (req, res) => {
   const { function: fn, role, additional_info: rawInfo } = req.body;
   const additional_info = parseAdditionalInfo(rawInfo);
   const concatenate = buildConcatenate(fn, role, additional_info);
@@ -446,7 +405,10 @@ router.post('/:projectId/role-matrix/lookup', authenticate, async (req, res) => 
     );
     if (result.rows.length === 0) return res.json({ found: false });
     res.json({ ...normalizeRow(result.rows[0]), found: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error('[POST role-matrix/lookup]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 module.exports = router;

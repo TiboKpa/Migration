@@ -1,7 +1,13 @@
 const express = require('express');
+const { z } = require('zod');
 const pool = require('../db');
 const authenticate = require('../middleware/auth');
+const requireMember = require('../middleware/requireMember');
 const router = express.Router();
+
+const previewSchema = z.object({
+  user_id: z.number().int().positive(),
+});
 
 function resolveTrainingPath(user, mappings) {
   return mappings.filter(m => {
@@ -19,14 +25,27 @@ function renderTemplate(html, data) {
   }, html);
 }
 
-router.post('/:projectId/generate/preview', authenticate, async (req, res) => {
-  const { user_id } = req.body;
+router.post('/:projectId/generate/preview', authenticate, requireMember(), async (req, res) => {
+  const parsed = previewSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
+  const { user_id } = parsed.data;
   try {
-    const project = (await pool.query('SELECT * FROM projects WHERE id=$1', [req.params.projectId])).rows[0];
+    const project = (await pool.query(
+      `SELECT p.* FROM projects p
+       JOIN project_members pm ON pm.project_id = p.id
+       WHERE p.id=$1 AND pm.user_id=$2`,
+      [req.params.projectId, req.user.id]
+    )).rows[0];
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    const template = (await pool.query('SELECT * FROM templates WHERE project_id=$1 AND is_default=true', [req.params.projectId])).rows[0];
+    const template = (await pool.query(
+      'SELECT * FROM templates WHERE project_id=$1 AND is_default=true',
+      [req.params.projectId]
+    )).rows[0];
     if (!template) return res.status(400).json({ error: 'No active template' });
-    const user = (await pool.query('SELECT * FROM project_users WHERE id=$1 AND project_id=$2', [user_id, req.params.projectId])).rows[0];
+    const user = (await pool.query(
+      'SELECT * FROM project_users WHERE id=$1 AND project_id=$2',
+      [user_id, req.params.projectId]
+    )).rows[0];
     if (!user) return res.status(404).json({ error: 'User not found' });
     const profile = (await pool.query(
       'SELECT * FROM training_profiles WHERE project_id=$1 AND profile_name=$2',
@@ -59,7 +78,10 @@ router.post('/:projectId/generate/preview', authenticate, async (req, res) => {
       SUPPORT_CHAMPIONS: project.support_champions || ''
     });
     res.json({ html: rendered, path: resolvedPath, total_hours: totalHours });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error('[POST generate/preview]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 module.exports = router;
