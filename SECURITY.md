@@ -18,6 +18,7 @@ This document describes the security model of the Migration application, the con
 - Every project sub-resource route (`/api/projects/:projectId/*`) enforces membership via the `requireMember` middleware. A user who is not a member of the project receives `403 Forbidden`, regardless of their token validity.
 - Write operations (POST, PUT, DELETE) on sub-resources are further restricted to members with the `owner` or `editor` role.
 - The destructive `DELETE /api/projects/:id/role-matrix` is restricted to `owner` only.
+- `DELETE /api/projects/:id` archives the project and returns `403 Forbidden` if the caller is not the project owner. It does not return a success response when the operation is not authorised.
 
 ## Input Validation
 
@@ -38,8 +39,10 @@ This document describes the security model of the Migration application, the con
 
 ## Rate Limiting
 
-- Auth endpoints are limited to **20 requests per 15-minute window** per IP using `express-rate-limit`.
-- Responses include `RateLimit-*` standard headers.
+- A **global rate limiter** is applied before all routes: **300 requests per 15-minute window** per IP.
+- Auth endpoints are additionally limited to **20 requests per 15-minute window** per IP.
+- The preview generation endpoint (`POST /api/projects/:projectId/generate/preview`) has a dedicated limit of **30 requests per minute** per IP, reflecting its higher database and rendering cost.
+- All limiters use `express-rate-limit` and return standard `RateLimit-*` headers.
 
 ## Secret Management
 
@@ -49,8 +52,13 @@ This document describes the security model of the Migration application, the con
 
 ## Logging
 
-- All HTTP requests are logged in Apache Combined Log Format via **morgan**.
+- HTTP requests are logged via **morgan** using a custom format that records method, path, status, and response size. Query strings are deliberately excluded from the log output to prevent sensitive parameters from appearing in logs or log aggregation systems.
 - Internal errors (stack traces, DB messages) are written to `stderr` via `console.error` only. API responses always return the generic string `"Internal server error"` for 500-class errors.
+
+## Dependencies
+
+- Excel parsing uses **exceljs**, an actively maintained library. The previously used `xlsx` (SheetJS Community Edition) was removed due to known prototype pollution and ReDoS vulnerabilities (CVE-2023-30533).
+- Dependencies should be audited regularly with `npm audit` and kept up to date.
 
 ## Database
 
@@ -77,7 +85,7 @@ Before going live, verify every item below.
 ### Recommended
 
 - [ ] Set up log aggregation (ship morgan logs to a SIEM or log management service)
-- [ ] Enable automatic dependency vulnerability scanning (GitHub Dependabot or equivalent)
+- [ ] Enable automatic dependency vulnerability scanning (GitHub Dependabot or `npm audit` in CI)
 - [ ] Rotate `JWT_SECRET` on a scheduled basis and invalidate all active sessions when doing so
 - [ ] Add a short-lived access token / refresh token pair to replace the 8-hour JWT if stricter session control is needed
 - [ ] Place a WAF (Web Application Firewall) in front of the backend for additional rate limiting and payload inspection
@@ -93,9 +101,19 @@ Before going live, verify every item below.
 | Single `ALLOWED_ORIGIN` | Cannot serve multiple domains without code change | Update CORS config to accept an array from env |
 | No HTTPS enforcement in-app | Relies entirely on reverse proxy | Document and enforce via deployment checklist |
 | morgan logs to stdout only | No persistent audit trail by default | Ship container logs to a log management service |
+| No pagination on list endpoints | Large datasets return full result sets | Add `LIMIT`/`OFFSET` or cursor-based pagination |
+| HTML templates not sanitized server-side | Uploaded templates are rendered as-is | Sanitize `html_content` with a server-side library (e.g. `sanitize-html`) on upload |
 
 ---
 
 ## Reporting a Vulnerability
 
 If you discover a security issue, please open a **private** GitHub issue or contact the repository owner directly. Do not disclose vulnerabilities publicly before they are resolved.
+
+When reporting, include:
+
+- A short description of the issue
+- Assessed impact
+- Reproduction steps
+- Affected route or file
+- Suggested remediation if available

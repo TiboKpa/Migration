@@ -103,7 +103,7 @@ Migration/
       context/           # Auth context (JWT)
       api/               # Axios client
       utils/
-        parseTrainingPathFlat.js  # xlsx import parser
+        parseTrainingPathFlat.js  # Training path import parser
     Dockerfile
     nginx.conf
   docker-compose.yml
@@ -139,7 +139,7 @@ The Training Matrix page (`/projects/:id/matrix`) has three tabs:
 - **Trainings** -- Playlists that mix curricula and standalone modules in a defined sequence.
   Trainings can be Primary (linked to a platform URL) or Complementary (reference list).
 
-You can import an existing training path from an `.xlsx` file using the **Import xlsx** button.
+You can import an existing training path from a JSON export using the **Import** button on each tab.
 
 ---
 
@@ -162,7 +162,10 @@ Project sub-resource endpoints additionally verify that the authenticated user i
 
 ### Rate Limiting
 
-Auth endpoints (`/api/auth/login`, `/api/auth/register`) are limited to **20 requests per 15-minute window** per IP. Exceeding the limit returns `429 Too Many Requests`.
+- All routes are subject to a **global limit of 300 requests per 15-minute window** per IP.
+- Auth endpoints (`/api/auth/login`, `/api/auth/register`) are additionally limited to **20 requests per 15-minute window** per IP.
+- The preview generation endpoint (`POST /api/projects/:id/generate/preview`) has a stricter limit of **30 requests per minute** per IP due to its database and rendering cost.
+- Exceeding any limit returns `429 Too Many Requests`.
 
 ---
 
