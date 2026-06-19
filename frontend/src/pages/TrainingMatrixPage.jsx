@@ -48,6 +48,21 @@ function matchesQuery(fields, q) {
   return fields.some(f => (f || '').toLowerCase().includes(q));
 }
 
+// Returns true if a fully-loaded playlist detail matches the query anywhere
+function detailMatchesQuery(d, q) {
+  if (!q || !d) return true;
+  if (matchesQuery([d.title, d.description, d.content_id], q)) return true;
+  return (d.ordered_items || []).some(item => {
+    if (matchesQuery([item.title, item.content_id, item.description], q)) return true;
+    if (item.kind === 'curriculum') {
+      return (item.modules || []).some(m =>
+        matchesQuery([m.module_title || m.title, m.module_content_id || m.content_id], q)
+      );
+    }
+    return false;
+  });
+}
+
 function Badge({ children, color = 'slate' }) {
   const colors = {
     blue:  'bg-blue-50 text-blue-700 border-blue-200',
@@ -475,7 +490,6 @@ function CurriculaTab({ projectId, search }) {
 
   const q = search.trim().toLowerCase();
 
-  // A curriculum matches if its own fields match OR any of its modules match
   const filtered = curricula.filter(cur => {
     if (matchesQuery([cur.title, cur.content_id, cur.link], q)) return true;
     return (cur.modules || []).some(m =>
@@ -533,7 +547,6 @@ function CurriculaTab({ projectId, search }) {
               .filter(m => matchesQuery([m.module_title || m.title, m.module_content_id || m.content_id], q))
               .map(m => m.module_id)
           );
-          // Auto-open if search found something inside child modules but not in header
           const shouldBeOpen    = openId === cur.id || (q && matchingModIds.size > 0);
 
           const addState   = addModState[cur.id] || {};
@@ -703,9 +716,24 @@ function TrainingsTab({ projectId, search }) {
   const [newItem, setNewItem]             = useState({ type: 'curriculum', id: '', sequence_order: '' });
   const { requestReorder, ToastUI }       = useReorderToast();
 
+  // Cache of fully-loaded playlist details keyed by id, used for deep search
+  const detailCache = useRef({});
+  const [cacheVersion, setCacheVersion] = useState(0); // bumped to trigger re-render after cache fills
+
   const loadList = useCallback(async () => {
     const r = await client.get(`/projects/${projectId}/playlists`);
-    setPlaylists(Array.isArray(r.data) ? r.data : []);
+    const list = Array.isArray(r.data) ? r.data : [];
+    setPlaylists(list);
+    // Fetch all details in parallel to power deep search in the sidebar
+    const results = await Promise.allSettled(
+      list.map(pl => client.get(`/projects/${projectId}/playlists/${pl.id}`))
+    );
+    results.forEach((res, i) => {
+      if (res.status === 'fulfilled') {
+        detailCache.current[list[i].id] = res.value.data;
+      }
+    });
+    setCacheVersion(v => v + 1);
   }, [projectId]);
 
   const loadDetail = useCallback(async (id) => {
@@ -715,6 +743,8 @@ function TrainingsTab({ projectId, search }) {
       client.get(`/projects/${projectId}/modules`),
       client.get(`/projects/${projectId}/curricula`),
     ]);
+    detailCache.current[id] = dRes.data;
+    setCacheVersion(v => v + 1);
     setDetail(dRes.data);
     setAllModules(Array.isArray(mRes.data) ? mRes.data : []);
     setAllCurricula(Array.isArray(cRes.data) ? cRes.data : []);
@@ -750,6 +780,7 @@ function TrainingsTab({ projectId, search }) {
   async function del() {
     if (!confirm('Delete this training and all its items?')) return;
     await client.delete(`/projects/${projectId}/playlists/${selected}`);
+    delete detailCache.current[selected];
     setSelected(null);
     setDetail(null);
     loadList();
@@ -759,6 +790,7 @@ function TrainingsTab({ projectId, search }) {
   async function delAll() {
     if (!confirm('Delete ALL trainings? This cannot be undone.')) return;
     await client.delete(`/projects/${projectId}/playlists`);
+    detailCache.current = {};
     setSelected(null);
     setDetail(null);
     loadList();
@@ -826,20 +858,19 @@ function TrainingsTab({ projectId, search }) {
 
   const q = search.trim().toLowerCase();
 
-  // Playlist matches if its own fields match OR any nested item/module title matches
+  // Deep match: use cached detail when available, fall back to shallow fields
   function playlistMatches(pl) {
     if (!q) return true;
-    if (matchesQuery([pl.title, pl.description, pl.content_id], q)) return true;
-    // We only have shallow data in the list; detail has nested items.
-    // For sidebar filtering, rely on title/description/content_id.
-    return false;
+    const cached = detailCache.current[pl.id];
+    if (cached) return detailMatchesQuery(cached, q);
+    // Cache not yet loaded: match on shallow fields only
+    return matchesQuery([pl.title, pl.description, pl.content_id], q);
   }
 
   const primary       = playlists.filter(p => !p.is_complementary && playlistMatches(p));
   const complementary = playlists.filter(p =>  p.is_complementary && playlistMatches(p));
   const orderedItems  = detail?.ordered_items || [];
 
-  // Compute which items / modules inside the open detail match the query
   function itemMatchesQuery(item) {
     if (!q) return false;
     if (matchesQuery([item.title, item.content_id, item.description], q)) return true;
