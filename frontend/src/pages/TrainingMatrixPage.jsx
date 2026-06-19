@@ -188,7 +188,7 @@ function DraggableList({ items, onReorder, renderItem }) {
 
 // -- Modules tab ---------------------------------------------------------------
 
-function ModulesTab({ projectId }) {
+function ModulesTab({ projectId, search }) {
   const [modules, setModules]     = useState([]);
   const [showAdd, setShowAdd]     = useState(false);
   const [form, setForm]           = useState({ title: '', content_id: '', duration_min: '', link: '' });
@@ -252,10 +252,15 @@ function ModulesTab({ projectId }) {
     });
   }
 
+  const q = search.toLowerCase();
+  const filtered = modules.filter(m => m.title.toLowerCase().includes(q));
+
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-semibold text-slate-700">{modules.length} module{modules.length !== 1 ? 's' : ''}</h3>
+        <h3 className="text-sm font-semibold text-slate-700">
+          {filtered.length}{filtered.length !== modules.length ? ` / ${modules.length}` : ''} module{modules.length !== 1 ? 's' : ''}
+        </h3>
         <div className="flex gap-2">
           {modules.length > 0 && (
             <button onClick={delAll}
@@ -285,13 +290,15 @@ function ModulesTab({ projectId }) {
         </FormBox>
       )}
 
-      {modules.length === 0 && !showAdd && (
-        <p className="text-xs text-slate-400 py-4 text-center">No modules yet.</p>
+      {filtered.length === 0 && !showAdd && (
+        <p className="text-xs text-slate-400 py-4 text-center">
+          {modules.length === 0 ? 'No modules yet.' : 'No modules match your search.'}
+        </p>
       )}
 
       <div className="border rounded-xl overflow-hidden bg-white">
-        {modules.map((mod, i) => (
-          <div key={mod.id} className={`px-4 py-3 ${i < modules.length - 1 ? 'border-b' : ''}`}>
+        {filtered.map((mod, i) => (
+          <div key={mod.id} className={`px-4 py-3 ${i < filtered.length - 1 ? 'border-b' : ''}`}>
             {editingId === mod.id ? (
               <div className="grid grid-cols-3 gap-3 items-end">
                 <div className="col-span-2">
@@ -338,7 +345,7 @@ function ModulesTab({ projectId }) {
 
 // -- Curricula tab -------------------------------------------------------------
 
-function CurriculaTab({ projectId }) {
+function CurriculaTab({ projectId, search }) {
   const [curricula, setCurricula]     = useState([]);
   const [allModules, setAllModules]   = useState([]);
   const [showAdd, setShowAdd]         = useState(false);
@@ -440,12 +447,15 @@ function CurriculaTab({ projectId }) {
     );
   }
 
+  const q = search.toLowerCase();
+  const filtered = curricula.filter(c => c.title.toLowerCase().includes(q));
+
   return (
     <div>
       {ToastUI}
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold text-slate-700">
-          {curricula.length} {curricula.length === 1 ? 'curriculum' : 'curricula'}
+          {filtered.length}{filtered.length !== curricula.length ? ` / ${curricula.length}` : ''} {curricula.length === 1 ? 'curriculum' : 'curricula'}
         </h3>
         <div className="flex gap-2">
           {curricula.length > 0 && (
@@ -475,12 +485,14 @@ function CurriculaTab({ projectId }) {
         </FormBox>
       )}
 
-      {curricula.length === 0 && !showAdd && (
-        <p className="text-xs text-slate-400 py-4 text-center">No curricula yet.</p>
+      {filtered.length === 0 && !showAdd && (
+        <p className="text-xs text-slate-400 py-4 text-center">
+          {curricula.length === 0 ? 'No curricula yet.' : 'No curricula match your search.'}
+        </p>
       )}
 
       <div className="flex flex-col gap-2">
-        {curricula.map(cur => {
+        {filtered.map(cur => {
           const isOpen     = openId === cur.id;
           const addState   = addModState[cur.id] || {};
           const usedIds    = new Set((cur.modules || []).map(m => m.module_id));
@@ -619,7 +631,7 @@ function CurriculaTab({ projectId }) {
 
 // -- Trainings tab -------------------------------------------------------------
 
-function TrainingsTab({ projectId }) {
+function TrainingsTab({ projectId, search }) {
   const [playlists, setPlaylists]         = useState([]);
   const [selected, setSelected]           = useState(null);
   const [detail, setDetail]               = useState(null);
@@ -755,8 +767,9 @@ function TrainingsTab({ projectId }) {
     );
   }
 
-  const primary       = playlists.filter(p => !p.is_complementary);
-  const complementary = playlists.filter(p => p.is_complementary);
+  const q = search.toLowerCase();
+  const primary       = playlists.filter(p => !p.is_complementary && p.title.toLowerCase().includes(q));
+  const complementary = playlists.filter(p =>  p.is_complementary && p.title.toLowerCase().includes(q));
   const orderedItems  = detail?.ordered_items || [];
 
   const standaloneModuleIds = new Set(
@@ -787,7 +800,7 @@ function TrainingsTab({ projectId }) {
               className="text-xs text-blue-600 hover:text-blue-800 font-medium">+ New</button>
           </div>
           <div className="border rounded-xl overflow-hidden bg-white">
-            {primary.length === 0 && <p className="text-xs text-slate-400 p-3">None yet.</p>}
+            {primary.length === 0 && <p className="text-xs text-slate-400 p-3">{search ? 'No match.' : 'None yet.'}</p>}
             {primary.map(pl => (
               <button key={pl.id} onClick={() => select(pl)}
                 className={`w-full text-left px-3 py-2 text-sm border-b last:border-b-0 transition-colors
@@ -798,10 +811,11 @@ function TrainingsTab({ projectId }) {
           </div>
         </div>
 
-        {complementary.length > 0 && (
+        {(complementary.length > 0 || (search && playlists.some(p => p.is_complementary))) && (
           <div>
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Complementary</p>
             <div className="border rounded-xl overflow-hidden bg-white">
+              {complementary.length === 0 && <p className="text-xs text-slate-400 p-3">No match.</p>}
               {complementary.map(pl => (
                 <button key={pl.id} onClick={() => select(pl)}
                   className={`w-full text-left px-3 py-2 text-sm border-b last:border-b-0 transition-colors
@@ -1044,9 +1058,16 @@ const TABS = ['Modules', 'Curricula', 'Trainings'];
 export default function TrainingMatrixPage() {
   const { projectId } = useParams();
   const [tab, setTab]                   = useState('Modules');
+  const [search, setSearch]             = useState('');
   const [importing, setImporting]       = useState(false);
   const [importResult, setImportResult] = useState(null);
   const importRef = useRef();
+
+  // Reset search when switching tabs
+  function handleTabChange(t) {
+    setTab(t);
+    setSearch('');
+  }
 
   async function handleImportFile(e) {
     const file = e.target.files[0];
@@ -1075,9 +1096,16 @@ export default function TrainingMatrixPage() {
       <div className="flex items-center justify-between mb-4 shrink-0">
         <h1 className="text-xl font-bold text-slate-800">Training Matrix</h1>
         <div className="flex gap-2 items-center">
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search..."
+            className="border rounded-lg px-3 py-1.5 text-sm text-slate-700 w-48 focus:outline-none focus:ring-2 focus:ring-blue-200"
+          />
           <button onClick={() => importRef.current.click()} disabled={importing}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
-            {importing ? 'Importing...' : 'Import xlsx'}
+            {importing ? 'Importing...' : 'Import Excel'}
           </button>
           <input ref={importRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportFile} />
         </div>
@@ -1091,7 +1119,7 @@ export default function TrainingMatrixPage() {
 
       <div className="flex border-b mb-4 shrink-0">
         {TABS.map(t => (
-          <button key={t} onClick={() => setTab(t)}
+          <button key={t} onClick={() => handleTabChange(t)}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors
               ${tab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
             {t}
@@ -1100,9 +1128,9 @@ export default function TrainingMatrixPage() {
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {tab === 'Modules'   && <ModulesTab   projectId={projectId} />}
-        {tab === 'Curricula' && <CurriculaTab projectId={projectId} />}
-        {tab === 'Trainings' && <TrainingsTab projectId={projectId} />}
+        {tab === 'Modules'   && <ModulesTab   projectId={projectId} search={search} />}
+        {tab === 'Curricula' && <CurriculaTab projectId={projectId} search={search} />}
+        {tab === 'Trainings' && <TrainingsTab projectId={projectId} search={search} />}
       </div>
     </div>
   );
