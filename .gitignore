@@ -1,4 +1,10 @@
 .env
+.env.*
+*.env
+*.pem
+*.key
+*.cert
+*.crt
 node_modules/
 dist/
 build/

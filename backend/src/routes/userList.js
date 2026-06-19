@@ -1,7 +1,30 @@
 const express = require('express');
+const { z } = require('zod');
 const pool = require('../db');
 const authenticate = require('../middleware/auth');
+const requireMember = require('../middleware/requireMember');
 const router = express.Router();
+
+const userSchema = z.object({
+  sesa_id: z.string().max(50).optional().nullable(),
+  first_name: z.string().max(100).optional().nullable(),
+  last_name: z.string().max(100).optional().nullable(),
+  mail: z.string().email().max(254).optional().nullable(),
+  pbom_champion: z.boolean().optional(),
+  manager_mail: z.string().email().max(254).optional().nullable(),
+  function: z.string().max(200).optional().nullable(),
+  role: z.string().max(200).optional().nullable(),
+  description: z.string().max(500).optional().nullable(),
+  recommended_training: z.string().max(500).optional().nullable(),
+  boc_admin: z.boolean().optional(),
+  boc_member: z.boolean().optional(),
+  eto_user: z.boolean().optional(),
+  team_manager: z.boolean().optional(),
+  windchill_access: z.boolean().optional(),
+  tlg_group: z.string().max(200).optional().nullable(),
+  status: z.string().max(50).optional().nullable(),
+  comments: z.string().max(1000).optional().nullable(),
+});
 
 const USER_FIELDS = [
   'sesa_id','first_name','last_name','mail','pbom_champion','manager_mail',
@@ -9,19 +32,23 @@ const USER_FIELDS = [
   'eto_user','team_manager','windchill_access','tlg_group','status','comments'
 ];
 
-router.get('/:projectId/users', authenticate, async (req, res) => {
+router.get('/:projectId/users', authenticate, requireMember(), async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT * FROM project_users WHERE project_id=$1 ORDER BY last_name, first_name',
       [req.params.projectId]
     );
     res.json(result.rows);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error('[GET users]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-// Create single user manually
-router.post('/:projectId/users', authenticate, async (req, res) => {
-  const u = req.body;
+router.post('/:projectId/users', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
+  const parsed = userSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
+  const u = parsed.data;
   try {
     const result = await pool.query(
       `INSERT INTO project_users
@@ -42,17 +69,26 @@ router.post('/:projectId/users', authenticate, async (req, res) => {
       ]
     );
     res.status(201).json(result.rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error('[POST users]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-// Bulk import
-router.post('/:projectId/users/import-json', authenticate, async (req, res) => {
+router.post('/:projectId/users/import-json', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
   const { users } = req.body;
   if (!Array.isArray(users) || users.length === 0) return res.status(400).json({ error: 'No users provided' });
+  if (users.length > 5000) return res.status(400).json({ error: 'Maximum 5000 users per import' });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     for (const u of users) {
+      const parsed = userSchema.safeParse(u);
+      if (!parsed.success) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `Invalid user entry: ${parsed.error.errors[0].message}` });
+      }
+      const d = parsed.data;
       await client.query(
         `INSERT INTO project_users
          (project_id, sesa_id, first_name, last_name, mail, pbom_champion, manager_mail,
@@ -71,13 +107,13 @@ router.post('/:projectId/users/import-json', authenticate, async (req, res) => {
            status=EXCLUDED.status, comments=EXCLUDED.comments, updated_at=NOW()`,
         [
           req.params.projectId,
-          u.sesa_id, u.first_name, u.last_name, u.mail,
-          u.pbom_champion || false, u.manager_mail,
-          u.function, u.role, u.description, u.recommended_training,
-          u.boc_admin || false, u.boc_member || false,
-          u.eto_user || false, u.team_manager || false,
-          u.windchill_access || false, u.tlg_group,
-          u.status || 'pending', u.comments
+          d.sesa_id, d.first_name, d.last_name, d.mail,
+          d.pbom_champion || false, d.manager_mail,
+          d.function, d.role, d.description, d.recommended_training,
+          d.boc_admin || false, d.boc_member || false,
+          d.eto_user || false, d.team_manager || false,
+          d.windchill_access || false, d.tlg_group,
+          d.status || 'pending', d.comments
         ]
       );
     }
@@ -85,32 +121,41 @@ router.post('/:projectId/users/import-json', authenticate, async (req, res) => {
     res.json({ imported: users.length });
   } catch (err) {
     await client.query('ROLLBACK');
-    res.status(500).json({ error: err.message });
+    console.error('[POST users/import-json]', err);
+    res.status(500).json({ error: 'Internal server error' });
   } finally { client.release(); }
 });
 
-// Update single user
-router.put('/:projectId/users/:userId', authenticate, async (req, res) => {
+router.put('/:projectId/users/:userId', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
   const fields = Object.fromEntries(Object.entries(req.body).filter(([k]) => USER_FIELDS.includes(k)));
   if (!Object.keys(fields).length) return res.status(400).json({ error: 'No valid fields' });
-  const keys = Object.keys(fields);
+  const partialSchema = userSchema.partial();
+  const parsed = partialSchema.safeParse(fields);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
+  const keys = Object.keys(parsed.data);
   const sets = keys.map((k, i) => `${k}=$${i + 1}`).join(', ');
-  const vals = keys.map(k => fields[k]);
+  const vals = keys.map(k => parsed.data[k]);
   try {
     const result = await pool.query(
       `UPDATE project_users SET ${sets}, updated_at=NOW() WHERE id=$${vals.length + 1} AND project_id=$${vals.length + 2} RETURNING *`,
       [...vals, req.params.userId, req.params.projectId]
     );
+    if (!result.rows[0]) return res.status(404).json({ error: 'Not found' });
     res.json(result.rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error('[PUT users/:userId]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-// Delete single user
-router.delete('/:projectId/users/:userId', authenticate, async (req, res) => {
+router.delete('/:projectId/users/:userId', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
   try {
     await pool.query('DELETE FROM project_users WHERE id=$1 AND project_id=$2', [req.params.userId, req.params.projectId]);
     res.json({ message: 'Deleted' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error('[DELETE users/:userId]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 module.exports = router;

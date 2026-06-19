@@ -177,8 +177,6 @@ CREATE TABLE IF NOT EXISTS role_matrix_dimensions (
 );
 
 -- Role matrix rows
--- recommended_training_id is a soft reference stored as plain INT (no FK)
--- so missing playlists never block table creation or row inserts.
 CREATE TABLE IF NOT EXISTS role_matrix (
   id SERIAL PRIMARY KEY,
   project_id INT REFERENCES projects(id) ON DELETE CASCADE,
@@ -188,8 +186,10 @@ CREATE TABLE IF NOT EXISTS role_matrix (
   concatenate TEXT NOT NULL,
   tlg_primary TEXT NOT NULL DEFAULT '',
   tlg_addon JSONB NOT NULL DEFAULT '[]',
+  na_tlg BOOLEAN NOT NULL DEFAULT false,
   recommended_training_id INT,
   complementary_items JSONB NOT NULL DEFAULT '[]',
+  na_training BOOLEAN NOT NULL DEFAULT false,
   primary_training_name TEXT NOT NULL DEFAULT '',
   complementary_names JSONB NOT NULL DEFAULT '[]',
   created_at TIMESTAMPTZ DEFAULT NOW(),

@@ -13,7 +13,9 @@ communication campaigns from configurable email templates.
 | Database | PostgreSQL |
 | Infrastructure | Docker Compose |
 
-## Getting started
+---
+
+## Getting Started
 
 ### 1. Clone the repository
 
@@ -26,10 +28,17 @@ cd Migration
 
 ```bash
 cp .env.example .env
-# Edit .env -- at minimum change DB_PASSWORD and JWT_SECRET
 ```
 
-See [.env.example](.env.example) for all available variables.
+Then open `.env` and set **all three required values** before starting:
+
+| Variable | Description |
+|---|---|
+| `DB_PASSWORD` | Strong password for PostgreSQL. The server refuses to start with the placeholder. |
+| `JWT_SECRET` | At least 32 random characters. Generate with `openssl rand -hex 32`. The server refuses to start with the placeholder. |
+| `ALLOWED_ORIGIN` | Exact URL of your frontend as seen by the browser (e.g. `https://app.example.com`). No trailing slash. |
+
+See [.env.example](.env.example) for all available variables and inline guidance.
 
 ### 3. Start with Docker Compose
 
@@ -41,7 +50,7 @@ docker compose up -d --build
 |---|---|
 | Frontend | http://localhost:3000 |
 | Backend API | http://localhost:4000 |
-| PostgreSQL | port 5432 (internal only) |
+| PostgreSQL | port 5432 (internal, not exposed) |
 
 ### 4. Development mode (without Docker)
 
@@ -61,7 +70,9 @@ npm run dev
 
 The frontend dev server proxies `/api` requests to `http://localhost:4000` automatically.
 
-## Project structure
+---
+
+## Project Structure
 
 ```
 Migration/
@@ -71,21 +82,24 @@ Migration/
     src/
       index.js           # Express entry point
       db.js              # Database connection pool
-      middleware/        # JWT authentication middleware
-      routes/            # API route handlers
-        modules.js
-        curricula.js
-        playlists.js     # Trainings (playlists of curricula / modules)
-        projects.js
-        users.js
+      migrate.js         # Schema migration runner
+      middleware/
+        auth.js          # JWT authentication (verifies token, fetches user from DB)
+        requireMember.js # Project membership guard (verifies user belongs to project)
+      routes/
+        auth.js          # POST /api/auth/register, /api/auth/login
+        projects.js      # CRUD /api/projects
+        userList.js      # /api/projects/:id/users
+        trainingMatrix.js
         templates.js
+        generation.js
         campaigns.js
+        roleMatrix.js
     Dockerfile
+    package.json
   frontend/
     src/
       pages/             # One file per page
-        TrainingMatrixPage.jsx   # Modules / Curricula / Trainings tabs
-        ...
       context/           # Auth context (JWT)
       api/               # Axios client
       utils/
@@ -94,7 +108,10 @@ Migration/
     nginx.conf
   docker-compose.yml
   .env.example
+  SECURITY.md
 ```
+
+---
 
 ## Pages
 
@@ -104,10 +121,13 @@ Migration/
 | Project Overview | `/projects/:id` | Summary and quick stats |
 | User List | `/projects/:id/users` | Manage project users |
 | Training Matrix | `/projects/:id/matrix` | Modules, curricula and trainings |
+| Role Matrix | `/projects/:id/role-matrix` | Function/role training assignment |
 | Templates | `/projects/:id/templates` | Email template editor |
 | Mail Generation | `/projects/:id/generate` | Generate campaign emails |
 | Campaign History | `/projects/:id/campaigns` | Sent campaign log |
 | Settings | `/projects/:id/settings` | Project settings |
+
+---
 
 ## Training Matrix
 
@@ -117,25 +137,56 @@ The Training Matrix page (`/projects/:id/matrix`) has three tabs:
 - **Curricula** -- Ordered collections of modules, each with a mandatory/optional requirement flag.
   Drag-and-drop reordering is supported. The header shows total mandatory and total duration.
 - **Trainings** -- Playlists that mix curricula and standalone modules in a defined sequence.
-  Trainings can be _Primary_ (linked to a platform URL) or _Complementary_ (reference list).
+  Trainings can be Primary (linked to a platform URL) or Complementary (reference list).
 
 You can import an existing training path from an `.xlsx` file using the **Import xlsx** button.
 
-## API overview
+---
+
+## API Overview
+
+All endpoints require a `Bearer <token>` JWT in the `Authorization` header, except `POST /api/auth/login` and `POST /api/auth/register`.
+
+Project sub-resource endpoints additionally verify that the authenticated user is a member of the requested project. Non-members receive `403 Forbidden`.
 
 | Resource | Base path |
 |---|---|
+| Auth | `/api/auth` |
 | Projects | `/api/projects` |
 | Users | `/api/projects/:id/users` |
-| Modules | `/api/projects/:id/modules` |
-| Curricula | `/api/projects/:id/curricula` |
-| Trainings | `/api/projects/:id/playlists` |
+| Training Matrix | `/api/projects/:id/` |
+| Role Matrix | `/api/projects/:id/role-matrix` |
 | Templates | `/api/projects/:id/templates` |
+| Generation | `/api/projects/:id/generate` |
 | Campaigns | `/api/projects/:id/campaigns` |
 
-All endpoints require a `Bearer` JWT token in the `Authorization` header except `/api/auth/login`.
+### Rate Limiting
+
+Auth endpoints (`/api/auth/login`, `/api/auth/register`) are limited to **20 requests per 15-minute window** per IP. Exceeding the limit returns `429 Too Many Requests`.
+
+---
 
 ## Authentication
 
-The app uses JWT-based authentication. On first run the database seed creates a default admin
-account -- check `backend/db/init.sql` for the default credentials and change them immediately.
+The app uses JWT-based authentication.
+
+- Tokens are signed with `JWT_SECRET` and expire after **8 hours**.
+- The token payload contains only the user ID. Email and name are fetched from the database on each request.
+- On first run, check `backend/db/init.sql` for any seed account and change its credentials immediately.
+
+---
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for the full security model, implemented controls, and deployment hardening checklist.
+
+---
+
+## Branch Strategy
+
+| Branch | Purpose |
+|---|---|
+| `main` | Stable, production-ready code |
+| `dev` | Active development and integration |
+
+Open pull requests against `dev`. Merge to `main` after review.
