@@ -237,7 +237,7 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide shrink-0">{title}</p>
           <input
             className="border rounded-lg px-2 py-1 text-xs flex-1 min-w-0"
-            placeholder={`Search...`}
+            placeholder="Search..."
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
@@ -537,44 +537,16 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
 }
 
 // ---------------------------------------------------------------------------
-// Status bar: row count + clickable chips
+// Status bar
 // ---------------------------------------------------------------------------
 const STATUS_CHIPS = [
-  {
-    status:   'empty',
-    bg:       'bg-red-50',
-    border:   'border-red-200',
-    text:     'text-red-600',
-    activeBg: 'bg-red-100',
-    label:    'No primary training set',
-  },
-  {
-    status:   'unresolved',
-    bg:       'bg-orange-50',
-    border:   'border-orange-200',
-    text:     'text-orange-600',
-    activeBg: 'bg-orange-100',
-    label:    'Primary training not matched',
-  },
-  {
-    status:   'comp-unresolved',
-    bg:       'bg-yellow-50',
-    border:   'border-yellow-200',
-    text:     'text-yellow-700',
-    activeBg: 'bg-yellow-100',
-    label:    'Complementary not matched',
-  },
-  {
-    status:   'na',
-    bg:       'bg-slate-100',
-    border:   'border-slate-300',
-    text:     'text-slate-500',
-    activeBg: 'bg-slate-200',
-    label:    'N/A',
-  },
+  { status: 'empty',            bg: 'bg-red-50',    border: 'border-red-200',    text: 'text-red-600',    activeBg: 'bg-red-100',    label: 'No primary training set' },
+  { status: 'unresolved',       bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-600', activeBg: 'bg-orange-100', label: 'Primary training not matched' },
+  { status: 'comp-unresolved',  bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', activeBg: 'bg-yellow-100', label: 'Complementary not matched' },
+  { status: 'na',               bg: 'bg-slate-100', border: 'border-slate-300',  text: 'text-slate-500',  activeBg: 'bg-slate-200',  label: 'N/A' },
 ];
 
-function StatusBar({ counts, activeStatus, onToggle, totalShown, totalAll }) {
+function StatusBar({ counts, activeStatus, onToggle, totalShown }) {
   return (
     <div className="flex items-center gap-2 flex-wrap mb-3 shrink-0">
       <span className="text-xs text-slate-400 shrink-0">{totalShown} rows</span>
@@ -584,15 +556,13 @@ function StatusBar({ counts, activeStatus, onToggle, totalShown, totalAll }) {
         const active = activeStatus === status;
         if (count === 0) return null;
         return (
-          <button
-            key={status}
-            onClick={() => onToggle(status)}
+          <button key={status} onClick={() => onToggle(status)}
             title={active ? 'Clear filter' : `Show only: ${label}`}
             className={`inline-flex items-center gap-1.5 border rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors ${border} ${text} ${
               active ? activeBg : bg
             } cursor-pointer`}
           >
-            <span className={`inline-block w-1.5 h-1.5 rounded-full bg-current ${ active ? '' : 'opacity-50'}`} />
+            <span className={`inline-block w-1.5 h-1.5 rounded-full bg-current ${active ? '' : 'opacity-50'}`} />
             {label}
             <span className="font-semibold">{count}</span>
             {active && <span className="ml-0.5 opacity-60">&times;</span>}
@@ -600,16 +570,26 @@ function StatusBar({ counts, activeStatus, onToggle, totalShown, totalAll }) {
         );
       })}
       {activeStatus !== null && (
-        <button
-          onClick={() => onToggle(null)}
-          className="text-xs text-slate-400 hover:text-slate-600 underline"
-        >
-          Reset
-        </button>
+        <button onClick={() => onToggle(null)} className="text-xs text-slate-400 hover:text-slate-600 underline">Reset</button>
       )}
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Column width constants (px) -- drives both <th> and <td> via table-layout:fixed
+// Complementary gets no fixed width: it fills whatever is left.
+// ---------------------------------------------------------------------------
+const COL = {
+  function:  160,
+  role:      160,
+  info:       32,
+  primary:   170,
+  // complementary: auto (remaining space)
+  tlgGroup:  148,
+  tlgAddon:  220,
+  action:     44,
+};
 
 // ---------------------------------------------------------------------------
 // Main page
@@ -775,16 +755,9 @@ export default function RoleMatrixPage() {
     return dimFilteredEntries.filter(e => rowStatus(e) === statusFilter);
   }, [dimFilteredEntries, statusFilter]);
 
-  function handleStatusToggle(status) {
-    setStatusFilter(prev => (prev === status ? null : status));
-  }
-
   const isDimPending = addDimMutation.isPending || removeDimMutation.isPending;
 
-  // Shared th style: shrink-to-content, no wrap
-  const thFit  = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
-  // Complementary th: grows to fill remaining space
-  const thComp = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap w-full';
+  const thBase = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide overflow-hidden text-ellipsis whitespace-nowrap';
 
   return (
     <div className="flex flex-col h-full">
@@ -868,55 +841,63 @@ export default function RoleMatrixPage() {
       <StatusBar
         counts={statusCounts}
         activeStatus={statusFilter}
-        onToggle={handleStatusToggle}
+        onToggle={s => setStatusFilter(prev => prev === s ? null : s)}
         totalShown={filteredEntries.length}
-        totalAll={dimFilteredEntries.length}
       />
 
-      {/* Table
-          - table-auto: columns size to content by default
-          - Function / Role / info / Primary / TLG cols: whitespace-nowrap = shrink-to-content
-          - Complementary: w-full so it absorbs the remaining space; internal overflow-x with nowrap chips
+      {/*
+        Table layout strategy:
+        - table-layout: fixed + width: 100% = table never exceeds container width
+        - Every column except Complementary has an explicit pixel width via <col>
+        - Complementary <col> has no width = it gets all remaining space
+        - Complementary <td> uses overflow-x: auto so chips scroll inside the cell
+        - The outer div is overflow-y: auto only (vertical scroll for rows)
       */}
-      <div className="overflow-auto rounded-xl border bg-white flex-1">
-        <table className="w-full text-sm border-collapse" style={{ tableLayout: 'auto' }}>
+      <div className="overflow-y-auto overflow-x-hidden rounded-xl border bg-white flex-1">
+        <table className="w-full text-sm border-collapse" style={{ tableLayout: 'fixed' }}>
+          <colgroup>
+            <col style={{ width: COL.function }} />
+            <col style={{ width: COL.role }} />
+            {dimensions.info_keys.map(k => <col key={k} style={{ width: COL.info }} />)}
+            <col style={{ width: COL.primary }} />
+            <col />{/* Complementary: takes all remaining width */}
+            <col style={{ width: COL.tlgGroup }} />
+            <col style={{ width: COL.tlgAddon }} />
+            <col style={{ width: COL.action }} />
+          </colgroup>
           <thead className="sticky top-0 z-10 bg-slate-50 border-b">
             <tr>
-              <th className={thFit}>Function</th>
-              <th className={thFit}>Role</th>
+              <th className={thBase}>Function</th>
+              <th className={thBase}>Role</th>
               {dimensions.info_keys.map(k => (
                 <th
                   key={k}
                   title={k}
-                  style={{ width: 32, minWidth: 32, maxWidth: 32 }}
-                  className="px-0 pb-2 pt-3 text-center align-bottom"
+                  className="px-0 pb-2 pt-3 text-center align-bottom overflow-hidden"
                 >
-                  <span
-                    style={{
-                      writingMode: 'vertical-rl',
-                      transform: 'rotate(180deg)',
-                      display: 'inline-block',
-                      maxHeight: 120,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                      fontSize: 10,
-                      fontWeight: 600,
-                      color: '#94a3b8',
-                      letterSpacing: '0.04em',
-                      textTransform: 'uppercase',
-                    }}
-                  >
+                  <span style={{
+                    writingMode: 'vertical-rl',
+                    transform: 'rotate(180deg)',
+                    display: 'inline-block',
+                    maxHeight: 120,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    fontSize: 10,
+                    fontWeight: 600,
+                    color: '#94a3b8',
+                    letterSpacing: '0.04em',
+                    textTransform: 'uppercase',
+                  }}>
                     {k}
                   </span>
                 </th>
               ))}
-              <th className={thFit}>Primary Training</th>
-              {/* Complementary: w-full makes it absorb all leftover space */}
-              <th className={thComp}>Complementary</th>
-              <th className={thFit}>TLG Group</th>
-              <th className={thFit}>TLG Add-on</th>
-              <th className="px-2 py-2 whitespace-nowrap" style={{ width: 40 }}></th>
+              <th className={thBase}>Primary Training</th>
+              <th className={thBase}>Complementary</th>
+              <th className={thBase}>TLG Group</th>
+              <th className={thBase}>TLG Add-on</th>
+              <th className="px-2 py-2" />
             </tr>
           </thead>
           <tbody>
@@ -937,23 +918,17 @@ export default function RoleMatrixPage() {
               const rec       = profiles.find(p => p.id === entry.recommended_training_id);
               const compItems = Array.isArray(entry.complementary_items) ? entry.complementary_items : [];
               return (
-                <tr
-                  key={entry.id}
-                  className={`border-b ${ROW_BG[status]} ${ROW_HOVER[status]}`}
-                >
-                  {/* Shrink-to-content cells */}
-                  <td className="px-3 py-2 text-xs font-medium text-slate-700 whitespace-nowrap">{entry.function}</td>
-                  <td className="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">{entry.role}</td>
+                <tr key={entry.id} className={`border-b ${ROW_BG[status]} ${ROW_HOVER[status]}`}>
+                  <td className="px-3 py-2 text-xs font-medium text-slate-700 overflow-hidden text-ellipsis whitespace-nowrap">{entry.function}</td>
+                  <td className="px-3 py-2 text-xs text-slate-600 overflow-hidden text-ellipsis whitespace-nowrap">{entry.role}</td>
                   {dimensions.info_keys.map(k => (
-                    <td key={k} className="py-2 text-center" style={{ width: 32, minWidth: 32, maxWidth: 32 }}>
-                      <span className={`text-xs font-medium ${
-                        entry.additional_info?.[k] ? 'text-blue-600' : 'text-slate-300'
-                      }`}>
+                    <td key={k} className="py-2 text-center">
+                      <span className={`text-xs font-medium ${entry.additional_info?.[k] ? 'text-blue-600' : 'text-slate-300'}`}>
                         {entry.additional_info?.[k] ? 'Y' : 'N'}
                       </span>
                     </td>
                   ))}
-                  <td className="px-3 py-2 whitespace-nowrap">
+                  <td className="px-3 py-2 overflow-hidden text-ellipsis whitespace-nowrap">
                     {entry.na_training
                       ? <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>
                       : rec
@@ -962,12 +937,17 @@ export default function RoleMatrixPage() {
                           ? <span className="text-xs text-amber-600 font-medium" title="Not yet matched">{entry.primary_training_name}</span>
                           : <span className="text-xs text-slate-300">-</span>}
                   </td>
-                  {/* Complementary: fills remaining space, chips scroll horizontally when overflow */}
-                  <td className="px-2 py-2" style={{ minWidth: 180 }}>
+                  {/*
+                    Complementary cell:
+                    - overflow-x: auto  => chips scroll horizontally inside this cell
+                    - The column width is "whatever is left" thanks to the bare <col />
+                    - The table is fixed-layout so this cell CANNOT push the table wider
+                  */}
+                  <td className="px-2 py-2" style={{ overflow: 'hidden' }}>
                     {entry.na_training || compItems.length === 0
                       ? <span className="text-xs text-slate-300">-</span>
                       : (
-                        <div className="flex gap-1 items-center overflow-x-auto" style={{ whiteSpace: 'nowrap' }}>
+                        <div style={{ overflowX: 'auto', whiteSpace: 'nowrap' }} className="flex gap-1 items-center">
                           {compItems.filter(i => i.type !== 'unresolved').map(i => (
                             <span key={`${i.type}-${i.id}`} className="inline-flex shrink-0 items-center text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">
                               {i.title}
@@ -983,19 +963,19 @@ export default function RoleMatrixPage() {
                       )
                     }
                   </td>
-                  <td className="px-3 py-2 whitespace-nowrap">
+                  <td className="px-3 py-2 overflow-hidden text-ellipsis whitespace-nowrap">
                     {entry.na_tlg
                       ? <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>
                       : entry.tlg_primary
                         ? <span className="text-xs font-medium text-slate-800">{entry.tlg_primary}</span>
                         : <span className="text-xs text-slate-300">-</span>}
                   </td>
-                  <td className="px-3 py-2 whitespace-nowrap">
+                  <td className="px-3 py-2 overflow-hidden">
                     {entry.na_tlg
                       ? <span className="text-xs text-slate-300">-</span>
-                      : <div className="flex gap-1">
+                      : <div className="flex gap-1 overflow-x-auto">
                           {(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []).map(a => (
-                            <span key={a} className="text-[10px] bg-teal-50 text-teal-700 border border-teal-100 rounded px-1.5 py-0.5 whitespace-nowrap">{a}</span>
+                            <span key={a} className="text-[10px] bg-teal-50 text-teal-700 border border-teal-100 rounded px-1.5 py-0.5 whitespace-nowrap shrink-0">{a}</span>
                           ))}
                         </div>}
                   </td>
