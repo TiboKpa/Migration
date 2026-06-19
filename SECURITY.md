@@ -72,7 +72,6 @@ Before going live, verify every item below.
 - [ ] `VITE_API_URL` points to the HTTPS backend URL
 - [ ] A TLS-terminating reverse proxy (nginx, Caddy, or equivalent) is placed in front of both services
 - [ ] Port 5432 is blocked at the firewall level
-- [ ] The repository is set to **private** on GitHub
 - [ ] Default seed credentials in `backend/db/init.sql` have been changed or removed
 
 ### Recommended
