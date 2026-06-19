@@ -97,13 +97,15 @@ router.put('/:id', authenticate, async (req, res) => {
 
 router.delete('/:id', authenticate, async (req, res) => {
   try {
-    await pool.query(
+    const result = await pool.query(
       `UPDATE projects SET status='archived', updated_at=NOW()
        WHERE id=$1 AND id IN (
          SELECT project_id FROM project_members WHERE user_id=$2 AND role='owner'
        )`,
       [req.params.id, req.user.id]
     );
+    // Return 403 if the user is not the owner of this project
+    if (result.rowCount === 0) return res.status(403).json({ error: 'Forbidden or not found' });
     res.json({ message: 'Project archived' });
   } catch (err) {
     console.error('[DELETE /projects/:id]', err);

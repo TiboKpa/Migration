@@ -1,9 +1,19 @@
 const express = require('express');
 const { z } = require('zod');
+const rateLimit = require('express-rate-limit');
 const pool = require('../db');
 const authenticate = require('../middleware/auth');
 const requireMember = require('../middleware/requireMember');
 const router = express.Router();
+
+// -- Tighter rate limit on the expensive preview endpoint -------------------
+const previewLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many preview requests, please slow down' },
+});
 
 const previewSchema = z.object({
   user_id: z.number().int().positive(),
@@ -25,7 +35,7 @@ function renderTemplate(html, data) {
   }, html);
 }
 
-router.post('/:projectId/generate/preview', authenticate, requireMember(), async (req, res) => {
+router.post('/:projectId/generate/preview', authenticate, requireMember(), previewLimiter, async (req, res) => {
   const parsed = previewSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
   const { user_id } = parsed.data;

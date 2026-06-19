@@ -15,6 +15,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const rateLimit = require('express-rate-limit');
 const migrate = require('./migrate');
 
 const authRoutes = require('./routes/auth');
@@ -40,13 +41,25 @@ app.use(helmet());
 const allowedOrigin = process.env.ALLOWED_ORIGIN || 'http://localhost:3000';
 app.use(cors({
   origin: allowedOrigin,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
 }));
 
-// -- Request logging --------------------------------------------------------
-app.use(morgan('combined'));
+// -- Request logging (path only, no query string to avoid leaking params) ---
+morgan.token('path-only', (req) => req.path);
+app.use(morgan(':remote-addr - :remote-user [:date[clf]] ":method :path-only HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent"'));
+
+// -- Global rate limiter ----------------------------------------------------
+// Applied before all routes. Authenticated or not, every IP is capped.
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later' },
+});
+app.use(globalLimiter);
 
 // -- Body parsing -----------------------------------------------------------
 app.use(express.json({ limit: '10mb' }));
