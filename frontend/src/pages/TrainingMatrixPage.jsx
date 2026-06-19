@@ -28,6 +28,26 @@ function curriculumDurationParts(modules) {
   };
 }
 
+// -- Highlight matching text ---------------------------------------------------
+function Highlight({ text, query }) {
+  if (!query || !text) return <>{text}</>;
+  const idx = text.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, idx)}
+      <mark className="bg-yellow-200 text-slate-900 rounded-sm px-0">{text.slice(idx, idx + query.length)}</mark>
+      {text.slice(idx + query.length)}
+    </>
+  );
+}
+
+// -- Search helpers ------------------------------------------------------------
+function matchesQuery(fields, q) {
+  if (!q) return true;
+  return fields.some(f => (f || '').toLowerCase().includes(q));
+}
+
 function Badge({ children, color = 'slate' }) {
   const colors = {
     blue:  'bg-blue-50 text-blue-700 border-blue-200',
@@ -252,8 +272,10 @@ function ModulesTab({ projectId, search }) {
     });
   }
 
-  const q = search.toLowerCase();
-  const filtered = modules.filter(m => m.title.toLowerCase().includes(q));
+  const q = search.trim().toLowerCase();
+  const filtered = modules.filter(m =>
+    matchesQuery([m.title, m.content_id, m.link], q)
+  );
 
   return (
     <div>
@@ -319,8 +341,12 @@ function ModulesTab({ projectId, search }) {
             ) : (
               <div className="flex items-center justify-between gap-4">
                 <div className="flex items-center gap-2 flex-1 min-w-0">
-                  <span className="text-sm text-slate-800 font-medium truncate">{mod.title}</span>
-                  {mod.content_id && <Badge color="blue">{mod.content_id}</Badge>}
+                  <span className="text-sm text-slate-800 font-medium truncate">
+                    <Highlight text={mod.title} query={q} />
+                  </span>
+                  {mod.content_id && (
+                    <Badge color="blue"><Highlight text={mod.content_id} query={q} /></Badge>
+                  )}
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                   {mod.duration_min > 0 && (
@@ -447,8 +473,15 @@ function CurriculaTab({ projectId, search }) {
     );
   }
 
-  const q = search.toLowerCase();
-  const filtered = curricula.filter(c => c.title.toLowerCase().includes(q));
+  const q = search.trim().toLowerCase();
+
+  // A curriculum matches if its own fields match OR any of its modules match
+  const filtered = curricula.filter(cur => {
+    if (matchesQuery([cur.title, cur.content_id, cur.link], q)) return true;
+    return (cur.modules || []).some(m =>
+      matchesQuery([m.module_title || m.title, m.module_content_id || m.content_id], q)
+    );
+  });
 
   return (
     <div>
@@ -493,15 +526,25 @@ function CurriculaTab({ projectId, search }) {
 
       <div className="flex flex-col gap-2">
         {filtered.map(cur => {
-          const isOpen     = openId === cur.id;
+          const sortedMods      = [...(cur.modules || [])].sort((a, b) => a.sequence_order - b.sequence_order);
+          const curHeaderMatch  = matchesQuery([cur.title, cur.content_id, cur.link], q);
+          const matchingModIds  = new Set(
+            sortedMods
+              .filter(m => matchesQuery([m.module_title || m.title, m.module_content_id || m.content_id], q))
+              .map(m => m.module_id)
+          );
+          // Auto-open if search found something inside child modules but not in header
+          const shouldBeOpen    = openId === cur.id || (q && matchingModIds.size > 0);
+
           const addState   = addModState[cur.id] || {};
           const usedIds    = new Set((cur.modules || []).map(m => m.module_id));
           const available  = allModules.filter(m => !usedIds.has(m.id));
           const maxOrder   = (cur.modules || []).reduce((mx, m) => Math.max(mx, m.sequence_order || 0), 0);
-          const sortedMods = [...(cur.modules || [])].sort((a, b) => a.sequence_order - b.sequence_order);
 
           return (
-            <div key={cur.id} className="border rounded-xl overflow-hidden bg-white">
+            <div key={cur.id} className={`border rounded-xl overflow-hidden bg-white ${
+              q && (curHeaderMatch || matchingModIds.size > 0) ? 'ring-1 ring-yellow-300' : ''
+            }`}>
               <div className="flex items-center justify-between px-4 py-3 bg-slate-50">
                 {editingId === cur.id ? (
                   <div className="flex flex-col gap-2 flex-1">
@@ -533,11 +576,18 @@ function CurriculaTab({ projectId, search }) {
                   </div>
                 ) : (
                   <>
-                    <button onClick={() => setOpenId(isOpen ? null : cur.id)}
+                    <button onClick={() => setOpenId(shouldBeOpen && openId === cur.id ? null : cur.id)}
                       className="flex items-center gap-2 flex-1 text-left min-w-0 truncate">
-                      <span className="text-sm font-semibold text-slate-800 truncate">{cur.title}</span>
-                      {cur.content_id && <Badge color="blue">{cur.content_id}</Badge>}
+                      <span className="text-sm font-semibold text-slate-800 truncate">
+                        <Highlight text={cur.title} query={q} />
+                      </span>
+                      {cur.content_id && (
+                        <Badge color="blue"><Highlight text={cur.content_id} query={q} /></Badge>
+                      )}
                       <Badge color="slate">{sortedMods.length} module{sortedMods.length !== 1 ? 's' : ''}</Badge>
+                      {q && matchingModIds.size > 0 && !curHeaderMatch && (
+                        <span className="text-xs text-yellow-600 font-medium">{matchingModIds.size} match{matchingModIds.size > 1 ? 'es' : ''} inside</span>
+                      )}
                     </button>
                     <div className="flex items-center gap-3 shrink-0 ml-3">
                       <DurationInline modules={sortedMods} />
@@ -553,7 +603,7 @@ function CurriculaTab({ projectId, search }) {
                 )}
               </div>
 
-              {isOpen && (
+              {shouldBeOpen && (
                 <div className="px-4 py-3">
                   {sortedMods.length === 0 && (
                     <p className="text-xs text-slate-400 mb-3">No modules yet.</p>
@@ -562,29 +612,36 @@ function CurriculaTab({ projectId, search }) {
                   <DraggableList
                     items={sortedMods.map(m => ({ id: m.module_id, ...m }))}
                     onReorder={(fromIdx, toIdx) => handleCurriculumModuleReorder(cur, fromIdx, toIdx)}
-                    renderItem={(item, idx) => (
-                      <div className={`flex items-center justify-between py-1.5 ${
-                        idx < sortedMods.length - 1 ? 'border-b' : ''
-                      }`}>
-                        <div className="flex items-center gap-2 flex-1 min-w-0">
-                          <span className="text-slate-300 cursor-grab select-none px-1" title="Drag to reorder">&#8597;</span>
-                          <span className="text-xs text-slate-400 w-5 text-right shrink-0">{item.sequence_order}</span>
-                          <span className="text-sm text-slate-700 truncate">{item.module_title || item.title}</span>
-                          {item.module_content_id && <Badge color="blue">{item.module_content_id}</Badge>}
+                    renderItem={(item, idx) => {
+                      const modMatch = q && matchingModIds.has(item.module_id);
+                      return (
+                        <div className={`flex items-center justify-between py-1.5 ${
+                          idx < sortedMods.length - 1 ? 'border-b' : ''
+                        } ${modMatch ? 'bg-yellow-50 -mx-4 px-4' : ''}`}>
+                          <div className="flex items-center gap-2 flex-1 min-w-0">
+                            <span className="text-slate-300 cursor-grab select-none px-1" title="Drag to reorder">&#8597;</span>
+                            <span className="text-xs text-slate-400 w-5 text-right shrink-0">{item.sequence_order}</span>
+                            <span className="text-sm text-slate-700 truncate">
+                              <Highlight text={item.module_title || item.title} query={q} />
+                            </span>
+                            {item.module_content_id && (
+                              <Badge color="blue"><Highlight text={item.module_content_id} query={q} /></Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {item.duration_min > 0 && (
+                              <>
+                                <span className="text-xs text-slate-400">{durationLabel(item.duration_min)}</span>
+                                <Sep />
+                              </>
+                            )}
+                            <Badge color={item.requirement === 'mandatory' ? 'green' : 'amber'}>{item.requirement}</Badge>
+                            <button onClick={() => removeModuleFromCurriculum(cur.id, item.module_id)}
+                              className="text-xs text-red-300 hover:text-red-500">Remove</button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          {item.duration_min > 0 && (
-                            <>
-                              <span className="text-xs text-slate-400">{durationLabel(item.duration_min)}</span>
-                              <Sep />
-                            </>
-                          )}
-                          <Badge color={item.requirement === 'mandatory' ? 'green' : 'amber'}>{item.requirement}</Badge>
-                          <button onClick={() => removeModuleFromCurriculum(cur.id, item.module_id)}
-                            className="text-xs text-red-300 hover:text-red-500">Remove</button>
-                        </div>
-                      </div>
-                    )}
+                      );
+                    }}
                   />
 
                   <div className="mt-3 pt-3 border-t flex items-end gap-2">
@@ -767,10 +824,37 @@ function TrainingsTab({ projectId, search }) {
     );
   }
 
-  const q = search.toLowerCase();
-  const primary       = playlists.filter(p => !p.is_complementary && p.title.toLowerCase().includes(q));
-  const complementary = playlists.filter(p =>  p.is_complementary && p.title.toLowerCase().includes(q));
+  const q = search.trim().toLowerCase();
+
+  // Playlist matches if its own fields match OR any nested item/module title matches
+  function playlistMatches(pl) {
+    if (!q) return true;
+    if (matchesQuery([pl.title, pl.description, pl.content_id], q)) return true;
+    // We only have shallow data in the list; detail has nested items.
+    // For sidebar filtering, rely on title/description/content_id.
+    return false;
+  }
+
+  const primary       = playlists.filter(p => !p.is_complementary && playlistMatches(p));
+  const complementary = playlists.filter(p =>  p.is_complementary && playlistMatches(p));
   const orderedItems  = detail?.ordered_items || [];
+
+  // Compute which items / modules inside the open detail match the query
+  function itemMatchesQuery(item) {
+    if (!q) return false;
+    if (matchesQuery([item.title, item.content_id, item.description], q)) return true;
+    if (item.kind === 'curriculum') {
+      return (item.modules || []).some(m =>
+        matchesQuery([m.module_title || m.title, m.module_content_id || m.content_id], q)
+      );
+    }
+    return false;
+  }
+
+  function moduleInItemMatchesQuery(mod) {
+    if (!q) return false;
+    return matchesQuery([mod.module_title || mod.title, mod.module_content_id || mod.content_id], q);
+  }
 
   const standaloneModuleIds = new Set(
     orderedItems.filter(i => i.kind === 'module').map(i => i.module_id)
@@ -805,7 +889,7 @@ function TrainingsTab({ projectId, search }) {
               <button key={pl.id} onClick={() => select(pl)}
                 className={`w-full text-left px-3 py-2 text-sm border-b last:border-b-0 transition-colors
                   ${selected === pl.id ? 'bg-blue-50 text-blue-700 font-semibold' : 'text-slate-700 hover:bg-slate-50'}`}>
-                {pl.title}
+                <Highlight text={pl.title} query={q} />
               </button>
             ))}
           </div>
@@ -820,7 +904,7 @@ function TrainingsTab({ projectId, search }) {
                 <button key={pl.id} onClick={() => select(pl)}
                   className={`w-full text-left px-3 py-2 text-sm border-b last:border-b-0 transition-colors
                     ${selected === pl.id ? 'bg-blue-50 text-blue-700 font-semibold' : 'text-slate-700 hover:bg-slate-50'}`}>
-                  {pl.title}
+                  <Highlight text={pl.title} query={q} />
                 </button>
               ))}
             </div>
@@ -878,11 +962,19 @@ function TrainingsTab({ projectId, search }) {
               <div className="flex justify-between items-start">
                 <div>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <h2 className="text-lg font-bold text-slate-800">{detail.title}</h2>
+                    <h2 className="text-lg font-bold text-slate-800">
+                      <Highlight text={detail.title} query={q} />
+                    </h2>
                     {detail.is_complementary ? <Badge color="amber">Complementary</Badge> : <Badge color="green">Primary</Badge>}
-                    {detail.content_id && <Badge color="blue">{detail.content_id}</Badge>}
+                    {detail.content_id && (
+                      <Badge color="blue"><Highlight text={detail.content_id} query={q} /></Badge>
+                    )}
                   </div>
-                  {detail.description && <p className="text-sm text-slate-500 mt-1 max-w-xl">{detail.description}</p>}
+                  {detail.description && (
+                    <p className="text-sm text-slate-500 mt-1 max-w-xl">
+                      <Highlight text={detail.description} query={q} />
+                    </p>
+                  )}
                   <div className="flex gap-3 mt-1 items-center flex-wrap">
                     {detail.total_minutes > 0 && <span className="text-xs text-slate-400">{durationLabel(detail.total_minutes)} mandatory</span>}
                     {detail.link && <a href={detail.link} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">Open link</a>}
@@ -909,8 +1001,10 @@ function TrainingsTab({ projectId, search }) {
                     <div key={ref.id}
                       className={`flex items-center gap-3 px-4 py-2.5 ${idx < detail.complementary_refs.length - 1 ? 'border-b' : ''}`}>
                       <span className="text-xs text-slate-400 w-5 text-right shrink-0">{ref.sequence_order}</span>
-                      <span className="text-sm text-slate-700 flex-1 truncate">{ref.title}</span>
-                      {ref.content_id && <Badge color="blue">{ref.content_id}</Badge>}
+                      <span className="text-sm text-slate-700 flex-1 truncate">
+                        <Highlight text={ref.title} query={q} />
+                      </span>
+                      {ref.content_id && <Badge color="blue"><Highlight text={ref.content_id} query={q} /></Badge>}
                       {ref.link && <a href={ref.link} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">Link</a>}
                     </div>
                   ))}
@@ -964,17 +1058,24 @@ function TrainingsTab({ projectId, search }) {
                   items={orderedItems.map(i => ({ id: i.playlist_item_id, ...i }))}
                   onReorder={handlePlaylistItemReorder}
                   renderItem={(item) => {
+                    const itemMatch = itemMatchesQuery(item);
                     if (item.kind === 'curriculum') {
                       const sortedMods = [...(item.modules || [])].sort((a, b) => a.sequence_order - b.sequence_order);
                       const hasDuration = !!curriculumDurationParts(sortedMods).mandLabel;
                       return (
-                        <details className="border rounded-xl overflow-hidden mb-1" open>
+                        <details className={`border rounded-xl overflow-hidden mb-1 ${
+                          itemMatch ? 'ring-1 ring-yellow-300' : ''
+                        }`} open>
                           <summary className="flex items-center justify-between px-4 py-2.5 bg-slate-50 cursor-pointer list-none">
                             <div className="flex items-center gap-2 flex-1 min-w-0">
                               <span className="text-slate-300 cursor-grab select-none px-1" title="Drag to reorder">&#8597;</span>
                               <span className="text-xs text-slate-400 w-5 text-right shrink-0">{item.sequence_order}</span>
-                              <span className="text-sm font-semibold text-slate-700 truncate">{item.title}</span>
-                              {item.content_id && <Badge color="blue">{item.content_id}</Badge>}
+                              <span className="text-sm font-semibold text-slate-700 truncate">
+                                <Highlight text={item.title} query={q} />
+                              </span>
+                              {item.content_id && (
+                                <Badge color="blue"><Highlight text={item.content_id} query={q} /></Badge>
+                              )}
                               <Badge color="slate">{sortedMods.length} module{sortedMods.length !== 1 ? 's' : ''}</Badge>
                             </div>
                             <div className="flex items-center gap-3 shrink-0 ml-3">
@@ -991,39 +1092,52 @@ function TrainingsTab({ projectId, search }) {
                             <DraggableList
                               items={sortedMods.map(m => ({ id: m.module_id, ...m }))}
                               onReorder={(fi, ti) => handleCurriculumModuleReorderInPlaylist(item, fi, ti)}
-                              renderItem={(mod, idx) => (
-                                <div className={`flex items-center justify-between py-1.5 ${
-                                  idx < sortedMods.length - 1 ? 'border-b' : ''
-                                }`}>
-                                  <div className="flex items-center gap-2 flex-1 min-w-0">
-                                    <span className="text-slate-300 cursor-grab select-none px-1" title="Drag to reorder">&#8597;</span>
-                                    <span className="text-xs text-slate-400 w-5 text-right shrink-0">{mod.sequence_order}</span>
-                                    <span className="text-sm text-slate-700 truncate">{mod.module_title || mod.title}</span>
-                                    {mod.module_content_id && <Badge color="blue">{mod.module_content_id}</Badge>}
+                              renderItem={(mod, idx) => {
+                                const modMatch = moduleInItemMatchesQuery(mod);
+                                return (
+                                  <div className={`flex items-center justify-between py-1.5 ${
+                                    idx < sortedMods.length - 1 ? 'border-b' : ''
+                                  } ${modMatch ? 'bg-yellow-50 -mx-4 px-4' : ''}`}>
+                                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                                      <span className="text-slate-300 cursor-grab select-none px-1" title="Drag to reorder">&#8597;</span>
+                                      <span className="text-xs text-slate-400 w-5 text-right shrink-0">{mod.sequence_order}</span>
+                                      <span className="text-sm text-slate-700 truncate">
+                                        <Highlight text={mod.module_title || mod.title} query={q} />
+                                      </span>
+                                      {mod.module_content_id && (
+                                        <Badge color="blue"><Highlight text={mod.module_content_id} query={q} /></Badge>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      {mod.duration_min > 0 && (
+                                        <>
+                                          <span className="text-xs text-slate-400">{durationLabel(mod.duration_min)}</span>
+                                          <Sep />
+                                        </>
+                                      )}
+                                      <Badge color={mod.requirement === 'mandatory' ? 'green' : 'amber'}>{mod.requirement}</Badge>
+                                    </div>
                                   </div>
-                                  <div className="flex items-center gap-2 shrink-0">
-                                    {mod.duration_min > 0 && (
-                                      <>
-                                        <span className="text-xs text-slate-400">{durationLabel(mod.duration_min)}</span>
-                                        <Sep />
-                                      </>
-                                    )}
-                                    <Badge color={mod.requirement === 'mandatory' ? 'green' : 'amber'}>{mod.requirement}</Badge>
-                                  </div>
-                                </div>
-                              )}
+                                );
+                              }}
                             />
                           </div>
                         </details>
                       );
                     }
                     return (
-                      <div className="border rounded-xl bg-white flex items-center justify-between px-4 py-2.5 mb-1">
+                      <div className={`border rounded-xl bg-white flex items-center justify-between px-4 py-2.5 mb-1 ${
+                        itemMatch ? 'ring-1 ring-yellow-300 bg-yellow-50' : ''
+                      }`}>
                         <div className="flex items-center gap-2 flex-1 min-w-0">
                           <span className="text-slate-300 cursor-grab select-none px-1" title="Drag to reorder">&#8597;</span>
                           <span className="text-xs text-slate-400 w-5 text-right shrink-0">{item.sequence_order}</span>
-                          <span className="text-sm text-slate-700 truncate">{item.title}</span>
-                          {item.content_id && <Badge color="blue">{item.content_id}</Badge>}
+                          <span className="text-sm text-slate-700 truncate">
+                            <Highlight text={item.title} query={q} />
+                          </span>
+                          {item.content_id && (
+                            <Badge color="blue"><Highlight text={item.content_id} query={q} /></Badge>
+                          )}
                           <Badge color="slate">Module</Badge>
                         </div>
                         <div className="flex items-center gap-3 shrink-0">
@@ -1063,7 +1177,6 @@ export default function TrainingMatrixPage() {
   const [importResult, setImportResult] = useState(null);
   const importRef = useRef();
 
-  // Reset search when switching tabs
   function handleTabChange(t) {
     setTab(t);
     setSearch('');
