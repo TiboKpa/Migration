@@ -118,6 +118,66 @@ const ROW_HOVER = {
 };
 
 // ---------------------------------------------------------------------------
+// Sort icon (inline SVG, no dependency)
+// ---------------------------------------------------------------------------
+function SortIcon({ dir }) {
+  // dir: null = unsorted, 'asc' = A-Z, 'desc' = Z-A
+  const top    = dir === 'asc'  ? '#3b82f6' : '#cbd5e1';
+  const bottom = dir === 'desc' ? '#3b82f6' : '#cbd5e1';
+  return (
+    <svg width="10" height="12" viewBox="0 0 10 12" fill="none" className="inline-block shrink-0">
+      <path d="M5 1L2 4h6L5 1Z" fill={top} />
+      <path d="M5 11L8 8H2l3 3Z" fill={bottom} />
+    </svg>
+  );
+}
+
+// Sortable table-header button
+function SortTh({ label, colKey, sortState, onSort, className, children, vertical }) {
+  const dir = sortState.col === colKey ? sortState.dir : null;
+  if (vertical) {
+    return (
+      <th
+        title={label}
+        className="px-0 pb-2 pt-3 text-center align-bottom overflow-hidden cursor-pointer select-none group"
+        onClick={() => onSort(colKey)}
+      >
+        <span style={{
+          writingMode: 'vertical-rl',
+          transform: 'rotate(180deg)',
+          display: 'inline-block',
+          maxHeight: 120,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          fontSize: 10,
+          fontWeight: 600,
+          color: dir ? '#3b82f6' : '#94a3b8',
+          letterSpacing: '0.04em',
+          textTransform: 'uppercase',
+        }}>
+          {label}
+        </span>
+        <span className="block mt-0.5">
+          <SortIcon dir={dir} />
+        </span>
+      </th>
+    );
+  }
+  return (
+    <th
+      className={`${className} cursor-pointer select-none group`}
+      onClick={() => onSort(colKey)}
+    >
+      <span className="inline-flex items-center gap-1">
+        <span className={dir ? 'text-blue-600' : ''}>{children || label}</span>
+        <SortIcon dir={dir} />
+      </span>
+    </th>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Toggle switch
 // ---------------------------------------------------------------------------
 function ToggleSwitch({ checked, onChange, label }) {
@@ -201,17 +261,16 @@ function AddDimModal({ label, badge, existing, onAdd, onClose }) {
 }
 
 // ---------------------------------------------------------------------------
-// Selector panel
+// Selector panel -- A-Z is now hardcoded, button removed
 // ---------------------------------------------------------------------------
 function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNew, onRemove, editMode }) {
-  const [search,  setSearch]  = useState('');
-  const [sortAZ,  setSortAZ]  = useState(false);
+  const [search, setSearch] = useState('');
 
+  // Always sorted A-Z
   const displayed = useMemo(() => {
-    let list = items.filter(v => v.toLowerCase().includes(search.toLowerCase()));
-    if (sortAZ) list = [...list].sort((a, b) => a.localeCompare(b));
-    return list;
-  }, [items, search, sortAZ]);
+    const list = items.filter(v => v.toLowerCase().includes(search.toLowerCase()));
+    return [...list].sort((a, b) => a.localeCompare(b));
+  }, [items, search]);
 
   const hasSelection = multi ? selected.length > 0 : selected !== null;
 
@@ -241,28 +300,15 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
-          <div className="flex items-center gap-1.5 shrink-0">
-            {hasSelection && (
-              <button
-                onClick={handleReset}
-                className="text-[10px] text-slate-400 hover:text-red-500 underline leading-none"
-                title="Clear selection"
-              >
-                Reset
-              </button>
-            )}
+          {hasSelection && (
             <button
-              onClick={() => setSortAZ(s => !s)}
-              title={sortAZ ? 'Back to original order' : 'Sort A to Z'}
-              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border transition-colors ${
-                sortAZ
-                  ? 'bg-blue-50 border-blue-200 text-blue-600'
-                  : 'bg-white border-slate-200 text-slate-400 hover:border-slate-300 hover:text-slate-600'
-              }`}
+              onClick={handleReset}
+              className="text-[10px] text-slate-400 hover:text-red-500 underline leading-none shrink-0"
+              title="Clear selection"
             >
-              A-Z
+              Reset
             </button>
-          </div>
+          )}
         </div>
       </div>
       <div className="overflow-y-auto flex-1">
@@ -577,19 +623,57 @@ function StatusBar({ counts, activeStatus, onToggle, totalShown }) {
 }
 
 // ---------------------------------------------------------------------------
-// Column width constants (px) -- drives both <th> and <td> via table-layout:fixed
-// Complementary gets no fixed width: it fills whatever is left.
+// Column width constants
 // ---------------------------------------------------------------------------
 const COL = {
   function:  160,
   role:      160,
   info:       32,
   primary:   170,
-  // complementary: auto (remaining space)
   tlgGroup:  148,
   tlgAddon:  220,
   action:     44,
 };
+
+// ---------------------------------------------------------------------------
+// Sorting helpers
+// ---------------------------------------------------------------------------
+function nextDir(current, col, clickedCol) {
+  if (current.col !== clickedCol) return 'asc';
+  if (current.dir === 'asc') return 'desc';
+  return 'asc';
+}
+
+function sortEntries(rows, sortState, profiles) {
+  const { col, dir } = sortState;
+  if (!col) return rows;
+  const mul = dir === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    let va = '', vb = '';
+    if (col === 'function') { va = a.function; vb = b.function; }
+    else if (col === 'role') { va = a.role; vb = b.role; }
+    else if (col === 'primary') {
+      const ra = profiles.find(p => p.id === a.recommended_training_id);
+      const rb = profiles.find(p => p.id === b.recommended_training_id);
+      va = ra ? ra.profile_name : (a.primary_training_name || '');
+      vb = rb ? rb.profile_name : (b.primary_training_name || '');
+    } else if (col === 'complementary') {
+      const ca = Array.isArray(a.complementary_items) ? a.complementary_items.map(i => i.title).join(' ') : '';
+      const cb = Array.isArray(b.complementary_items) ? b.complementary_items.map(i => i.title).join(' ') : '';
+      va = ca; vb = cb;
+    } else if (col === 'tlgGroup') {
+      va = a.tlg_primary || ''; vb = b.tlg_primary || '';
+    } else if (col === 'tlgAddon') {
+      va = Array.isArray(a.tlg_addon) ? a.tlg_addon.join(' ') : '';
+      vb = Array.isArray(b.tlg_addon) ? b.tlg_addon.join(' ') : '';
+    } else {
+      // info key column
+      va = a.additional_info?.[col] ? '1' : '0';
+      vb = b.additional_info?.[col] ? '1' : '0';
+    }
+    return mul * va.localeCompare(vb);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Main page
@@ -608,6 +692,7 @@ export default function RoleMatrixPage() {
   const [importError,   setImportError]   = useState('');
   const [importStats,   setImportStats]   = useState(null);
   const [addModalType,  setAddModalType]  = useState(null);
+  const [sortState,     setSortState]     = useState({ col: null, dir: 'asc' });
 
   const dimKey    = ['role-matrix-dimensions', projectId];
   const matrixKey = ['role-matrix', projectId];
@@ -679,6 +764,7 @@ export default function RoleMatrixPage() {
       setSelectedRole(null);
       setSelectedInfo([]);
       setStatusFilter(null);
+      setSortState({ col: null, dir: 'asc' });
     },
   });
 
@@ -732,6 +818,10 @@ export default function RoleMatrixPage() {
       clearAllMutation.mutate();
   }
 
+  function handleSort(col) {
+    setSortState(prev => ({ col, dir: nextDir(prev, prev.col, col) }));
+  }
+
   const dimFilteredEntries = useMemo(() => {
     let rows = entries;
     if (selectedFn)           rows = rows.filter(r => r.function === selectedFn);
@@ -751,9 +841,11 @@ export default function RoleMatrixPage() {
   }, [dimFilteredEntries]);
 
   const filteredEntries = useMemo(() => {
-    if (!statusFilter) return dimFilteredEntries;
-    return dimFilteredEntries.filter(e => rowStatus(e) === statusFilter);
-  }, [dimFilteredEntries, statusFilter]);
+    const base = statusFilter
+      ? dimFilteredEntries.filter(e => rowStatus(e) === statusFilter)
+      : dimFilteredEntries;
+    return sortEntries(base, sortState, profiles);
+  }, [dimFilteredEntries, statusFilter, sortState, profiles]);
 
   const isDimPending = addDimMutation.isPending || removeDimMutation.isPending;
 
@@ -845,14 +937,6 @@ export default function RoleMatrixPage() {
         totalShown={filteredEntries.length}
       />
 
-      {/*
-        Table layout strategy:
-        - table-layout: fixed + width: 100% = table never exceeds container width
-        - Every column except Complementary has an explicit pixel width via <col>
-        - Complementary <col> has no width = it gets all remaining space
-        - Complementary <td> uses overflow-x: auto so chips scroll inside the cell
-        - The outer div is overflow-y: auto only (vertical scroll for rows)
-      */}
       <div className="overflow-y-auto overflow-x-hidden rounded-xl border bg-white flex-1">
         <table className="w-full text-sm border-collapse" style={{ tableLayout: 'fixed' }}>
           <colgroup>
@@ -860,43 +944,22 @@ export default function RoleMatrixPage() {
             <col style={{ width: COL.role }} />
             {dimensions.info_keys.map(k => <col key={k} style={{ width: COL.info }} />)}
             <col style={{ width: COL.primary }} />
-            <col />{/* Complementary: takes all remaining width */}
+            <col />
             <col style={{ width: COL.tlgGroup }} />
             <col style={{ width: COL.tlgAddon }} />
             <col style={{ width: COL.action }} />
           </colgroup>
           <thead className="sticky top-0 z-10 bg-slate-50 border-b">
             <tr>
-              <th className={thBase}>Function</th>
-              <th className={thBase}>Role</th>
+              <SortTh label="Function"     colKey="function"      sortState={sortState} onSort={handleSort} className={thBase} />
+              <SortTh label="Role"         colKey="role"          sortState={sortState} onSort={handleSort} className={thBase} />
               {dimensions.info_keys.map(k => (
-                <th
-                  key={k}
-                  title={k}
-                  className="px-0 pb-2 pt-3 text-center align-bottom overflow-hidden"
-                >
-                  <span style={{
-                    writingMode: 'vertical-rl',
-                    transform: 'rotate(180deg)',
-                    display: 'inline-block',
-                    maxHeight: 120,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    fontSize: 10,
-                    fontWeight: 600,
-                    color: '#94a3b8',
-                    letterSpacing: '0.04em',
-                    textTransform: 'uppercase',
-                  }}>
-                    {k}
-                  </span>
-                </th>
+                <SortTh key={k} label={k} colKey={k} sortState={sortState} onSort={handleSort} vertical />
               ))}
-              <th className={thBase}>Primary Training</th>
-              <th className={thBase}>Complementary Training</th>
-              <th className={thBase}>TLG Group</th>
-              <th className={thBase}>TLG Add-on</th>
+              <SortTh label="Primary Training"       colKey="primary"       sortState={sortState} onSort={handleSort} className={thBase} />
+              <SortTh label="Complementary Training" colKey="complementary"  sortState={sortState} onSort={handleSort} className={thBase} />
+              <SortTh label="TLG Group"              colKey="tlgGroup"       sortState={sortState} onSort={handleSort} className={thBase} />
+              <SortTh label="TLG Add-on"             colKey="tlgAddon"       sortState={sortState} onSort={handleSort} className={thBase} />
               <th className="px-2 py-2" />
             </tr>
           </thead>
@@ -937,12 +1000,6 @@ export default function RoleMatrixPage() {
                           ? <span className="text-xs text-amber-600 font-medium" title="Not yet matched">{entry.primary_training_name}</span>
                           : <span className="text-xs text-slate-300">-</span>}
                   </td>
-                  {/*
-                    Complementary cell:
-                    - overflow-x: auto  => chips scroll horizontally inside this cell
-                    - The column width is "whatever is left" thanks to the bare <col />
-                    - The table is fixed-layout so this cell CANNOT push the table wider
-                  */}
                   <td className="px-2 py-2" style={{ overflow: 'hidden' }}>
                     {entry.na_training || compItems.length === 0
                       ? <span className="text-xs text-slate-300">-</span>
