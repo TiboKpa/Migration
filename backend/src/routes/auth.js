@@ -30,6 +30,11 @@ const loginSchema = z.object({
 // -- Small body limit for auth routes ---------------------------------------
 const smallBody = express.json({ limit: '16kb' });
 
+// -- Dummy hash for constant-time comparison when user does not exist -------
+// Pre-computed at startup so bcrypt.compare timing matches a real comparison.
+let DUMMY_HASH = null;
+(async () => { DUMMY_HASH = await bcrypt.hash('__dummy_password_noop__', 12); })();
+
 router.post('/register', authLimiter, smallBody, async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
@@ -56,10 +61,9 @@ router.post('/login', authLimiter, smallBody, async (req, res) => {
     const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     const user = result.rows[0];
     // Constant-time comparison even when user does not exist (prevents timing-based enumeration)
-    const dummyHash = '$2a$12$invalidhashfortimingprotection0000000000000000000000';
     const valid = user
       ? await bcrypt.compare(password, user.password_hash)
-      : await bcrypt.compare(password, dummyHash);
+      : await bcrypt.compare(password, DUMMY_HASH || '$2a$12$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ01234');
     if (!user || !valid) return res.status(401).json({ error: 'Invalid credentials' });
     // JWT payload contains only the user ID -- no PII
     const token = jwt.sign(

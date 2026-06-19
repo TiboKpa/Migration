@@ -33,6 +33,10 @@ function normalizeRow(row) {
   };
 }
 
+function toBoolean(val) {
+  return val === true || val === 'true' || val === 1;
+}
+
 async function resolveRoleMatrixTrainings(client, projectId) {
   const [playlistsRes, modulesRes, curriculaRes] = await Promise.all([
     client.query('SELECT id, title FROM playlists WHERE project_id=$1', [projectId]),
@@ -263,6 +267,8 @@ router.get('/:projectId/role-matrix/complementary-options', authenticate, requir
 
 router.put('/:projectId/role-matrix/:id', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
   const { tlg_primary, tlg_addon, na_tlg, na_training, recommended_training_id, complementary_items } = req.body;
+  const isNaTlg = toBoolean(na_tlg);
+  const isNaTraining = toBoolean(na_training);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -274,12 +280,12 @@ router.put('/:projectId/role-matrix/:id', authenticate, requireMember(['owner', 
        WHERE id=$7 AND project_id=$8
        RETURNING *`,
       [
-        na_tlg ? '' : (tlg_primary || ''),
-        JSON.stringify(na_tlg ? [] : (tlg_addon || [])),
-        na_tlg === true,
-        na_training === true,
-        na_training ? null : (recommended_training_id || null),
-        JSON.stringify(na_training ? [] : (complementary_items || [])),
+        isNaTlg ? '' : (tlg_primary || ''),
+        JSON.stringify(isNaTlg ? [] : (tlg_addon || [])),
+        isNaTlg,
+        isNaTraining,
+        isNaTraining ? null : (recommended_training_id || null),
+        JSON.stringify(isNaTraining ? [] : (complementary_items || [])),
         req.params.id, req.params.projectId,
       ]
     );
@@ -350,8 +356,8 @@ router.post('/:projectId/role-matrix/import', authenticate, requireMember(['owne
     for (const e of entries) {
       const additional_info = (e.additional_info && typeof e.additional_info === 'object') ? e.additional_info : {};
       const concatenate = buildConcatenate(e.function, e.role, additional_info);
-      const isNaTlg = e.na_tlg === true || String(e.tlg_primary || '').trim() === 'N/A';
-      const isNaTrn = e.na_training === true || String(e.primary_training_name || '').trim() === 'N/A';
+      const isNaTlg = toBoolean(e.na_tlg) || String(e.tlg_primary || '').trim() === 'N/A';
+      const isNaTrn = toBoolean(e.na_training) || String(e.primary_training_name || '').trim() === 'N/A';
       await client.query(
         `INSERT INTO role_matrix
            (project_id, function, role, additional_info, concatenate,

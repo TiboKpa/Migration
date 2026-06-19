@@ -38,6 +38,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
       JWT_SECRET: ${JWT_SECRET}
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN}
     ports:
       - "${BACKEND_PORT:-4000}:4000"
     depends_on:
