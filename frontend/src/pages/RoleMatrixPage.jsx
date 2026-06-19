@@ -540,9 +540,9 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
 // Status bar
 // ---------------------------------------------------------------------------
 const STATUS_CHIPS = [
-  { status: 'empty',            bg: 'bg-red-50',    border: 'border-red-200',    text: 'text-red-600',    activeBg: 'bg-red-100',    label: 'No primary training set' },
+  { status: 'empty',            bg: 'bg-red-50',    border: 'border-red-200',    text: 'text-red-600',    activeBg: 'bg-red-100',    label: 'Empty' },
   { status: 'unresolved',       bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-600', activeBg: 'bg-orange-100', label: 'Primary training not matched' },
-  { status: 'comp-unresolved',  bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', activeBg: 'bg-yellow-100', label: 'Complementary not matched' },
+  { status: 'comp-unresolved',  bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', activeBg: 'bg-yellow-100', label: 'Complementary training not matched' },
   { status: 'na',               bg: 'bg-slate-100', border: 'border-slate-300',  text: 'text-slate-500',  activeBg: 'bg-slate-200',  label: 'N/A' },
 ];
 
@@ -894,7 +894,7 @@ export default function RoleMatrixPage() {
                 </th>
               ))}
               <th className={thBase}>Primary Training</th>
-              <th className={thBase}>Complementary</th>
+              <th className={thBase}>Complementary Training</th>
               <th className={thBase}>TLG Group</th>
               <th className={thBase}>TLG Add-on</th>
               <th className="px-2 py-2" />
