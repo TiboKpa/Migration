@@ -224,6 +224,7 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
   }
 
   function handleReset() {
+    setSearch('');
     onChange(multi ? [] : null);
   }
 
@@ -232,9 +233,15 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
   return (
     <div className="flex flex-col border rounded-xl bg-white overflow-hidden" style={{ minHeight: 0 }}>
       <div className="px-3 pt-3 pb-2 border-b bg-slate-50 shrink-0">
-        <div className="flex items-center justify-between mb-2">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{title}</p>
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide shrink-0">{title}</p>
+          <input
+            className="border rounded-lg px-2 py-1 text-xs flex-1 min-w-0"
+            placeholder={`Search...`}
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+          <div className="flex items-center gap-1.5 shrink-0">
             {hasSelection && (
               <button
                 onClick={handleReset}
@@ -257,12 +264,6 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
             </button>
           </div>
         </div>
-        <input
-          className="border rounded-lg px-2 py-1.5 text-xs w-full"
-          placeholder={`Search ${title.toLowerCase()}...`}
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
       </div>
       <div className="overflow-y-auto flex-1">
         {displayed.length === 0 && (
@@ -779,7 +780,11 @@ export default function RoleMatrixPage() {
   }
 
   const isDimPending = addDimMutation.isPending || removeDimMutation.isPending;
-  const thClass = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide';
+
+  // Shared th style: shrink-to-content, no wrap
+  const thFit  = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
+  // Complementary th: grows to fill remaining space
+  const thComp = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap w-full';
 
   return (
     <div className="flex flex-col h-full">
@@ -868,13 +873,17 @@ export default function RoleMatrixPage() {
         totalAll={dimFilteredEntries.length}
       />
 
-      {/* Table */}
+      {/* Table
+          - table-auto: columns size to content by default
+          - Function / Role / info / Primary / TLG cols: whitespace-nowrap = shrink-to-content
+          - Complementary: w-full so it absorbs the remaining space; internal overflow-x with nowrap chips
+      */}
       <div className="overflow-auto rounded-xl border bg-white flex-1">
-        <table className="min-w-max text-sm border-collapse w-full">
+        <table className="w-full text-sm border-collapse" style={{ tableLayout: 'auto' }}>
           <thead className="sticky top-0 z-10 bg-slate-50 border-b">
             <tr>
-              <th className={`${thClass} whitespace-nowrap`}>Function</th>
-              <th className={`${thClass} whitespace-nowrap`}>Role</th>
+              <th className={thFit}>Function</th>
+              <th className={thFit}>Role</th>
               {dimensions.info_keys.map(k => (
                 <th
                   key={k}
@@ -902,11 +911,12 @@ export default function RoleMatrixPage() {
                   </span>
                 </th>
               ))}
-              <th className={`${thClass} w-52 whitespace-nowrap`}>Primary Training</th>
-              <th className={`${thClass} whitespace-nowrap`} style={{ minWidth: 160, maxWidth: 220 }}>Complementary</th>
-              <th className={`${thClass} w-40 whitespace-nowrap`}>TLG Group</th>
-              <th className={`${thClass} w-48 whitespace-nowrap`}>TLG Add-on</th>
-              <th className="px-2 py-2 w-14"></th>
+              <th className={thFit}>Primary Training</th>
+              {/* Complementary: w-full makes it absorb all leftover space */}
+              <th className={thComp}>Complementary</th>
+              <th className={thFit}>TLG Group</th>
+              <th className={thFit}>TLG Add-on</th>
+              <th className="px-2 py-2 whitespace-nowrap" style={{ width: 40 }}></th>
             </tr>
           </thead>
           <tbody>
@@ -931,6 +941,7 @@ export default function RoleMatrixPage() {
                   key={entry.id}
                   className={`border-b ${ROW_BG[status]} ${ROW_HOVER[status]}`}
                 >
+                  {/* Shrink-to-content cells */}
                   <td className="px-3 py-2 text-xs font-medium text-slate-700 whitespace-nowrap">{entry.function}</td>
                   <td className="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">{entry.role}</td>
                   {dimensions.info_keys.map(k => (
@@ -942,7 +953,7 @@ export default function RoleMatrixPage() {
                       </span>
                     </td>
                   ))}
-                  <td className="px-3 py-2">
+                  <td className="px-3 py-2 whitespace-nowrap">
                     {entry.na_training
                       ? <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>
                       : rec
@@ -951,41 +962,40 @@ export default function RoleMatrixPage() {
                           ? <span className="text-xs text-amber-600 font-medium" title="Not yet matched">{entry.primary_training_name}</span>
                           : <span className="text-xs text-slate-300">-</span>}
                   </td>
-                  <td className="px-2 py-2" style={{ maxWidth: 220, minWidth: 160 }}>
-                    {entry.na_training
+                  {/* Complementary: fills remaining space, chips scroll horizontally when overflow */}
+                  <td className="px-2 py-2" style={{ minWidth: 180 }}>
+                    {entry.na_training || compItems.length === 0
                       ? <span className="text-xs text-slate-300">-</span>
-                      : compItems.length === 0
-                        ? <span className="text-xs text-slate-300">-</span>
-                        : (
-                          <div style={{ overflowX: 'auto', whiteSpace: 'nowrap' }} className="flex gap-1 items-center">
-                            {compItems.filter(i => i.type !== 'unresolved').map(i => (
-                              <span key={`${i.type}-${i.id}`} className="inline-flex shrink-0 items-center text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">
-                                {i.title}
-                              </span>
-                            ))}
-                            {compItems.filter(i => i.type === 'unresolved').map((i, idx) => (
-                              <span key={`unresolved-${idx}`} title="Not matched"
-                                className="inline-flex shrink-0 items-center text-[10px] bg-amber-50 text-amber-600 border border-amber-200 rounded px-1.5 py-0.5">
-                                {i.title}
-                              </span>
-                            ))}
-                          </div>
-                        )
+                      : (
+                        <div className="flex gap-1 items-center overflow-x-auto" style={{ whiteSpace: 'nowrap' }}>
+                          {compItems.filter(i => i.type !== 'unresolved').map(i => (
+                            <span key={`${i.type}-${i.id}`} className="inline-flex shrink-0 items-center text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">
+                              {i.title}
+                            </span>
+                          ))}
+                          {compItems.filter(i => i.type === 'unresolved').map((i, idx) => (
+                            <span key={`unresolved-${idx}`} title="Not matched"
+                              className="inline-flex shrink-0 items-center text-[10px] bg-amber-50 text-amber-600 border border-amber-200 rounded px-1.5 py-0.5">
+                              {i.title}
+                            </span>
+                          ))}
+                        </div>
+                      )
                     }
                   </td>
-                  <td className="px-3 py-2">
+                  <td className="px-3 py-2 whitespace-nowrap">
                     {entry.na_tlg
                       ? <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>
                       : entry.tlg_primary
                         ? <span className="text-xs font-medium text-slate-800">{entry.tlg_primary}</span>
                         : <span className="text-xs text-slate-300">-</span>}
                   </td>
-                  <td className="px-3 py-2">
+                  <td className="px-3 py-2 whitespace-nowrap">
                     {entry.na_tlg
                       ? <span className="text-xs text-slate-300">-</span>
-                      : <div className="flex flex-wrap gap-1">
+                      : <div className="flex gap-1">
                           {(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []).map(a => (
-                            <span key={a} className="text-[10px] bg-teal-50 text-teal-700 border border-teal-100 rounded px-1.5 py-0.5">{a}</span>
+                            <span key={a} className="text-[10px] bg-teal-50 text-teal-700 border border-teal-100 rounded px-1.5 py-0.5 whitespace-nowrap">{a}</span>
                           ))}
                         </div>}
                   </td>
