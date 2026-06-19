@@ -28,6 +28,11 @@ const roleMatrixRoutes = require('./routes/roleMatrix');
 
 const app = express();
 
+// -- Trust first proxy (Nginx Proxy Manager) --------------------------------
+// Required so express-rate-limit reads the real client IP from X-Forwarded-For
+// instead of the proxy IP. Set to 1 because there is exactly one proxy in front.
+app.set('trust proxy', 1);
+
 // -- Security headers -------------------------------------------------------
 app.use(helmet());
 
