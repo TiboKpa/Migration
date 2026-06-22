@@ -25,6 +25,14 @@ const COLUMNS = [
   { key: '_actions',     label: '',                  width: 32,  excelHeader: null },
 ];
 
+// Indices that split COLUMNS around the dynamic info-key injection point.
+// COLUMNS[0..FIXED_BEFORE-1] come before info-key cols in the DOM.
+// COLUMNS[FIXED_BEFORE..] come after.
+const FIXED_BEFORE = 8; // sesa_id..description
+
+const COLS_BEFORE = COLUMNS.slice(0, FIXED_BEFORE);
+const COLS_AFTER  = COLUMNS.slice(FIXED_BEFORE); // _training.._actions
+
 // The exact set of fixed field keys the backend accepts at the top level.
 const FIXED_PAYLOAD_KEYS = new Set([
   'sesa_id', 'first_name', 'last_name', 'mail', 'manager_mail',
@@ -685,7 +693,6 @@ export default function UserListPage() {
   const minW = COLUMNS.reduce((acc, c) => acc + c.width, 0) + infoKeys.length * INFO_COL_W;
   const colCount = COLUMNS.length - 1 + infoKeys.length;
 
-  // Match RoleMatrixPage thBase exactly.
   const thBase    = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide overflow-hidden text-ellipsis whitespace-nowrap';
   const inputCls  = 'border rounded px-1 py-0.5 text-xs w-full bg-white focus:ring-1 focus:ring-blue-400 outline-none';
   const selectCls = 'border rounded px-1 py-0.5 text-xs w-full bg-white focus:ring-1 focus:ring-blue-400 outline-none';
@@ -733,7 +740,7 @@ export default function UserListPage() {
         </td>
         <td className="px-3 py-2"><input className={inputCls} value={newRow.description} placeholder="Description" onChange={e => setNewField('description', e.target.value)} /></td>
         {infoKeys.map(k => (
-          <td key={k} className="text-center py-2" style={{ width: INFO_COL_W, minWidth: INFO_COL_W }}>
+          <td key={k} className="text-center py-2" style={{ width: INFO_COL_W, minWidth: INFO_COL_W, maxWidth: INFO_COL_W }}>
             <input
               type="checkbox"
               checked={!!newRow[k]}
@@ -817,10 +824,9 @@ export default function UserListPage() {
             </span>
           )}
         </td>
-        <td className="px-3 py-2 overflow-hidden">{cellInput('description', 'Description')}
-        </td>
+        <td className="px-3 py-2 overflow-hidden">{cellInput('description', 'Description')}</td>
         {infoKeys.map(k => (
-          <td key={k} className="text-center py-2" style={{ width: INFO_COL_W, minWidth: INFO_COL_W }}>
+          <td key={k} className="text-center py-2" style={{ width: INFO_COL_W, minWidth: INFO_COL_W, maxWidth: INFO_COL_W }}>
             {isEditing ? (
               <input
                 type="checkbox"
@@ -829,7 +835,6 @@ export default function UserListPage() {
                 className="w-3 h-3 rounded accent-blue-600 cursor-pointer block mx-auto"
               />
             ) : (
-              // Read mode: Y/N text matching RoleMatrixPage exactly.
               <span className={`text-xs font-medium ${draft[k] ? 'text-blue-600' : 'text-slate-300'}`}>
                 {draft[k] ? 'Y' : 'N'}
               </span>
@@ -936,19 +941,26 @@ export default function UserListPage() {
 
       <div className="overflow-y-auto overflow-x-auto rounded-xl border bg-white flex-1">
         <table className="text-sm border-collapse" style={{ tableLayout: 'fixed', minWidth: minW }}>
+          {/*
+            colgroup MUST mirror the exact column order rendered in thead/tbody:
+            COLS_BEFORE (8 fixed) -> infoKey cols -> COLS_AFTER (_training.._actions)
+            Mismatching the order causes the browser to apply widths to the wrong
+            columns and ignore the 32px constraint on info-key cols.
+          */}
           <colgroup>
-            {COLUMNS.map(c => <col key={c.key} style={{ width: c.width }} />)}
-            {infoKeys.map(k => <col key={k} style={{ width: INFO_COL_W }} />)}
+            {COLS_BEFORE.map(c => <col key={c.key} style={{ width: c.width }} />)}
+            {infoKeys.map(k => <col key={k} style={{ width: INFO_COL_W, minWidth: INFO_COL_W, maxWidth: INFO_COL_W }} />)}
+            {COLS_AFTER.map(c => <col key={c.key} style={{ width: c.width }} />)}
           </colgroup>
           <thead className="sticky top-0 z-10 bg-slate-50 border-b">
             <tr>
-              {COLUMNS.slice(0, 8).map(c => <th key={c.key} className={thBase}>{c.label}</th>)}
+              {COLS_BEFORE.map(c => <th key={c.key} className={thBase}>{c.label}</th>)}
               {infoKeys.map(k => (
                 <th
                   key={k}
                   title={k}
                   className="px-0 pb-2 pt-3 text-center align-bottom overflow-hidden bg-slate-50"
-                  style={{ width: INFO_COL_W, minWidth: INFO_COL_W }}
+                  style={{ width: INFO_COL_W, minWidth: INFO_COL_W, maxWidth: INFO_COL_W }}
                 >
                   <span style={{
                     writingMode: 'vertical-rl',
@@ -967,14 +979,14 @@ export default function UserListPage() {
                 </th>
               ))}
               <th className={thBase}>
-                {COLUMNS.find(c => c.key === '_training').label}
+                {COLS_AFTER.find(c => c.key === '_training').label}
                 <span className="text-blue-400 normal-case font-normal ml-1">(auto)</span>
               </th>
               <th className={thBase}>
-                {COLUMNS.find(c => c.key === '_tlg').label}
+                {COLS_AFTER.find(c => c.key === '_tlg').label}
                 <span className="text-blue-400 normal-case font-normal ml-1">(auto)</span>
               </th>
-              {COLUMNS.slice(COLUMNS.findIndex(c => c.key === 'status')).map(c => (
+              {COLS_AFTER.filter(c => c.key !== '_training' && c.key !== '_tlg').map(c => (
                 <th key={c.key} className={thBase} style={c.key === '_actions' ? { width: 32 } : undefined}>
                   {c.label}
                 </th>
