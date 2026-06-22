@@ -36,6 +36,9 @@ const fixedSchema = z.object({
 // Derive allowed column names directly from the schema -- no duplicate list to maintain.
 const ALLOWED_FIELDS = new Set(Object.keys(fixedSchema.shape));
 
+// Columns stored as jsonb -- must be serialized before passing to pg.
+const JSON_FIELDS = new Set(['additional_info', 'complementary_names', 'tlg_addon']);
+
 async function getInfoKeys(projectId) {
   const res = await pool.query(
     `SELECT value FROM role_matrix_dimensions WHERE project_id=$1 AND type='info_key' ORDER BY value`,
@@ -98,8 +101,8 @@ router.post('/:projectId/users', authenticate, requireMember(['owner', 'editor']
         u.sesa_id, u.first_name, u.last_name,
         u.mail ?? null, u.manager_mail ?? null,
         u.function, u.role, u.description, u.recommended_training,
-        u.complementary_names ?? [],
-        u.tlg_group, u.tlg_addon ?? [],
+        JSON.stringify(u.complementary_names ?? []),
+        u.tlg_group, JSON.stringify(u.tlg_addon ?? []),
         u.status ?? 'active', u.comments, u.last_contact ?? null,
         JSON.stringify(u.additional_info ?? {}),
       ]
@@ -156,8 +159,8 @@ router.post('/:projectId/users/import-json', authenticate, requireMember(['owner
           d.sesa_id, d.first_name, d.last_name,
           d.mail ?? null, d.manager_mail ?? null,
           d.function, d.role, d.description, d.recommended_training,
-          d.complementary_names ?? [],
-          d.tlg_group, d.tlg_addon ?? [],
+          JSON.stringify(d.complementary_names ?? []),
+          d.tlg_group, JSON.stringify(d.tlg_addon ?? []),
           d.status ?? 'active', d.comments, d.last_contact ?? null,
           JSON.stringify(d.additional_info ?? {}),
         ]
@@ -193,8 +196,9 @@ router.put('/:projectId/users/:userId', authenticate, requireMember(['owner', 'e
     if (!keys.length) return res.status(400).json({ error: 'No valid fields after parsing' });
 
     const sets = keys.map((k, i) => `${k}=$${i + 1}`).join(', ');
+    // Serialize jsonb fields (arrays and objects) -- pg cannot infer the type from a raw JS value.
     const vals = keys.map(k =>
-      k === 'additional_info' ? JSON.stringify(data[k] ?? {}) : data[k]
+      JSON_FIELDS.has(k) ? JSON.stringify(data[k] ?? (Array.isArray(data[k]) ? [] : {})) : data[k]
     );
 
     const result = await pool.query(
