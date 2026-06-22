@@ -165,6 +165,7 @@ export default function UserListPage() {
   const fileRef = useRef();
 
   const [editMode,    setEditMode]    = useState(false);
+  const editModeRef = useRef(false); // always in sync, avoids stale closure in row handlers
   const [filter,      setFilter]      = useState('');
   const [importError, setImportError] = useState('');
   const [importStats, setImportStats] = useState(null);
@@ -172,17 +173,20 @@ export default function UserListPage() {
   // New row state
   const [newRow,    setNewRow]    = useState(null);
   const newRowRef   = useRef(null);
-  const newRowSaved = useRef(false); // has this row been POSTed at least once
-  const newRowId    = useRef(null);  // id from first POST
+  const newRowSaved = useRef(false);
+  const newRowId    = useRef(null);
   const [newRowSaving, setNewRowSaving] = useState(false);
 
   // Editing existing row
-  // editingRowId: id of the row currently being edited (null = none)
-  // editRowDraft: local copy of the row fields being edited
   const [editingRowId,  setEditingRowId]  = useState(null);
   const [editRowDraft,  setEditRowDraft]  = useState({});
   const editRowDraftRef = useRef({});
+  const editingRowIdRef = useRef(null); // always in sync
   const [editRowSaving, setEditRowSaving] = useState(false);
+
+  // Keep refs in sync with state
+  useEffect(() => { editModeRef.current = editMode; }, [editMode]);
+  useEffect(() => { editingRowIdRef.current = editingRowId; }, [editingRowId]);
 
   // ------------------------------------------------------------------
   // Queries
@@ -315,7 +319,7 @@ export default function UserListPage() {
   });
 
   // ------------------------------------------------------------------
-  // NEW ROW -- save triggered by row blur only
+  // NEW ROW
   // ------------------------------------------------------------------
   function openNewRow() {
     const fresh = emptyNewRow(infoKeys);
@@ -334,10 +338,8 @@ export default function UserListPage() {
     setNewRowSaving(false);
   }
 
-  // Called when focus leaves the new row entirely (onBlur on <tr>)
   async function commitNewRow(e) {
-    // relatedTarget is where focus is going -- if still inside the row, skip
-    if (e.currentTarget.contains(e.relatedTarget)) return;
+    if (e && e.currentTarget && e.currentTarget.contains(e.relatedTarget)) return;
     const snap = newRowRef.current;
     if (!snap) return;
 
@@ -353,7 +355,6 @@ export default function UserListPage() {
 
     if (!newRowSaved.current) {
       createMutation.mutate(payload);
-      // Open fresh row after a short delay so the user can immediately continue
       setTimeout(() => {
         const fresh = emptyNewRow(infoKeys);
         setNewRow(fresh);
@@ -363,6 +364,37 @@ export default function UserListPage() {
       }, 50);
     } else if (newRowId.current) {
       updateMutation.mutate({ id: newRowId.current, payload });
+    }
+  }
+
+  // Save new row and close it (Enter)
+  async function commitAndCloseNewRow() {
+    const snap = newRowRef.current;
+    if (!snap) return;
+    const hasAnyData = [
+      snap.sesa_id, snap.first_name, snap.last_name,
+      snap.mail, snap.manager_mail, snap.function,
+      snap.role, snap.description, snap.comments,
+    ].some(v => v && String(v).trim());
+    if (hasAnyData) {
+      setNewRowSaving(true);
+      const payload = sanitizePayload(snap, infoKeys);
+      if (!newRowSaved.current) {
+        createMutation.mutate(payload);
+      } else if (newRowId.current) {
+        updateMutation.mutate({ id: newRowId.current, payload });
+      }
+    }
+    discardNewRow();
+  }
+
+  function handleNewRowKeyDown(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitAndCloseNewRow();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      discardNewRow();
     }
   }
 
@@ -398,16 +430,13 @@ export default function UserListPage() {
 
   // ------------------------------------------------------------------
   // EXISTING ROW EDITING
-  // Row enters edit mode on first click inside it.
-  // All cells become inputs. Tab moves through them.
-  // Save fires when focus leaves the row (onBlur on <tr>).
   // ------------------------------------------------------------------
   function startEditRow(user) {
-    if (!editMode) return;
-    if (editingRowId === user.id) return; // already editing
-    // If another row was being edited, save it first
-    if (editingRowId !== null) {
-      saveEditRow(editingRowId, editRowDraftRef.current);
+    // Use ref to avoid stale closure
+    if (!editModeRef.current) return;
+    if (editingRowIdRef.current === user.id) return;
+    if (editingRowIdRef.current !== null) {
+      saveEditRow(editingRowIdRef.current, editRowDraftRef.current);
     }
     const draft = { ...user };
     setEditingRowId(user.id);
@@ -418,7 +447,7 @@ export default function UserListPage() {
   async function saveEditRow(userId, draft) {
     setEditRowSaving(true);
     setEditingRowId(null);
-    // Run lookup if function or role changed
+    editingRowIdRef.current = null;
     const original = users.find(u => u.id === userId) || {};
     let finalDraft = { ...draft };
     if (draft.function !== original.function || draft.role !== original.role) {
@@ -429,11 +458,28 @@ export default function UserListPage() {
     updateMutation.mutate({ id: userId, payload });
   }
 
+  function cancelEditRow() {
+    setEditingRowId(null);
+    editingRowIdRef.current = null;
+    setEditRowDraft({});
+    editRowDraftRef.current = {};
+    setEditRowSaving(false);
+  }
+
   function handleEditRowBlur(e, userId) {
-    // Only save when focus leaves the row entirely
     if (e.currentTarget.contains(e.relatedTarget)) return;
-    if (editingRowId !== userId) return;
+    if (editingRowIdRef.current !== userId) return;
     saveEditRow(userId, editRowDraftRef.current);
+  }
+
+  function handleEditRowKeyDown(e, userId) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveEditRow(userId, editRowDraftRef.current);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cancelEditRow();
+    }
   }
 
   function setDraftField(field, value) {
@@ -444,12 +490,11 @@ export default function UserListPage() {
   }
 
   async function handleDraftSelect(field, value) {
-    setDraftField(field, value);
-    // Immediate lookup when function or role changes
+    const snap = { ...editRowDraftRef.current, [field]: value };
+    if (field === 'function') snap.role = '';
+    editRowDraftRef.current = snap;
+    setEditRowDraft({ ...snap });
     if (field === 'function' || field === 'role') {
-      const snap = { ...editRowDraftRef.current, [field]: value };
-      if (field === 'function') snap.role = '';
-      editRowDraftRef.current = snap;
       const result = await lookup(snap);
       const lookupData = applyLookup(result);
       const merged = { ...snap, ...lookupData };
@@ -545,6 +590,7 @@ export default function UserListPage() {
       <tr
         className="border-b bg-blue-50/40"
         onBlur={commitNewRow}
+        onKeyDown={handleNewRowKeyDown}
       >
         <td className="px-2 py-1">
           <div className="relative">
@@ -658,6 +704,7 @@ export default function UserListPage() {
             : `${STATUS_BG[rowStatus]} ${STATUS_HOVER[rowStatus]}`
         }`}
         onBlur={isEditing ? e => handleEditRowBlur(e, user.id) : undefined}
+        onKeyDown={isEditing ? e => handleEditRowKeyDown(e, user.id) : undefined}
         onClick={!isEditing ? () => startEditRow(user) : undefined}
       >
         {/* SESA ID */}
@@ -738,15 +785,15 @@ export default function UserListPage() {
         </td>
         {/* Comments */}
         <td className="px-2 py-1.5 overflow-hidden">{cellInput('comments', 'Comments')}</td>
-        {/* Delete */}
-        {editMode && (
-          <td className="px-2 py-1.5">
+        {/* Delete -- always rendered to keep column count stable; hidden when not in edit mode */}
+        <td className="px-2 py-1.5" style={{ width: 32, minWidth: 32 }}>
+          {editMode && (
             <button
               onMouseDown={e => { e.preventDefault(); deleteMutation.mutate(user.id); }}
               disabled={deleteMutation.isPending}
               className="text-slate-300 hover:text-red-500 text-xs disabled:opacity-40">&times;</button>
-          </td>
-        )}
+          )}
+        </td>
       </tr>
     );
   }
@@ -755,8 +802,8 @@ export default function UserListPage() {
   // Render
   // ------------------------------------------------------------------
   const thBase = 'px-2 py-2 text-left text-[10px] font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
-  const colCount = 14 + infoKeys.length + (editMode ? 1 : 0);
-  const minW = 1600 + infoKeys.length * 80;
+  const colCount = 15 + infoKeys.length; // always 15 base cols + infoKeys (delete col always present)
+  const minW = 1632 + infoKeys.length * 80;
 
   return (
     <div className="flex flex-col h-full">
@@ -779,10 +826,11 @@ export default function UserListPage() {
             checked={editMode}
             onChange={v => {
               setEditMode(v);
+              editModeRef.current = v;
               if (!v) {
                 discardNewRow();
-                if (editingRowId !== null) {
-                  saveEditRow(editingRowId, editRowDraftRef.current);
+                if (editingRowIdRef.current !== null) {
+                  saveEditRow(editingRowIdRef.current, editRowDraftRef.current);
                 }
               }
             }}
@@ -834,7 +882,7 @@ export default function UserListPage() {
             <col style={{ width: 90 }} />
             <col style={{ width: 100 }} />
             <col style={{ width: 180 }} />
-            {editMode && <col style={{ width: 32 }} />}
+            <col style={{ width: 32 }} />
           </colgroup>
           <thead className="sticky top-0 z-10 bg-slate-50 border-b">
             <tr>
@@ -860,7 +908,7 @@ export default function UserListPage() {
               <th className={thBase}>Status</th>
               <th className={thBase}>Last Contact</th>
               <th className={thBase}>Comments</th>
-              {editMode && <th className="px-2 py-2" />}
+              <th className="px-2 py-2" />
             </tr>
           </thead>
           <tbody>
