@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useMemo, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
@@ -97,9 +97,6 @@ function parseExcelUsers(buffer, infoKeys) {
   return users;
 }
 
-// ---------------------------------------------------------------------------
-// Toggle switch
-// ---------------------------------------------------------------------------
 function ToggleSwitch({ checked, onChange, label }) {
   return (
     <label className="inline-flex items-center gap-2 cursor-pointer select-none">
@@ -118,9 +115,6 @@ function ToggleSwitch({ checked, onChange, label }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Training cell
-// ---------------------------------------------------------------------------
 function TrainingCell({ user }) {
   if (user.na_training)
     return <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>;
@@ -137,9 +131,6 @@ function TrainingCell({ user }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// TLG cell
-// ---------------------------------------------------------------------------
 function TlgCell({ user }) {
   if (user.na_tlg)
     return <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>;
@@ -156,41 +147,29 @@ function TlgCell({ user }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Main page
-// ---------------------------------------------------------------------------
 export default function UserListPage() {
   const { projectId } = useParams();
   const qc = useQueryClient();
   const fileRef = useRef();
 
-  const [editMode,    setEditMode]    = useState(false);
-  const editModeRef = useRef(false); // always in sync, avoids stale closure in row handlers
-  const [filter,      setFilter]      = useState('');
+  const [editMode, setEditMode] = useState(false);
+  const editModeRef = useRef(false);
+  const [filter, setFilter] = useState('');
   const [importError, setImportError] = useState('');
   const [importStats, setImportStats] = useState(null);
 
-  // New row state
-  const [newRow,    setNewRow]    = useState(null);
-  const newRowRef   = useRef(null);
+  const [newRow, setNewRow] = useState(null);
+  const newRowRef = useRef(null);
   const newRowSaved = useRef(false);
-  const newRowId    = useRef(null);
+  const newRowId = useRef(null);
   const [newRowSaving, setNewRowSaving] = useState(false);
 
-  // Editing existing row
-  const [editingRowId,  setEditingRowId]  = useState(null);
-  const [editRowDraft,  setEditRowDraft]  = useState({});
+  const [editingRowId, setEditingRowId] = useState(null);
+  const editingRowIdRef = useRef(null);
+  const [editRowDraft, setEditRowDraft] = useState({});
   const editRowDraftRef = useRef({});
-  const editingRowIdRef = useRef(null); // always in sync
   const [editRowSaving, setEditRowSaving] = useState(false);
 
-  // Keep refs in sync with state
-  useEffect(() => { editModeRef.current = editMode; }, [editMode]);
-  useEffect(() => { editingRowIdRef.current = editingRowId; }, [editingRowId]);
-
-  // ------------------------------------------------------------------
-  // Queries
-  // ------------------------------------------------------------------
   const { data: users = [], isLoading } = useQuery({
     queryKey: ['users', projectId],
     queryFn: () => client.get(`/projects/${projectId}/users`).then(r => r.data),
@@ -208,9 +187,6 @@ export default function UserListPage() {
   });
   const infoKeys = useMemo(() => dimensions?.info_keys ?? [], [dimensions]);
 
-  // ------------------------------------------------------------------
-  // Valid function / role pairs
-  // ------------------------------------------------------------------
   const validFnRolePairs = useMemo(() => {
     const set = new Set();
     for (const e of matrixEntries) {
@@ -234,9 +210,6 @@ export default function UserListPage() {
     return [...roles].sort();
   }, [validFnRolePairs]);
 
-  // ------------------------------------------------------------------
-  // Lookup
-  // ------------------------------------------------------------------
   async function lookup(snap) {
     if (!snap.function || !snap.role) return null;
     const additional_info = {};
@@ -246,7 +219,9 @@ export default function UserListPage() {
         function: snap.function, role: snap.role, additional_info,
       });
       return res.data;
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
 
   function applyLookup(result) {
@@ -255,21 +230,18 @@ export default function UserListPage() {
     }
     return {
       recommended_training: result.na_training ? 'N/A' : (result.primary_training_name || ''),
-      complementary_names:  result.na_training ? [] : (Array.isArray(result.complementary_names) ? result.complementary_names : []),
+      complementary_names: result.na_training ? [] : (Array.isArray(result.complementary_names) ? result.complementary_names : []),
       tlg_primary: result.na_tlg ? 'N/A' : (result.tlg_primary || ''),
-      tlg_addon:   result.na_tlg ? [] : (Array.isArray(result.tlg_addon) ? result.tlg_addon : []),
+      tlg_addon: result.na_tlg ? [] : (Array.isArray(result.tlg_addon) ? result.tlg_addon : []),
       na_training: !!result.na_training,
-      na_tlg:      !!result.na_tlg,
+      na_tlg: !!result.na_tlg,
     };
   }
 
-  // ------------------------------------------------------------------
-  // Mutations
-  // ------------------------------------------------------------------
   const createMutation = useMutation({
     mutationFn: payload => client.post(`/projects/${projectId}/users`, payload),
     onSuccess: res => {
-      newRowId.current   = res.data.id;
+      newRowId.current = res.data.id;
       newRowSaved.current = true;
       setNewRowSaving(false);
       qc.setQueryData(['users', projectId], old =>
@@ -305,7 +277,10 @@ export default function UserListPage() {
 
   const clearAllMutation = useMutation({
     mutationFn: () => client.delete(`/projects/${projectId}/users`),
-    onSuccess: () => { qc.setQueryData(['users', projectId], []); setImportStats(null); },
+    onSuccess: () => {
+      qc.setQueryData(['users', projectId], []);
+      setImportStats(null);
+    },
   });
 
   const importMutation = useMutation({
@@ -318,23 +293,20 @@ export default function UserListPage() {
     onError: err => setImportError(err?.response?.data?.error || err.message || 'Import failed'),
   });
 
-  // ------------------------------------------------------------------
-  // NEW ROW
-  // ------------------------------------------------------------------
   function openNewRow() {
     const fresh = emptyNewRow(infoKeys);
     setNewRow(fresh);
-    newRowRef.current  = fresh;
+    newRowRef.current = fresh;
     newRowSaved.current = false;
-    newRowId.current   = null;
+    newRowId.current = null;
     setNewRowSaving(false);
   }
 
   function discardNewRow() {
     setNewRow(null);
-    newRowRef.current   = null;
+    newRowRef.current = null;
     newRowSaved.current = false;
-    newRowId.current    = null;
+    newRowId.current = null;
     setNewRowSaving(false);
   }
 
@@ -358,16 +330,15 @@ export default function UserListPage() {
       setTimeout(() => {
         const fresh = emptyNewRow(infoKeys);
         setNewRow(fresh);
-        newRowRef.current   = fresh;
+        newRowRef.current = fresh;
         newRowSaved.current = false;
-        newRowId.current    = null;
+        newRowId.current = null;
       }, 50);
     } else if (newRowId.current) {
       updateMutation.mutate({ id: newRowId.current, payload });
     }
   }
 
-  // Save new row and close it (Enter)
   async function commitAndCloseNewRow() {
     const snap = newRowRef.current;
     if (!snap) return;
@@ -428,26 +399,24 @@ export default function UserListPage() {
     snap = await handleNewRowLookup(snap);
   }
 
-  // ------------------------------------------------------------------
-  // EXISTING ROW EDITING
-  // ------------------------------------------------------------------
   function startEditRow(user) {
-    // Use ref to avoid stale closure
     if (!editModeRef.current) return;
     if (editingRowIdRef.current === user.id) return;
     if (editingRowIdRef.current !== null) {
       saveEditRow(editingRowIdRef.current, editRowDraftRef.current);
     }
     const draft = { ...user };
+    editingRowIdRef.current = user.id;
     setEditingRowId(user.id);
     setEditRowDraft(draft);
     editRowDraftRef.current = draft;
   }
 
   async function saveEditRow(userId, draft) {
+    if (!userId || !draft) return;
     setEditRowSaving(true);
-    setEditingRowId(null);
     editingRowIdRef.current = null;
+    setEditingRowId(null);
     const original = users.find(u => u.id === userId) || {};
     let finalDraft = { ...draft };
     if (draft.function !== original.function || draft.role !== original.role) {
@@ -459,8 +428,8 @@ export default function UserListPage() {
   }
 
   function cancelEditRow() {
-    setEditingRowId(null);
     editingRowIdRef.current = null;
+    setEditingRowId(null);
     setEditRowDraft({});
     editRowDraftRef.current = {};
     setEditRowSaving(false);
@@ -514,16 +483,16 @@ export default function UserListPage() {
     setEditRowDraft({ ...merged });
   }
 
-  // ------------------------------------------------------------------
-  // Import / export
-  // ------------------------------------------------------------------
   function handleFileChange(e) {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = evt => {
-      try { importMutation.mutate(parseExcelUsers(evt.target.result, infoKeys)); }
-      catch (err) { setImportError(err.message); }
+      try {
+        importMutation.mutate(parseExcelUsers(evt.target.result, infoKeys));
+      } catch (err) {
+        setImportError(err.message);
+      }
     };
     reader.readAsArrayBuffer(file);
     e.target.value = '';
@@ -556,42 +525,28 @@ export default function UserListPage() {
 
   function handleClearAll() {
     if (clearAllMutation.isPending) return;
-    if (window.confirm('Delete all users in this project? This cannot be undone.'))
+    if (window.confirm('Delete all users in this project? This cannot be undone.')) {
       clearAllMutation.mutate();
+    }
   }
 
-  useEffect(() => () => {}, []);
-
-  // ------------------------------------------------------------------
-  // Filter
-  // ------------------------------------------------------------------
   const filtered = useMemo(() => {
     if (!filter) return users;
     const q = filter.toLowerCase();
     return users.filter(u =>
-      ['sesa_id','first_name','last_name','mail','manager_mail','function','role','description','status','comments']
+      ['sesa_id', 'first_name', 'last_name', 'mail', 'manager_mail', 'function', 'role', 'description', 'status', 'comments']
         .some(k => String(u[k] ?? '').toLowerCase().includes(q))
     );
   }, [users, filter]);
 
-  // ------------------------------------------------------------------
-  // Shared input style
-  // ------------------------------------------------------------------
   const inputCls = 'border rounded px-1 py-0.5 text-xs w-full bg-white focus:ring-1 focus:ring-blue-400 outline-none';
   const selectCls = 'border rounded px-1 py-0.5 text-xs w-full bg-white focus:ring-1 focus:ring-blue-400 outline-none';
 
-  // ------------------------------------------------------------------
-  // New row renderer
-  // ------------------------------------------------------------------
   function renderNewRow() {
     if (!newRow) return null;
     const roles = rolesForFn(newRow.function);
     return (
-      <tr
-        className="border-b bg-blue-50/40"
-        onBlur={commitNewRow}
-        onKeyDown={handleNewRowKeyDown}
-      >
+      <tr className="border-b bg-blue-50/40" onBlur={commitNewRow} onKeyDown={handleNewRowKeyDown}>
         <td className="px-2 py-1">
           <div className="relative">
             <input
@@ -605,83 +560,49 @@ export default function UserListPage() {
             )}
           </div>
         </td>
+        <td className="px-2 py-1"><input className={inputCls} value={newRow.first_name} placeholder="First name" onChange={e => setNewField('first_name', e.target.value)} /></td>
+        <td className="px-2 py-1"><input className={inputCls} value={newRow.last_name} placeholder="Last name" onChange={e => setNewField('last_name', e.target.value)} /></td>
+        <td className="px-2 py-1"><input className={inputCls} value={newRow.mail} placeholder="mail@..." onChange={e => setNewField('mail', e.target.value)} /></td>
+        <td className="px-2 py-1"><input className={inputCls} value={newRow.manager_mail} placeholder="manager@..." onChange={e => setNewField('manager_mail', e.target.value)} /></td>
         <td className="px-2 py-1">
-          <input className={inputCls} value={newRow.first_name} placeholder="First name"
-            onChange={e => setNewField('first_name', e.target.value)} />
-        </td>
-        <td className="px-2 py-1">
-          <input className={inputCls} value={newRow.last_name} placeholder="Last name"
-            onChange={e => setNewField('last_name', e.target.value)} />
-        </td>
-        <td className="px-2 py-1">
-          <input className={inputCls} value={newRow.mail} placeholder="mail@..."
-            onChange={e => setNewField('mail', e.target.value)} />
-        </td>
-        <td className="px-2 py-1">
-          <input className={inputCls} value={newRow.manager_mail} placeholder="manager@..."
-            onChange={e => setNewField('manager_mail', e.target.value)} />
-        </td>
-        <td className="px-2 py-1">
-          <select className={selectCls} value={newRow.function}
-            onChange={e => handleNewSelect('function', e.target.value)}>
+          <select className={selectCls} value={newRow.function} onChange={e => handleNewSelect('function', e.target.value)}>
             <option value="">Select...</option>
             {matrixFunctions.map(f => <option key={f} value={f}>{f}</option>)}
           </select>
         </td>
         <td className="px-2 py-1">
-          <select className={selectCls} value={newRow.role}
-            onChange={e => handleNewSelect('role', e.target.value)}
-            disabled={!newRow.function}>
+          <select className={selectCls} value={newRow.role} onChange={e => handleNewSelect('role', e.target.value)} disabled={!newRow.function}>
             <option value="">Select...</option>
             {roles.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
         </td>
-        <td className="px-2 py-1">
-          <input className={inputCls} value={newRow.description} placeholder="Description"
-            onChange={e => setNewField('description', e.target.value)} />
-        </td>
+        <td className="px-2 py-1"><input className={inputCls} value={newRow.description} placeholder="Description" onChange={e => setNewField('description', e.target.value)} /></td>
         {infoKeys.map(k => (
           <td key={k} className="px-2 py-1 text-center">
-            <input type="checkbox" checked={!!newRow[k]}
-              onChange={e => handleNewBool(k, e.target.checked)}
-              className="w-3.5 h-3.5 rounded accent-blue-600 cursor-pointer" />
+            <input type="checkbox" checked={!!newRow[k]} onChange={e => handleNewBool(k, e.target.checked)} className="w-3.5 h-3.5 rounded accent-blue-600 cursor-pointer" />
           </td>
         ))}
         <td className="px-2 py-1"><TrainingCell user={newRow} /></td>
         <td className="px-2 py-1"><TlgCell user={newRow} /></td>
         <td className="px-2 py-1">
-          <select className={selectCls} value={newRow.status}
-            onChange={e => setNewField('status', e.target.value)}>
+          <select className={selectCls} value={newRow.status} onChange={e => setNewField('status', e.target.value)}>
             {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
           </select>
         </td>
+        <td className="px-2 py-1"><input type="date" className={inputCls} value={newRow.last_contact || ''} onChange={e => setNewField('last_contact', e.target.value || '')} /></td>
+        <td className="px-2 py-1"><input className={inputCls} value={newRow.comments} placeholder="Comments" onChange={e => setNewField('comments', e.target.value)} /></td>
         <td className="px-2 py-1">
-          <input type="date" className={inputCls} value={newRow.last_contact || ''}
-            onChange={e => setNewField('last_contact', e.target.value || '')} />
-        </td>
-        <td className="px-2 py-1">
-          <input className={inputCls} value={newRow.comments} placeholder="Comments"
-            onChange={e => setNewField('comments', e.target.value)} />
-        </td>
-        <td className="px-2 py-1">
-          <button
-            onMouseDown={e => { e.preventDefault(); discardNewRow(); }}
-            className="text-[10px] text-slate-400 hover:text-red-500" title="Discard">
-            &times;
-          </button>
+          <button onMouseDown={e => { e.preventDefault(); discardNewRow(); }} className="text-[10px] text-slate-400 hover:text-red-500" title="Discard">&times;</button>
         </td>
       </tr>
     );
   }
 
-  // ------------------------------------------------------------------
-  // Existing row renderer
-  // ------------------------------------------------------------------
   function renderRow(user) {
     const isEditing = editMode && editingRowId === user.id;
-    const draft     = isEditing ? editRowDraft : user;
+    const draft = isEditing ? editRowDraft : user;
     const rowStatus = user.status === 'inactive' ? 'inactive' : 'active';
-    const roles     = rolesForFn(draft.function || '');
+    const roles = rolesForFn(draft.function || '');
 
     const cellInput = (field, placeholder = '') => (
       <input
@@ -698,111 +619,72 @@ export default function UserListPage() {
     return (
       <tr
         key={user.id}
-        className={`border-b transition-colors ${
-          isEditing
-            ? 'bg-amber-50/50 ring-1 ring-inset ring-amber-300'
-            : `${STATUS_BG[rowStatus]} ${STATUS_HOVER[rowStatus]}`
-        }`}
+        className={`border-b transition-colors ${isEditing ? 'bg-amber-50/50 ring-1 ring-inset ring-amber-300' : `${STATUS_BG[rowStatus]} ${STATUS_HOVER[rowStatus]}`}`}
         onBlur={isEditing ? e => handleEditRowBlur(e, user.id) : undefined}
         onKeyDown={isEditing ? e => handleEditRowKeyDown(e, user.id) : undefined}
         onClick={!isEditing ? () => startEditRow(user) : undefined}
       >
-        {/* SESA ID */}
         <td className="px-2 py-1.5 overflow-hidden">{cellInput('sesa_id', 'SESA ID')}</td>
-        {/* First Name */}
         <td className="px-2 py-1.5 overflow-hidden">{cellInput('first_name', 'First name')}</td>
-        {/* Last Name */}
         <td className="px-2 py-1.5 overflow-hidden">{cellInput('last_name', 'Last name')}</td>
-        {/* Mail */}
         <td className="px-2 py-1.5 overflow-hidden">{cellInput('mail', 'mail@...')}</td>
-        {/* Manager Mail */}
         <td className="px-2 py-1.5 overflow-hidden">{cellInput('manager_mail', 'manager@...')}</td>
-        {/* Function */}
         <td className="px-2 py-1.5 overflow-hidden">
           {isEditing ? (
-            <select className={selectCls} value={draft.function || ''}
-              onChange={e => handleDraftSelect('function', e.target.value)}>
+            <select className={selectCls} value={draft.function || ''} onChange={e => handleDraftSelect('function', e.target.value)}>
               <option value="">-</option>
               {matrixFunctions.map(f => <option key={f} value={f}>{f}</option>)}
             </select>
           ) : (
-            <span className="text-xs text-slate-700 truncate block" title={user.function || ''}>
-              {user.function || <span className="text-slate-300">-</span>}
-            </span>
+            <span className="text-xs text-slate-700 truncate block" title={user.function || ''}>{user.function || <span className="text-slate-300">-</span>}</span>
           )}
         </td>
-        {/* Role */}
         <td className="px-2 py-1.5 overflow-hidden">
           {isEditing ? (
-            <select className={selectCls} value={draft.role || ''}
-              onChange={e => handleDraftSelect('role', e.target.value)}
-              disabled={!draft.function}>
+            <select className={selectCls} value={draft.role || ''} onChange={e => handleDraftSelect('role', e.target.value)} disabled={!draft.function}>
               <option value="">-</option>
               {roles.map(r => <option key={r} value={r}>{r}</option>)}
             </select>
           ) : (
-            <span className="text-xs text-slate-700 truncate block" title={user.role || ''}>
-              {user.role || <span className="text-slate-300">-</span>}
-            </span>
+            <span className="text-xs text-slate-700 truncate block" title={user.role || ''}>{user.role || <span className="text-slate-300">-</span>}</span>
           )}
         </td>
-        {/* Description */}
         <td className="px-2 py-1.5 overflow-hidden">{cellInput('description', 'Description')}</td>
-        {/* Additional Info */}
         {infoKeys.map(k => (
           <td key={k} className="px-2 py-1.5 text-center">
-            <input type="checkbox" checked={!!draft[k]}
-              disabled={!isEditing}
-              onChange={e => isEditing && handleDraftBool(k, e.target.checked)}
-              className={`w-3.5 h-3.5 rounded accent-blue-600 ${isEditing ? 'cursor-pointer' : 'cursor-default'}`} />
+            <input type="checkbox" checked={!!draft[k]} disabled={!isEditing} onChange={e => isEditing && handleDraftBool(k, e.target.checked)} className={`w-3.5 h-3.5 rounded accent-blue-600 ${isEditing ? 'cursor-pointer' : 'cursor-default'}`} />
           </td>
         ))}
-        {/* Training (readonly, auto) */}
         <td className="px-2 py-1.5"><TrainingCell user={draft} /></td>
-        {/* TLG (readonly, auto) */}
         <td className="px-2 py-1.5"><TlgCell user={draft} /></td>
-        {/* Status */}
         <td className="px-2 py-1.5 overflow-hidden">
           {isEditing ? (
-            <select className={selectCls} value={draft.status || 'active'}
-              onChange={e => setDraftField('status', e.target.value)}>
+            <select className={selectCls} value={draft.status || 'active'} onChange={e => setDraftField('status', e.target.value)}>
               {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
             </select>
           ) : (
-            <span className={`text-[10px] font-semibold rounded-full px-2 py-0.5 ${
-              user.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-500'
-            }`}>{user.status || '-'}</span>
+            <span className={`text-[10px] font-semibold rounded-full px-2 py-0.5 ${user.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-500'}`}>{user.status || '-'}</span>
           )}
         </td>
-        {/* Last Contact */}
         <td className="px-2 py-1.5 overflow-hidden">
           {isEditing ? (
-            <input type="date" className={inputCls} value={draft.last_contact || ''}
-              onChange={e => setDraftField('last_contact', e.target.value || '')} />
+            <input type="date" className={inputCls} value={draft.last_contact || ''} onChange={e => setDraftField('last_contact', e.target.value || '')} />
           ) : (
             <span className="text-xs text-slate-600">{user.last_contact || <span className="text-slate-300">-</span>}</span>
           )}
         </td>
-        {/* Comments */}
         <td className="px-2 py-1.5 overflow-hidden">{cellInput('comments', 'Comments')}</td>
-        {/* Delete -- always rendered to keep column count stable; hidden when not in edit mode */}
         <td className="px-2 py-1.5" style={{ width: 32, minWidth: 32 }}>
           {editMode && (
-            <button
-              onMouseDown={e => { e.preventDefault(); deleteMutation.mutate(user.id); }}
-              disabled={deleteMutation.isPending}
-              className="text-slate-300 hover:text-red-500 text-xs disabled:opacity-40">&times;</button>
+            <button onMouseDown={e => { e.preventDefault(); deleteMutation.mutate(user.id); }} disabled={deleteMutation.isPending} className="text-slate-300 hover:text-red-500 text-xs disabled:opacity-40">&times;</button>
           )}
         </td>
       </tr>
     );
   }
 
-  // ------------------------------------------------------------------
-  // Render
-  // ------------------------------------------------------------------
   const thBase = 'px-2 py-2 text-left text-[10px] font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
-  const colCount = 15 + infoKeys.length; // always 15 base cols + infoKeys (delete col always present)
+  const colCount = 15 + infoKeys.length;
   const minW = 1632 + infoKeys.length * 80;
 
   return (
@@ -811,17 +693,10 @@ export default function UserListPage() {
         <div>
           <h1 className="text-xl font-bold text-slate-800">User List</h1>
           <p className="text-sm text-slate-500">
-            {users.length} user{users.length !== 1 ? 's' : ''} -- training and TLG auto-filled from Role Matrix
+            {users.length} user{users.length !== 1 ? 's' : ''}
           </p>
         </div>
         <div className="flex gap-3 items-center flex-wrap justify-end">
-          {editMode && (
-            <button onClick={handleClearAll}
-              disabled={clearAllMutation.isPending || users.length === 0}
-              className="border border-red-200 text-red-600 px-3 py-1.5 rounded-lg text-sm hover:bg-red-50 disabled:opacity-40">
-              {clearAllMutation.isPending ? 'Deleting...' : 'Empty list'}
-            </button>
-          )}
           <ToggleSwitch
             checked={editMode}
             onChange={v => {
@@ -837,19 +712,24 @@ export default function UserListPage() {
             label="Edit mode"
           />
           {editMode && (
-            <button onClick={openNewRow}
-              className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">
+            <button onClick={openNewRow} className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">
               Add user
             </button>
           )}
-          <input className="border rounded-lg px-3 py-1.5 text-sm" placeholder="Search..."
-            value={filter} onChange={e => setFilter(e.target.value)} />
-          <button onClick={() => fileRef.current.click()} disabled={importMutation.isPending}
-            className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
+          {editMode && (
+            <button
+              onClick={handleClearAll}
+              disabled={clearAllMutation.isPending || users.length === 0}
+              className="border border-red-200 text-red-600 px-3 py-1.5 rounded-lg text-sm hover:bg-red-50 disabled:opacity-40"
+            >
+              {clearAllMutation.isPending ? 'Deleting...' : 'Empty list'}
+            </button>
+          )}
+          <input className="border rounded-lg px-3 py-1.5 text-sm" placeholder="Search..." value={filter} onChange={e => setFilter(e.target.value)} />
+          <button onClick={() => fileRef.current.click()} disabled={importMutation.isPending} className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
             {importMutation.isPending ? 'Importing...' : 'Import Excel'}
           </button>
-          <button onClick={handleExport} disabled={users.length === 0}
-            className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
+          <button onClick={handleExport} disabled={users.length === 0} className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
             Export Excel
           </button>
           <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleFileChange} />
@@ -860,10 +740,7 @@ export default function UserListPage() {
       {importStats && !importMutation.isPending && (
         <p className="text-sm text-green-600 mb-2 shrink-0">Import complete: {importStats.imported} users.</p>
       )}
-
-      {editRowSaving && (
-        <p className="text-xs text-blue-500 mb-1 shrink-0">Saving...</p>
-      )}
+      {editRowSaving && <p className="text-xs text-blue-500 mb-1 shrink-0">Saving...</p>}
 
       <div className="overflow-y-auto overflow-x-auto rounded-xl border bg-white flex-1">
         <table className="text-sm border-collapse" style={{ tableLayout: 'fixed', minWidth: minW }}>
@@ -897,9 +774,14 @@ export default function UserListPage() {
               {infoKeys.map(k => (
                 <th key={k} className={`${thBase} align-bottom`} title={k}>
                   <span style={{
-                    writingMode: 'vertical-rl', transform: 'rotate(180deg)',
-                    display: 'inline-block', maxHeight: 90,
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 9,
+                    writingMode: 'vertical-rl',
+                    transform: 'rotate(180deg)',
+                    display: 'inline-block',
+                    maxHeight: 90,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    fontSize: 9,
                   }}>{k}</span>
                 </th>
               ))}
@@ -918,9 +800,7 @@ export default function UserListPage() {
             )}
             {!isLoading && filtered.length === 0 && !newRow && (
               <tr><td colSpan={colCount} className="px-3 py-12 text-center text-slate-400 text-sm">
-                {users.length === 0
-                  ? 'No users yet. Import an Excel file or click Add user in Edit mode.'
-                  : 'No users match the search.'}
+                {users.length === 0 ? 'No users yet. Import an Excel file or click Add user in Edit mode.' : 'No users match the search.'}
               </td></tr>
             )}
             {filtered.map(user => renderRow(user))}
