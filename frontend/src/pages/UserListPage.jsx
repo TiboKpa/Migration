@@ -23,12 +23,16 @@ const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slat
 
 function sanitizePayload(row, infoKeys) {
   const EMAIL_FIELDS = ['mail', 'manager_mail'];
-  const SKIP = ['complementary_names', 'tlg_addon', 'na_training', 'na_tlg', 'tlg_primary'];
+  // na_training and na_tlg are frontend-only display flags derived from lookup, not stored
+  // tlg_primary is sent as tlg_group
+  const SKIP = ['na_training', 'na_tlg', 'tlg_primary'];
   const payload = {};
   for (const [k, v] of Object.entries(row)) {
     if (SKIP.includes(k)) continue;
     if (EMAIL_FIELDS.includes(k)) {
       payload[k] = v && /^[^@]+@[^@]+\.[^@]+$/.test(String(v).trim()) ? String(v).trim() : null;
+    } else if (Array.isArray(v)) {
+      payload[k] = v;
     } else if (typeof v === 'string') {
       payload[k] = v.trim() || null;
     } else {
@@ -37,6 +41,7 @@ function sanitizePayload(row, infoKeys) {
   }
   payload.recommended_training = row.recommended_training || null;
   payload.tlg_group = row.tlg_primary || null;
+  // complementary_names and tlg_addon are already set above via the Array.isArray branch
   for (const k of infoKeys) payload[k] = !!row[k];
   return payload;
 }
@@ -77,7 +82,9 @@ function parseExcelUsers(buffer, infoKeys) {
       role: String(row[col('Role')] || '').trim(),
       description: String(row[col('Description')] || '').trim(),
       recommended_training: String(row[col('PDM Windchill')] || '').trim() || null,
+      complementary_names: [],
       tlg_group: String(row[col('TLG')] || '').trim() || null,
+      tlg_addon: [],
       status: String(row[col('Status')] || 'active').trim() || 'active',
       last_contact: String(row[col('Last Contact')] || '').trim() || null,
       comments: String(row[col('Comments')] || '').trim(),
@@ -89,6 +96,18 @@ function parseExcelUsers(buffer, infoKeys) {
     users.push(entry);
   }
   return users;
+}
+
+// Normalize a user row coming from the server so frontend always has the
+// fields it expects, regardless of whether the DB columns exist yet.
+function normalizeUser(u) {
+  return {
+    ...u,
+    complementary_names: Array.isArray(u.complementary_names) ? u.complementary_names : [],
+    tlg_addon: Array.isArray(u.tlg_addon) ? u.tlg_addon : [],
+    // expose tlg_group as tlg_primary for display consistency
+    tlg_primary: u.tlg_primary || u.tlg_group || '',
+  };
 }
 
 function ToggleSwitch({ checked, onChange, label }) {
@@ -164,11 +183,13 @@ export default function UserListPage() {
   const editRowDraftRef = useRef({});
   const [editRowSaving, setEditRowSaving] = useState(false);
 
-  const { data: users = [], isLoading } = useQuery({
+  const { data: rawUsers = [], isLoading } = useQuery({
     queryKey: ['users', projectId],
     queryFn: () => client.get(`/projects/${projectId}/users`).then(r => r.data),
     staleTime: 0,
   });
+
+  const users = useMemo(() => rawUsers.map(normalizeUser), [rawUsers]);
 
   const { data: matrixEntries = [] } = useQuery({
     queryKey: ['role-matrix', projectId],
@@ -220,7 +241,11 @@ export default function UserListPage() {
 
   function applyLookup(result) {
     if (!result || !result.found) {
-      return { recommended_training: '', complementary_names: [], tlg_primary: '', tlg_addon: [], na_training: false, na_tlg: false };
+      return {
+        recommended_training: '', complementary_names: [],
+        tlg_primary: '', tlg_addon: [],
+        na_training: false, na_tlg: false,
+      };
     }
     return {
       recommended_training: result.na_training ? 'N/A' : (result.primary_training_name || ''),
@@ -359,7 +384,6 @@ export default function UserListPage() {
     if (!snap.function || !snap.role) return snap;
     const result = await lookup(snap);
     const lookupData = applyLookup(result);
-    // only overwrite training/TLG fields, never infoKeys
     const merged = { ...snap, ...lookupData };
     newRowRef.current = merged;
     setNewRow({ ...merged });
@@ -382,7 +406,6 @@ export default function UserListPage() {
   }
 
   async function handleNewBool(field, value) {
-    // update the field first, then re-run lookup (training/TLG only)
     const snap = { ...newRowRef.current, [field]: value };
     newRowRef.current = snap;
     setNewRow({ ...snap });
@@ -417,7 +440,6 @@ export default function UserListPage() {
     let finalDraft = { ...draft };
     if (draft.function !== original.function || draft.role !== original.role) {
       const result = await lookup(draft);
-      // only merge training/TLG fields from lookup, preserve infoKeys
       const lookupData = applyLookup(result);
       finalDraft = { ...finalDraft, ...lookupData };
     }
@@ -466,11 +488,9 @@ export default function UserListPage() {
   }
 
   async function handleDraftBool(field, value) {
-    // update the infoKey field immediately in the ref and state
     const snap = { ...editRowDraftRef.current, [field]: value };
     editRowDraftRef.current = snap;
     setEditRowDraft({ ...snap });
-    // re-run lookup only if function+role are set; merge training/TLG only
     if (snap.function && snap.role) {
       const result = await lookup(snap);
       const lookupData = applyLookup(result);
@@ -706,7 +726,6 @@ export default function UserListPage() {
           </p>
         </div>
         <div className="flex gap-3 items-center flex-wrap justify-end">
-          {/* Edit-mode actions -- rendered left of the toggle so toggle stays anchored */}
           {editMode && (
             <button onClick={openNewRow} className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">
               Add user
@@ -721,7 +740,6 @@ export default function UserListPage() {
               {clearAllMutation.isPending ? 'Deleting...' : 'Empty list'}
             </button>
           )}
-          {/* Toggle always stays at the right edge of the action group */}
           <ToggleSwitch
             checked={editMode}
             onChange={v => {
