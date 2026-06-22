@@ -13,10 +13,10 @@ const COLUMNS = [
   { key: 'last_name',    label: 'Last Name',         width: 100, excelHeader: 'Last Name' },
   { key: 'mail',         label: 'Mail',              width: 160, excelHeader: 'Mail' },
   { key: 'manager_mail', label: 'Manager Mail',      width: 160, excelHeader: 'Manager Mail' },
-  { key: 'function',     label: 'Function',          width: 140, excelHeader: 'Function' },
-  { key: 'role',         label: 'Role',              width: 140, excelHeader: 'Role' },
+  { key: 'function',     label: 'Function',          width: 160, excelHeader: 'Function' },
+  { key: 'role',         label: 'Role',              width: 160, excelHeader: 'Role' },
   { key: 'description',  label: 'Description',       width: 180, excelHeader: 'Description' },
-  // infoKey columns injected dynamically here (28px each)
+  // infoKey columns injected dynamically here (32px each, matching RoleMatrixPage)
   { key: '_training',    label: 'Primary Training',  width: 220, excelHeader: 'PDM Windchill' },
   { key: '_tlg',         label: 'TLG',               width: 140, excelHeader: 'TLG' },
   { key: 'status',       label: 'Status',            width: 90,  excelHeader: 'Status' },
@@ -26,8 +26,6 @@ const COLUMNS = [
 ];
 
 // The exact set of fixed field keys the backend accepts at the top level.
-// Derived from COLUMNS (minus virtual _-prefixed keys) plus the array fields
-// that do not have their own column.
 const FIXED_PAYLOAD_KEYS = new Set([
   'sesa_id', 'first_name', 'last_name', 'mail', 'manager_mail',
   'function', 'role', 'description',
@@ -37,8 +35,8 @@ const FIXED_PAYLOAD_KEYS = new Set([
   'additional_info',
 ]);
 
-// Width of each additional-info checkbox column.
-const INFO_COL_W = 28;
+// Width of each additional-info column -- matches RoleMatrixPage COL.info.
+const INFO_COL_W = 32;
 
 const STATUS_OPTIONS = ['active', 'inactive'];
 
@@ -58,18 +56,14 @@ function emptyNewRow(infoKeys) {
   return base;
 }
 
-// Build only the payload the backend accepts.
-// Whitelist approach: only FIXED_PAYLOAD_KEYS pass through.
-// infoKeys are packed into additional_info and never sent as flat fields.
-// Any other key (legacy DB columns, computed UI state) is silently dropped.
 function sanitizePayload(row, infoKeys) {
   const EMAIL_FIELDS = new Set(['mail', 'manager_mail']);
   const payload = {};
 
   for (const k of FIXED_PAYLOAD_KEYS) {
-    if (k === 'additional_info') continue; // built separately below
-    if (k === 'tlg_group') continue;       // built separately below
-    if (k === 'recommended_training') continue; // built separately below
+    if (k === 'additional_info') continue;
+    if (k === 'tlg_group') continue;
+    if (k === 'recommended_training') continue;
     const v = row[k];
     if (EMAIL_FIELDS.has(k)) {
       payload[k] = (v && /^[^@]+@[^@]+\.[^@]+$/.test(String(v).trim())) ? String(v).trim() : null;
@@ -82,11 +76,9 @@ function sanitizePayload(row, infoKeys) {
     }
   }
 
-  // Fields derived from UI state flags.
   payload.recommended_training = row.na_training ? 'N/A' : (row.recommended_training || null);
   payload.tlg_group = row.na_tlg ? 'N/A' : (row.tlg_primary || null);
 
-  // Pack all role-matrix info keys into additional_info -- never as flat fields.
   const additional_info = {};
   for (const k of infoKeys) additional_info[k] = !!row[k];
   payload.additional_info = additional_info;
@@ -171,15 +163,11 @@ function parseExcelUsers(buffer, infoKeys) {
   return users;
 }
 
-// Normalize a raw user row from the backend into the shape the UI expects.
-// Spreads additional_info keys onto the top level for checkbox rendering.
-// Does NOT propagate any other unknown columns.
 function normalizeUser(u) {
   const naTraining = u.recommended_training === 'N/A';
   const naTlg = u.tlg_group === 'N/A' || u.tlg_primary === 'N/A';
   const info = (u.additional_info && typeof u.additional_info === 'object') ? u.additional_info : {};
 
-  // Only keep known fixed fields from the raw row to avoid stale DB columns leaking in.
   const fixed = {};
   for (const k of FIXED_PAYLOAD_KEYS) {
     if (k === 'additional_info') continue;
@@ -697,9 +685,10 @@ export default function UserListPage() {
   const minW = COLUMNS.reduce((acc, c) => acc + c.width, 0) + infoKeys.length * INFO_COL_W;
   const colCount = COLUMNS.length - 1 + infoKeys.length;
 
+  // Match RoleMatrixPage thBase exactly.
+  const thBase    = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide overflow-hidden text-ellipsis whitespace-nowrap';
   const inputCls  = 'border rounded px-1 py-0.5 text-xs w-full bg-white focus:ring-1 focus:ring-blue-400 outline-none';
   const selectCls = 'border rounded px-1 py-0.5 text-xs w-full bg-white focus:ring-1 focus:ring-blue-400 outline-none';
-  const thBase    = 'px-2 py-2 text-left text-[10px] font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
 
   function renderNewRow() {
     if (!newRow) return null;
@@ -712,7 +701,7 @@ export default function UserListPage() {
         onFocus={handleNewRowFocus}
         onKeyDown={handleNewRowKeyDown}
       >
-        <td className="px-2 py-1">
+        <td className="px-3 py-2">
           <div className="relative">
             <input
               className={`${inputCls} border-blue-300`}
@@ -726,25 +715,25 @@ export default function UserListPage() {
             )}
           </div>
         </td>
-        <td className="px-2 py-1"><input className={inputCls} value={newRow.first_name} placeholder="First name" onChange={e => setNewField('first_name', e.target.value)} /></td>
-        <td className="px-2 py-1"><input className={inputCls} value={newRow.last_name} placeholder="Last name" onChange={e => setNewField('last_name', e.target.value)} /></td>
-        <td className="px-2 py-1"><input className={inputCls} value={newRow.mail} placeholder="mail@..." onChange={e => setNewField('mail', e.target.value)} /></td>
-        <td className="px-2 py-1"><input className={inputCls} value={newRow.manager_mail} placeholder="manager@..." onChange={e => setNewField('manager_mail', e.target.value)} /></td>
-        <td className="px-2 py-1">
+        <td className="px-3 py-2"><input className={inputCls} value={newRow.first_name} placeholder="First name" onChange={e => setNewField('first_name', e.target.value)} /></td>
+        <td className="px-3 py-2"><input className={inputCls} value={newRow.last_name} placeholder="Last name" onChange={e => setNewField('last_name', e.target.value)} /></td>
+        <td className="px-3 py-2"><input className={inputCls} value={newRow.mail} placeholder="mail@..." onChange={e => setNewField('mail', e.target.value)} /></td>
+        <td className="px-3 py-2"><input className={inputCls} value={newRow.manager_mail} placeholder="manager@..." onChange={e => setNewField('manager_mail', e.target.value)} /></td>
+        <td className="px-3 py-2">
           <select className={selectCls} value={newRow.function} onChange={e => handleNewSelect('function', e.target.value)}>
             <option value="">Select...</option>
             {matrixFunctions.map(f => <option key={f} value={f}>{f}</option>)}
           </select>
         </td>
-        <td className="px-2 py-1">
+        <td className="px-3 py-2">
           <select className={selectCls} value={newRow.role} onChange={e => handleNewSelect('role', e.target.value)} disabled={!newRow.function}>
             <option value="">Select...</option>
             {roles.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
         </td>
-        <td className="px-2 py-1"><input className={inputCls} value={newRow.description} placeholder="Description" onChange={e => setNewField('description', e.target.value)} /></td>
+        <td className="px-3 py-2"><input className={inputCls} value={newRow.description} placeholder="Description" onChange={e => setNewField('description', e.target.value)} /></td>
         {infoKeys.map(k => (
-          <td key={k} className="text-center" style={{ width: INFO_COL_W, minWidth: INFO_COL_W, padding: '3px 0' }}>
+          <td key={k} className="text-center py-2" style={{ width: INFO_COL_W, minWidth: INFO_COL_W }}>
             <input
               type="checkbox"
               checked={!!newRow[k]}
@@ -753,16 +742,16 @@ export default function UserListPage() {
             />
           </td>
         ))}
-        <td className="px-2 py-1"><TrainingCell user={newRow} /></td>
-        <td className="px-2 py-1"><TlgCell user={newRow} /></td>
-        <td className="px-2 py-1">
+        <td className="px-3 py-2"><TrainingCell user={newRow} /></td>
+        <td className="px-3 py-2"><TlgCell user={newRow} /></td>
+        <td className="px-3 py-2">
           <select className={selectCls} value={newRow.status} onChange={e => setNewField('status', e.target.value)}>
             {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
           </select>
         </td>
-        <td className="px-2 py-1"><input type="date" className={inputCls} value={newRow.last_contact || ''} onChange={e => setNewField('last_contact', e.target.value || '')} /></td>
-        <td className="px-2 py-1"><input className={inputCls} value={newRow.comments} placeholder="Comments" onChange={e => setNewField('comments', e.target.value)} /></td>
-        <td className="px-2 py-1">
+        <td className="px-3 py-2"><input type="date" className={inputCls} value={newRow.last_contact || ''} onChange={e => setNewField('last_contact', e.target.value || '')} /></td>
+        <td className="px-3 py-2"><input className={inputCls} value={newRow.comments} placeholder="Comments" onChange={e => setNewField('comments', e.target.value)} /></td>
+        <td className="px-3 py-2">
           <button onMouseDown={e => { e.preventDefault(); discardNewRow(); }} className="text-[10px] text-slate-400 hover:text-red-500" title="Discard">&times;</button>
         </td>
       </tr>
@@ -799,12 +788,12 @@ export default function UserListPage() {
         onKeyDown={isEditing ? e => handleEditRowKeyDown(e, user.id) : undefined}
         onClick={!isEditing && editMode ? () => startEditRow(user) : undefined}
       >
-        <td className="px-2 py-1.5 overflow-hidden">{cellInput('sesa_id', 'SESA ID')}</td>
-        <td className="px-2 py-1.5 overflow-hidden">{cellInput('first_name', 'First name')}</td>
-        <td className="px-2 py-1.5 overflow-hidden">{cellInput('last_name', 'Last name')}</td>
-        <td className="px-2 py-1.5 overflow-hidden">{cellInput('mail', 'mail@...')}</td>
-        <td className="px-2 py-1.5 overflow-hidden">{cellInput('manager_mail', 'manager@...')}</td>
-        <td className="px-2 py-1.5 overflow-hidden">
+        <td className="px-3 py-2 overflow-hidden">{cellInput('sesa_id', 'SESA ID')}</td>
+        <td className="px-3 py-2 overflow-hidden">{cellInput('first_name', 'First name')}</td>
+        <td className="px-3 py-2 overflow-hidden">{cellInput('last_name', 'Last name')}</td>
+        <td className="px-3 py-2 overflow-hidden">{cellInput('mail', 'mail@...')}</td>
+        <td className="px-3 py-2 overflow-hidden">{cellInput('manager_mail', 'manager@...')}</td>
+        <td className="px-3 py-2 overflow-hidden">
           {isEditing ? (
             <select className={selectCls} value={draft.function || ''} onChange={e => handleDraftSelect('function', e.target.value)}>
               <option value="">-</option>
@@ -816,7 +805,7 @@ export default function UserListPage() {
             </span>
           )}
         </td>
-        <td className="px-2 py-1.5 overflow-hidden">
+        <td className="px-3 py-2 overflow-hidden">
           {isEditing ? (
             <select className={selectCls} value={draft.role || ''} onChange={e => handleDraftSelect('role', e.target.value)} disabled={!draft.function}>
               <option value="">-</option>
@@ -828,21 +817,28 @@ export default function UserListPage() {
             </span>
           )}
         </td>
-        <td className="px-2 py-1.5 overflow-hidden">{cellInput('description', 'Description')}</td>
+        <td className="px-3 py-2 overflow-hidden">{cellInput('description', 'Description')}
+        </td>
         {infoKeys.map(k => (
-          <td key={k} className="text-center" style={{ width: INFO_COL_W, minWidth: INFO_COL_W, padding: '4px 0' }}>
-            <input
-              type="checkbox"
-              checked={!!draft[k]}
-              disabled={!isEditing}
-              onChange={e => isEditing && handleDraftBool(k, e.target.checked)}
-              className={`w-3 h-3 rounded accent-blue-600 block mx-auto ${isEditing ? 'cursor-pointer' : 'cursor-default'}`}
-            />
+          <td key={k} className="text-center py-2" style={{ width: INFO_COL_W, minWidth: INFO_COL_W }}>
+            {isEditing ? (
+              <input
+                type="checkbox"
+                checked={!!draft[k]}
+                onChange={e => handleDraftBool(k, e.target.checked)}
+                className="w-3 h-3 rounded accent-blue-600 cursor-pointer block mx-auto"
+              />
+            ) : (
+              // Read mode: Y/N text matching RoleMatrixPage exactly.
+              <span className={`text-xs font-medium ${draft[k] ? 'text-blue-600' : 'text-slate-300'}`}>
+                {draft[k] ? 'Y' : 'N'}
+              </span>
+            )}
           </td>
         ))}
-        <td className="px-2 py-1.5"><TrainingCell user={draft} /></td>
-        <td className="px-2 py-1.5"><TlgCell user={draft} /></td>
-        <td className="px-2 py-1.5 overflow-hidden">
+        <td className="px-3 py-2"><TrainingCell user={draft} /></td>
+        <td className="px-3 py-2"><TlgCell user={draft} /></td>
+        <td className="px-3 py-2 overflow-hidden">
           {isEditing ? (
             <select className={selectCls} value={draft.status || 'active'} onChange={e => setDraftField('status', e.target.value)}>
               {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
@@ -853,15 +849,15 @@ export default function UserListPage() {
             }`}>{user.status || '-'}</span>
           )}
         </td>
-        <td className="px-2 py-1.5 overflow-hidden">
+        <td className="px-3 py-2 overflow-hidden">
           {isEditing ? (
             <input type="date" className={inputCls} value={draft.last_contact || ''} onChange={e => setDraftField('last_contact', e.target.value || '')} />
           ) : (
             <span className="text-xs text-slate-600">{user.last_contact || <span className="text-slate-300">-</span>}</span>
           )}
         </td>
-        <td className="px-2 py-1.5 overflow-hidden">{cellInput('comments', 'Comments')}</td>
-        <td className="py-1.5 text-center" style={{ width: 32, minWidth: 32 }}>
+        <td className="px-3 py-2 overflow-hidden">{cellInput('comments', 'Comments')}</td>
+        <td className="py-2 text-center" style={{ width: 32, minWidth: 32 }}>
           {editMode && (
             <button
               onMouseDown={e => { e.preventDefault(); deleteMutation.mutate(user.id); }}
@@ -951,18 +947,22 @@ export default function UserListPage() {
                 <th
                   key={k}
                   title={k}
-                  style={{
-                    width: INFO_COL_W, minWidth: INFO_COL_W,
-                    padding: '2px 0', textAlign: 'center', verticalAlign: 'bottom',
-                  }}
-                  className="bg-slate-50"
+                  className="px-0 pb-2 pt-3 text-center align-bottom overflow-hidden bg-slate-50"
+                  style={{ width: INFO_COL_W, minWidth: INFO_COL_W }}
                 >
                   <span style={{
-                    writingMode: 'vertical-rl', transform: 'rotate(180deg)',
-                    display: 'inline-block', maxHeight: 72, overflow: 'hidden',
-                    textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    fontSize: 8, fontWeight: 600, color: '#64748b',
-                    textTransform: 'uppercase', letterSpacing: '0.02em',
+                    writingMode: 'vertical-rl',
+                    transform: 'rotate(180deg)',
+                    display: 'inline-block',
+                    maxHeight: 120,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    fontSize: 10,
+                    fontWeight: 600,
+                    color: '#94a3b8',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.04em',
                   }}>{k}</span>
                 </th>
               ))}
