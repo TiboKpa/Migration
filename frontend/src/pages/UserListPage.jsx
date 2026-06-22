@@ -47,11 +47,27 @@ const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slat
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// Convert an Excel date serial (integer number of days since 1900-01-01,
+// with Excel's incorrect leap-year bug accounted for) to YYYY-MM-DD.
+function excelSerialToDate(serial) {
+  const n = Number(serial);
+  if (!n || isNaN(n) || n < 1) return '';
+  // Excel epoch: January 0, 1900 = Dec 30 1899 in JS
+  const date = new Date(Date.UTC(1899, 11, 30) + n * 86400000);
+  if (isNaN(date.getTime())) return '';
+  return date.toISOString().slice(0, 10);
+}
+
 function toDateOnly(val) {
-  if (!val) return '';
-  const s = String(val);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  return s.split('T')[0];
+  if (!val && val !== 0) return '';
+  // Already a YYYY-MM-DD string
+  if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val)) return val;
+  // ISO datetime string
+  if (typeof val === 'string' && val.includes('T')) return val.split('T')[0];
+  // Numeric Excel serial (may arrive as number or numeric string)
+  if (!isNaN(Number(val)) && String(val).trim() !== '') return excelSerialToDate(Number(val));
+  return String(val).split('T')[0];
 }
 
 function emptyNewRow(infoKeys) {
@@ -128,6 +144,9 @@ function colIdx(headerMap, excelHeader) {
 //   The website re-derives them from the matrix after Function/Role/Additional Info.
 // - Each infoKey is read from a column whose header exactly matches the key name
 //   (case-insensitive). Only known infoKeys are read; any other columns are ignored.
+// - An empty SESA ID cell signals the end of data; parsing stops immediately.
+// - If the row immediately after the header row contains the literal header label
+//   (e.g. the template repeats the column name as a hint row), it is skipped.
 // ---------------------------------------------------------------------------
 function parseExcelUsers(buffer, infoKeys) {
   const wb = XLSX.read(buffer, { type: 'array' });
@@ -135,9 +154,11 @@ function parseExcelUsers(buffer, infoKeys) {
   const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
   const sesaColDef = COLUMNS.find(c => c.key === 'sesa_id');
+  const sesaHeaderLabel = sesaColDef.excelHeader.toLowerCase(); // "sesa id"
+
   let headerRowIdx = -1;
   for (let i = 0; i < raw.length; i++) {
-    if (raw[i].map(c => String(c).trim().toLowerCase()).includes(sesaColDef.excelHeader.toLowerCase())) {
+    if (raw[i].map(c => String(c).trim().toLowerCase()).includes(sesaHeaderLabel)) {
       headerRowIdx = i;
       break;
     }
@@ -159,11 +180,23 @@ function parseExcelUsers(buffer, infoKeys) {
     return normalizeYesNo(v);
   }
 
+  // Raw value from the SESA column (before stringification) to detect numerics.
+  function rawSesaCell(row) {
+    const idx = colIdx(headerMap, sesaHeaderLabel);
+    return idx >= 0 ? row[idx] : '';
+  }
+
   const users = [];
   for (let i = headerRowIdx + 1; i < raw.length; i++) {
     const row = raw[i];
-    const sesaId = cell(row, sesaColDef.excelHeader);
-    if (!sesaId) continue;
+    const sesaRaw = rawSesaCell(row);
+    const sesaId = String(sesaRaw ?? '').trim();
+
+    // Empty SESA cell = end of data, stop parsing.
+    if (!sesaId) break;
+
+    // Skip a row that is just the column header label repeated (template hint rows).
+    if (sesaId.toLowerCase() === sesaHeaderLabel) continue;
 
     // Build additional_info: for each known infoKey, look for a column with
     // that exact name (case-insensitive). Unknown columns are never read.
@@ -172,6 +205,10 @@ function parseExcelUsers(buffer, infoKeys) {
       const idx = headerMap[k.toLowerCase()] ?? -1;
       additional_info[k] = idx >= 0 ? normalizeYesNo(row[idx]) : false;
     }
+
+    // last_contact: read raw cell value so numeric serials are handled correctly.
+    const lastContactIdx = colIdx(headerMap, 'last contact');
+    const lastContactRaw = lastContactIdx >= 0 ? row[lastContactIdx] : '';
 
     const entry = {
       sesa_id:              sesaId,
@@ -189,7 +226,7 @@ function parseExcelUsers(buffer, infoKeys) {
       tlg_addon:            [],
       windchill_access:     getWindchillAccess(row),
       status:               cell(row, 'Status') || 'active',
-      last_contact:         toDateOnly(cell(row, 'Last contact')) || null,
+      last_contact:         toDateOnly(lastContactRaw) || null,
       comments:             cell(row, 'Comments') || null,
       additional_info,
     };
