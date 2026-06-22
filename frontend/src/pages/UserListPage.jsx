@@ -4,9 +4,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
 import client from '../api/client';
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
 const STATUS_OPTIONS = ['active', 'inactive'];
 
 function emptyNewRow(infoKeys) {
@@ -24,9 +21,6 @@ function emptyNewRow(infoKeys) {
 const STATUS_BG    = { inactive: 'bg-slate-100', active: '' };
 const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slate-50/50' };
 
-// ---------------------------------------------------------------------------
-// Email / payload sanitizer
-// ---------------------------------------------------------------------------
 function sanitizePayload(row, infoKeys) {
   const EMAIL_FIELDS = ['mail', 'manager_mail'];
   const SKIP = ['complementary_names', 'tlg_addon', 'na_training', 'na_tlg', 'tlg_primary'];
@@ -314,17 +308,14 @@ export default function UserListPage() {
     if (e && e.currentTarget && e.currentTarget.contains(e.relatedTarget)) return;
     const snap = newRowRef.current;
     if (!snap) return;
-
     const hasAnyData = [
       snap.sesa_id, snap.first_name, snap.last_name,
       snap.mail, snap.manager_mail, snap.function,
       snap.role, snap.description, snap.comments,
     ].some(v => v && String(v).trim());
     if (!hasAnyData) return;
-
     setNewRowSaving(true);
     const payload = sanitizePayload(snap, infoKeys);
-
     if (!newRowSaved.current) {
       createMutation.mutate(payload);
       setTimeout(() => {
@@ -360,19 +351,15 @@ export default function UserListPage() {
   }
 
   function handleNewRowKeyDown(e) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      commitAndCloseNewRow();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      discardNewRow();
-    }
+    if (e.key === 'Enter') { e.preventDefault(); commitAndCloseNewRow(); }
+    else if (e.key === 'Escape') { e.preventDefault(); discardNewRow(); }
   }
 
   async function handleNewRowLookup(snap) {
     if (!snap.function || !snap.role) return snap;
     const result = await lookup(snap);
     const lookupData = applyLookup(result);
+    // only overwrite training/TLG fields, never infoKeys
     const merged = { ...snap, ...lookupData };
     newRowRef.current = merged;
     setNewRow({ ...merged });
@@ -395,8 +382,17 @@ export default function UserListPage() {
   }
 
   async function handleNewBool(field, value) {
-    let snap = setNewField(field, value);
-    snap = await handleNewRowLookup(snap);
+    // update the field first, then re-run lookup (training/TLG only)
+    const snap = { ...newRowRef.current, [field]: value };
+    newRowRef.current = snap;
+    setNewRow({ ...snap });
+    if (snap.function && snap.role) {
+      const result = await lookup(snap);
+      const lookupData = applyLookup(result);
+      const merged = { ...newRowRef.current, ...lookupData };
+      newRowRef.current = merged;
+      setNewRow({ ...merged });
+    }
   }
 
   function startEditRow(user) {
@@ -421,7 +417,9 @@ export default function UserListPage() {
     let finalDraft = { ...draft };
     if (draft.function !== original.function || draft.role !== original.role) {
       const result = await lookup(draft);
-      Object.assign(finalDraft, applyLookup(result));
+      // only merge training/TLG fields from lookup, preserve infoKeys
+      const lookupData = applyLookup(result);
+      finalDraft = { ...finalDraft, ...lookupData };
     }
     const payload = sanitizePayload(finalDraft, infoKeys);
     updateMutation.mutate({ id: userId, payload });
@@ -442,13 +440,8 @@ export default function UserListPage() {
   }
 
   function handleEditRowKeyDown(e, userId) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      saveEditRow(userId, editRowDraftRef.current);
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      cancelEditRow();
-    }
+    if (e.key === 'Enter') { e.preventDefault(); saveEditRow(userId, editRowDraftRef.current); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancelEditRow(); }
   }
 
   function setDraftField(field, value) {
@@ -473,14 +466,18 @@ export default function UserListPage() {
   }
 
   async function handleDraftBool(field, value) {
+    // update the infoKey field immediately in the ref and state
     const snap = { ...editRowDraftRef.current, [field]: value };
     editRowDraftRef.current = snap;
     setEditRowDraft({ ...snap });
-    const result = await lookup(snap);
-    const lookupData = applyLookup(result);
-    const merged = { ...snap, ...lookupData };
-    editRowDraftRef.current = merged;
-    setEditRowDraft({ ...merged });
+    // re-run lookup only if function+role are set; merge training/TLG only
+    if (snap.function && snap.role) {
+      const result = await lookup(snap);
+      const lookupData = applyLookup(result);
+      const merged = { ...editRowDraftRef.current, ...lookupData };
+      editRowDraftRef.current = merged;
+      setEditRowDraft({ ...merged });
+    }
   }
 
   function handleFileChange(e) {
@@ -488,11 +485,8 @@ export default function UserListPage() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = evt => {
-      try {
-        importMutation.mutate(parseExcelUsers(evt.target.result, infoKeys));
-      } catch (err) {
-        setImportError(err.message);
-      }
+      try { importMutation.mutate(parseExcelUsers(evt.target.result, infoKeys)); }
+      catch (err) { setImportError(err.message); }
     };
     reader.readAsArrayBuffer(file);
     e.target.value = '';
@@ -578,8 +572,13 @@ export default function UserListPage() {
         </td>
         <td className="px-2 py-1"><input className={inputCls} value={newRow.description} placeholder="Description" onChange={e => setNewField('description', e.target.value)} /></td>
         {infoKeys.map(k => (
-          <td key={k} className="px-2 py-1 text-center">
-            <input type="checkbox" checked={!!newRow[k]} onChange={e => handleNewBool(k, e.target.checked)} className="w-3.5 h-3.5 rounded accent-blue-600 cursor-pointer" />
+          <td key={k} className="py-1 text-center" style={{ width: 44, minWidth: 44, padding: '4px 0' }}>
+            <input
+              type="checkbox"
+              checked={!!newRow[k]}
+              onChange={e => handleNewBool(k, e.target.checked)}
+              className="w-3.5 h-3.5 rounded accent-blue-600 cursor-pointer block mx-auto"
+            />
           </td>
         ))}
         <td className="px-2 py-1"><TrainingCell user={newRow} /></td>
@@ -651,8 +650,14 @@ export default function UserListPage() {
         </td>
         <td className="px-2 py-1.5 overflow-hidden">{cellInput('description', 'Description')}</td>
         {infoKeys.map(k => (
-          <td key={k} className="px-2 py-1.5 text-center">
-            <input type="checkbox" checked={!!draft[k]} disabled={!isEditing} onChange={e => isEditing && handleDraftBool(k, e.target.checked)} className={`w-3.5 h-3.5 rounded accent-blue-600 ${isEditing ? 'cursor-pointer' : 'cursor-default'}`} />
+          <td key={k} className="py-1.5 text-center" style={{ width: 44, minWidth: 44, padding: '6px 0' }}>
+            <input
+              type="checkbox"
+              checked={!!draft[k]}
+              disabled={!isEditing}
+              onChange={e => isEditing && handleDraftBool(k, e.target.checked)}
+              className={`w-3.5 h-3.5 rounded accent-blue-600 block mx-auto ${isEditing ? 'cursor-pointer' : 'cursor-default'}`}
+            />
           </td>
         ))}
         <td className="px-2 py-1.5"><TrainingCell user={draft} /></td>
@@ -674,9 +679,13 @@ export default function UserListPage() {
           )}
         </td>
         <td className="px-2 py-1.5 overflow-hidden">{cellInput('comments', 'Comments')}</td>
-        <td className="px-2 py-1.5" style={{ width: 32, minWidth: 32 }}>
+        <td className="py-1.5 text-center" style={{ width: 32, minWidth: 32 }}>
           {editMode && (
-            <button onMouseDown={e => { e.preventDefault(); deleteMutation.mutate(user.id); }} disabled={deleteMutation.isPending} className="text-slate-300 hover:text-red-500 text-xs disabled:opacity-40">&times;</button>
+            <button
+              onMouseDown={e => { e.preventDefault(); deleteMutation.mutate(user.id); }}
+              disabled={deleteMutation.isPending}
+              className="text-slate-300 hover:text-red-500 text-xs disabled:opacity-40 block mx-auto"
+            >&times;</button>
           )}
         </td>
       </tr>
@@ -685,7 +694,7 @@ export default function UserListPage() {
 
   const thBase = 'px-2 py-2 text-left text-[10px] font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
   const colCount = 15 + infoKeys.length;
-  const minW = 1632 + infoKeys.length * 80;
+  const minW = 1632 + infoKeys.length * 44;
 
   return (
     <div className="flex flex-col h-full">
@@ -697,20 +706,7 @@ export default function UserListPage() {
           </p>
         </div>
         <div className="flex gap-3 items-center flex-wrap justify-end">
-          <ToggleSwitch
-            checked={editMode}
-            onChange={v => {
-              setEditMode(v);
-              editModeRef.current = v;
-              if (!v) {
-                discardNewRow();
-                if (editingRowIdRef.current !== null) {
-                  saveEditRow(editingRowIdRef.current, editRowDraftRef.current);
-                }
-              }
-            }}
-            label="Edit mode"
-          />
+          {/* Edit-mode actions -- rendered left of the toggle so toggle stays anchored */}
           {editMode && (
             <button onClick={openNewRow} className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">
               Add user
@@ -725,6 +721,21 @@ export default function UserListPage() {
               {clearAllMutation.isPending ? 'Deleting...' : 'Empty list'}
             </button>
           )}
+          {/* Toggle always stays at the right edge of the action group */}
+          <ToggleSwitch
+            checked={editMode}
+            onChange={v => {
+              setEditMode(v);
+              editModeRef.current = v;
+              if (!v) {
+                discardNewRow();
+                if (editingRowIdRef.current !== null) {
+                  saveEditRow(editingRowIdRef.current, editRowDraftRef.current);
+                }
+              }
+            }}
+            label="Edit mode"
+          />
           <input className="border rounded-lg px-3 py-1.5 text-sm" placeholder="Search..." value={filter} onChange={e => setFilter(e.target.value)} />
           <button onClick={() => fileRef.current.click()} disabled={importMutation.isPending} className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
             {importMutation.isPending ? 'Importing...' : 'Import Excel'}
@@ -753,7 +764,7 @@ export default function UserListPage() {
             <col style={{ width: 140 }} />
             <col style={{ width: 140 }} />
             <col style={{ width: 180 }} />
-            {infoKeys.map(k => <col key={k} style={{ width: 80 }} />)}
+            {infoKeys.map(k => <col key={k} style={{ width: 44 }} />)}
             <col style={{ width: 220 }} />
             <col style={{ width: 140 }} />
             <col style={{ width: 90 }} />
@@ -772,7 +783,12 @@ export default function UserListPage() {
               <th className={thBase}>Role</th>
               <th className={thBase}>Description</th>
               {infoKeys.map(k => (
-                <th key={k} className={`${thBase} align-bottom`} title={k}>
+                <th
+                  key={k}
+                  title={k}
+                  style={{ width: 44, minWidth: 44, padding: '4px 0', textAlign: 'center', verticalAlign: 'bottom' }}
+                  className="bg-slate-50"
+                >
                   <span style={{
                     writingMode: 'vertical-rl',
                     transform: 'rotate(180deg)',
@@ -782,6 +798,10 @@ export default function UserListPage() {
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',
                     fontSize: 9,
+                    fontWeight: 600,
+                    color: '#64748b',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
                   }}>{k}</span>
                 </th>
               ))}
@@ -790,7 +810,7 @@ export default function UserListPage() {
               <th className={thBase}>Status</th>
               <th className={thBase}>Last Contact</th>
               <th className={thBase}>Comments</th>
-              <th className="px-2 py-2" />
+              <th style={{ width: 32 }} />
             </tr>
           </thead>
           <tbody>
