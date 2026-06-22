@@ -23,8 +23,6 @@ const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slat
 
 function sanitizePayload(row, infoKeys) {
   const EMAIL_FIELDS = ['mail', 'manager_mail'];
-  // na_training and na_tlg are frontend-only display flags derived from lookup, not stored
-  // tlg_primary is sent as tlg_group
   const SKIP = ['na_training', 'na_tlg', 'tlg_primary'];
   const payload = {};
   for (const [k, v] of Object.entries(row)) {
@@ -39,9 +37,9 @@ function sanitizePayload(row, infoKeys) {
       payload[k] = v;
     }
   }
-  payload.recommended_training = row.recommended_training || null;
-  payload.tlg_group = row.tlg_primary || null;
-  // complementary_names and tlg_addon are already set above via the Array.isArray branch
+  // Store N/A as the literal string so we can derive na_training/na_tlg on reload
+  payload.recommended_training = row.na_training ? 'N/A' : (row.recommended_training || null);
+  payload.tlg_group = row.na_tlg ? 'N/A' : (row.tlg_primary || null);
   for (const k of infoKeys) payload[k] = !!row[k];
   return payload;
 }
@@ -98,15 +96,17 @@ function parseExcelUsers(buffer, infoKeys) {
   return users;
 }
 
-// Normalize a user row coming from the server so frontend always has the
-// fields it expects, regardless of whether the DB columns exist yet.
+// Derive na_training / na_tlg from stored string so display is correct after reload.
 function normalizeUser(u) {
+  const naTraining = u.recommended_training === 'N/A';
+  const naTlg = (u.tlg_group === 'N/A') || (u.tlg_primary === 'N/A');
   return {
     ...u,
     complementary_names: Array.isArray(u.complementary_names) ? u.complementary_names : [],
     tlg_addon: Array.isArray(u.tlg_addon) ? u.tlg_addon : [],
-    // expose tlg_group as tlg_primary for display consistency
     tlg_primary: u.tlg_primary || u.tlg_group || '',
+    na_training: naTraining,
+    na_tlg: naTlg,
   };
 }
 
@@ -131,7 +131,9 @@ function ToggleSwitch({ checked, onChange, label }) {
 function TrainingCell({ user }) {
   if (user.na_training)
     return <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>;
-  const primary = user.recommended_training || user.primary_training_name || '';
+  const primary = (user.recommended_training && user.recommended_training !== 'N/A')
+    ? user.recommended_training
+    : (user.primary_training_name || '');
   const comp = Array.isArray(user.complementary_names) ? user.complementary_names : [];
   if (!primary && comp.length === 0) return <span className="text-xs text-slate-300">-</span>;
   return (
@@ -147,7 +149,9 @@ function TrainingCell({ user }) {
 function TlgCell({ user }) {
   if (user.na_tlg)
     return <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>;
-  const primary = user.tlg_primary || user.tlg_group || '';
+  const primary = (user.tlg_primary && user.tlg_primary !== 'N/A')
+    ? user.tlg_primary
+    : (user.tlg_group && user.tlg_group !== 'N/A' ? user.tlg_group : '');
   const addon = Array.isArray(user.tlg_addon) ? user.tlg_addon : [];
   if (!primary && addon.length === 0) return <span className="text-xs text-slate-300">-</span>;
   return (
@@ -182,6 +186,11 @@ export default function UserListPage() {
   const [editRowDraft, setEditRowDraft] = useState({});
   const editRowDraftRef = useRef({});
   const [editRowSaving, setEditRowSaving] = useState(false);
+
+  // Blur debounce: we defer the blur handler so that focus can settle
+  // (e.g. when a native <select> popup closes and refocuses the element).
+  const blurTimerEdit = useRef(null);
+  const blurTimerNew  = useRef(null);
 
   const { data: rawUsers = [], isLoading } = useQuery({
     queryKey: ['users', projectId],
@@ -279,7 +288,7 @@ export default function UserListPage() {
       setNewRowSaving(false);
       setEditRowSaving(false);
       qc.setQueryData(['users', projectId], old =>
-        Array.isArray(old) ? old.map(u => u.id === res.data.id ? res.data : u) : old
+        Array.isArray(old) ? old.map(u => u.id === res.data.id ? normalizeUser(res.data) : u) : old
       );
     },
     onError: err => {
@@ -322,6 +331,7 @@ export default function UserListPage() {
   }
 
   function discardNewRow() {
+    clearTimeout(blurTimerNew.current);
     setNewRow(null);
     newRowRef.current = null;
     newRowSaved.current = false;
@@ -329,8 +339,9 @@ export default function UserListPage() {
     setNewRowSaving(false);
   }
 
-  async function commitNewRow(e) {
-    if (e && e.currentTarget && e.currentTarget.contains(e.relatedTarget)) return;
+  // --- new-row save helpers ------------------------------------------------
+
+  function doCommitNewRow() {
     const snap = newRowRef.current;
     if (!snap) return;
     const hasAnyData = [
@@ -343,19 +354,19 @@ export default function UserListPage() {
     const payload = sanitizePayload(snap, infoKeys);
     if (!newRowSaved.current) {
       createMutation.mutate(payload);
-      setTimeout(() => {
-        const fresh = emptyNewRow(infoKeys);
-        setNewRow(fresh);
-        newRowRef.current = fresh;
-        newRowSaved.current = false;
-        newRowId.current = null;
-      }, 50);
+      // reset to blank so the row stays open for another entry
+      const fresh = emptyNewRow(infoKeys);
+      setNewRow(fresh);
+      newRowRef.current = fresh;
+      newRowSaved.current = false;
+      newRowId.current = null;
     } else if (newRowId.current) {
       updateMutation.mutate({ id: newRowId.current, payload });
     }
   }
 
-  async function commitAndCloseNewRow() {
+  function doCommitAndCloseNewRow() {
+    clearTimeout(blurTimerNew.current);
     const snap = newRowRef.current;
     if (!snap) return;
     const hasAnyData = [
@@ -375,19 +386,30 @@ export default function UserListPage() {
     discardNewRow();
   }
 
-  function handleNewRowKeyDown(e) {
-    if (e.key === 'Enter') { e.preventDefault(); commitAndCloseNewRow(); }
-    else if (e.key === 'Escape') { e.preventDefault(); discardNewRow(); }
+  // Bug fix 1+2: onBlur deferred so native <select>/<date> popups don't fire it
+  // prematurely. Enter on <select> is skipped (the select handles it itself).
+  function handleNewRowBlur(e) {
+    if (e.currentTarget.contains(e.relatedTarget)) return;
+    clearTimeout(blurTimerNew.current);
+    blurTimerNew.current = setTimeout(() => {
+      if (!newRowRef.current) return;
+      doCommitNewRow();
+    }, 150);
   }
 
-  async function handleNewRowLookup(snap) {
-    if (!snap.function || !snap.role) return snap;
-    const result = await lookup(snap);
-    const lookupData = applyLookup(result);
-    const merged = { ...snap, ...lookupData };
-    newRowRef.current = merged;
-    setNewRow({ ...merged });
-    return merged;
+  function handleNewRowFocus() {
+    clearTimeout(blurTimerNew.current);
+  }
+
+  function handleNewRowKeyDown(e) {
+    // Bug fix 2: ignore Enter fired by a <select> confirming its own selection
+    if (e.key === 'Enter' && e.target.tagName !== 'SELECT') {
+      e.preventDefault();
+      doCommitAndCloseNewRow();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      discardNewRow();
+    }
   }
 
   function setNewField(field, value) {
@@ -401,16 +423,23 @@ export default function UserListPage() {
   async function handleNewSelect(field, value) {
     let snap = setNewField(field, value);
     if (field === 'function' || field === 'role') {
-      snap = await handleNewRowLookup(snap);
+      if (!snap.function || !snap.role) return;
+      const result = await lookup(snap);
+      const lookupData = applyLookup(result);
+      // Bug fix 4: merge onto latest ref, not onto stale snap
+      const merged = { ...newRowRef.current, ...lookupData };
+      newRowRef.current = merged;
+      setNewRow({ ...merged });
     }
   }
 
   async function handleNewBool(field, value) {
-    const snap = { ...newRowRef.current, [field]: value };
-    newRowRef.current = snap;
-    setNewRow({ ...snap });
-    if (snap.function && snap.role) {
-      const result = await lookup(snap);
+    // Bug fix 4: capture snapshot before await
+    const snapBefore = { ...newRowRef.current, [field]: value };
+    newRowRef.current = snapBefore;
+    setNewRow({ ...snapBefore });
+    if (snapBefore.function && snapBefore.role) {
+      const result = await lookup(snapBefore);
       const lookupData = applyLookup(result);
       const merged = { ...newRowRef.current, ...lookupData };
       newRowRef.current = merged;
@@ -418,11 +447,17 @@ export default function UserListPage() {
     }
   }
 
+  // --- existing-row save helpers -------------------------------------------
+
   function startEditRow(user) {
     if (!editModeRef.current) return;
     if (editingRowIdRef.current === user.id) return;
     if (editingRowIdRef.current !== null) {
-      saveEditRow(editingRowIdRef.current, editRowDraftRef.current);
+      // Bug fix 3: capture values in locals before overwriting refs
+      const prevId   = editingRowIdRef.current;
+      const prevDraft = { ...editRowDraftRef.current };
+      editingRowIdRef.current = null;
+      doSaveEditRow(prevId, prevDraft);
     }
     const draft = { ...user };
     editingRowIdRef.current = user.id;
@@ -431,13 +466,12 @@ export default function UserListPage() {
     editRowDraftRef.current = draft;
   }
 
-  async function saveEditRow(userId, draft) {
+  async function doSaveEditRow(userId, draft) {
     if (!userId || !draft) return;
     setEditRowSaving(true);
-    editingRowIdRef.current = null;
-    setEditingRowId(null);
     const original = users.find(u => u.id === userId) || {};
     let finalDraft = { ...draft };
+    // Re-run lookup only when function or role changed
     if (draft.function !== original.function || draft.role !== original.role) {
       const result = await lookup(draft);
       const lookupData = applyLookup(result);
@@ -447,7 +481,14 @@ export default function UserListPage() {
     updateMutation.mutate({ id: userId, payload });
   }
 
+  function saveEditRow(userId, draft) {
+    editingRowIdRef.current = null;
+    setEditingRowId(null);
+    doSaveEditRow(userId, draft);
+  }
+
   function cancelEditRow() {
+    clearTimeout(blurTimerEdit.current);
     editingRowIdRef.current = null;
     setEditingRowId(null);
     setEditRowDraft({});
@@ -455,15 +496,29 @@ export default function UserListPage() {
     setEditRowSaving(false);
   }
 
+  // Bug fix 1+2: same deferred-blur pattern for existing rows
   function handleEditRowBlur(e, userId) {
     if (e.currentTarget.contains(e.relatedTarget)) return;
-    if (editingRowIdRef.current !== userId) return;
-    saveEditRow(userId, editRowDraftRef.current);
+    clearTimeout(blurTimerEdit.current);
+    blurTimerEdit.current = setTimeout(() => {
+      if (editingRowIdRef.current !== userId) return;
+      saveEditRow(userId, editRowDraftRef.current);
+    }, 150);
+  }
+
+  function handleEditRowFocus() {
+    clearTimeout(blurTimerEdit.current);
   }
 
   function handleEditRowKeyDown(e, userId) {
-    if (e.key === 'Enter') { e.preventDefault(); saveEditRow(userId, editRowDraftRef.current); }
-    else if (e.key === 'Escape') { e.preventDefault(); cancelEditRow(); }
+    // Bug fix 2: ignore Enter on <select>
+    if (e.key === 'Enter' && e.target.tagName !== 'SELECT') {
+      e.preventDefault();
+      saveEditRow(userId, editRowDraftRef.current);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cancelEditRow();
+    }
   }
 
   function setDraftField(field, value) {
@@ -479,20 +534,23 @@ export default function UserListPage() {
     editRowDraftRef.current = snap;
     setEditRowDraft({ ...snap });
     if (field === 'function' || field === 'role') {
+      if (!snap.function || !snap.role) return;
       const result = await lookup(snap);
       const lookupData = applyLookup(result);
-      const merged = { ...snap, ...lookupData };
+      // Bug fix 5: merge onto latest ref after await
+      const merged = { ...editRowDraftRef.current, ...lookupData };
       editRowDraftRef.current = merged;
       setEditRowDraft({ ...merged });
     }
   }
 
   async function handleDraftBool(field, value) {
-    const snap = { ...editRowDraftRef.current, [field]: value };
-    editRowDraftRef.current = snap;
-    setEditRowDraft({ ...snap });
-    if (snap.function && snap.role) {
-      const result = await lookup(snap);
+    // Bug fix 4: capture snapshot before await
+    const snapBefore = { ...editRowDraftRef.current, [field]: value };
+    editRowDraftRef.current = snapBefore;
+    setEditRowDraft({ ...snapBefore });
+    if (snapBefore.function && snapBefore.role) {
+      const result = await lookup(snapBefore);
       const lookupData = applyLookup(result);
       const merged = { ...editRowDraftRef.current, ...lookupData };
       editRowDraftRef.current = merged;
@@ -523,9 +581,9 @@ export default function UserListPage() {
       'Role': u.role,
       'Description': u.description,
       ...Object.fromEntries(infoKeys.map(k => [k, u[k] ? 'Yes' : 'No'])),
-      'Training Primary': u.recommended_training || '',
+      'Training Primary': (u.na_training ? 'N/A' : u.recommended_training) || '',
       'Training Complementary': Array.isArray(u.complementary_names) ? u.complementary_names.join(', ') : '',
-      'TLG Primary': u.tlg_primary || u.tlg_group || '',
+      'TLG Primary': u.na_tlg ? 'N/A' : (u.tlg_primary || u.tlg_group || ''),
       'TLG Addon': Array.isArray(u.tlg_addon) ? u.tlg_addon.join(', ') : '',
       'Status': u.status,
       'Last Contact': u.last_contact || '',
@@ -560,7 +618,12 @@ export default function UserListPage() {
     if (!newRow) return null;
     const roles = rolesForFn(newRow.function);
     return (
-      <tr className="border-b bg-blue-50/40" onBlur={commitNewRow} onKeyDown={handleNewRowKeyDown}>
+      <tr
+        className="border-b bg-blue-50/40"
+        onBlur={handleNewRowBlur}
+        onFocus={handleNewRowFocus}
+        onKeyDown={handleNewRowKeyDown}
+      >
         <td className="px-2 py-1">
           <div className="relative">
             <input
@@ -640,6 +703,7 @@ export default function UserListPage() {
         key={user.id}
         className={`border-b transition-colors ${isEditing ? 'bg-amber-50/50 ring-1 ring-inset ring-amber-300' : `${STATUS_BG[rowStatus]} ${STATUS_HOVER[rowStatus]}`}`}
         onBlur={isEditing ? e => handleEditRowBlur(e, user.id) : undefined}
+        onFocus={isEditing ? handleEditRowFocus : undefined}
         onKeyDown={isEditing ? e => handleEditRowKeyDown(e, user.id) : undefined}
         onClick={!isEditing ? () => startEditRow(user) : undefined}
       >
