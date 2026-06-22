@@ -6,6 +6,9 @@ import client from '../api/client';
 
 const STATUS_OPTIONS = ['active', 'inactive'];
 
+// Columns that must never be sent to the backend as top-level fields
+const INTERNAL_KEYS = new Set(['id', 'created_at', 'updated_at', 'additional_info', 'na_training', 'na_tlg', 'tlg_primary', 'primary_training_name']);
+
 function emptyNewRow(infoKeys) {
   const base = {
     sesa_id: '', first_name: '', last_name: '', mail: '', manager_mail: '',
@@ -21,16 +24,13 @@ function emptyNewRow(infoKeys) {
 const STATUS_BG    = { inactive: 'bg-slate-100', active: '' };
 const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slate-50/50' };
 
-// Build the payload sent to the backend.
-// Dynamic infoKeys are packed into an `additional_info` object.
-// tlg_primary is sent as tlg_group.
+// B6 fix: skip internal/computed keys; pack infoKeys into additional_info
 function sanitizePayload(row, infoKeys) {
   const EMAIL_FIELDS = ['mail', 'manager_mail'];
-  const SKIP = ['na_training', 'na_tlg', 'tlg_primary'];
   const payload = {};
   for (const [k, v] of Object.entries(row)) {
-    if (SKIP.includes(k)) continue;
-    if (infoKeys.includes(k)) continue; // handled below in additional_info
+    if (INTERNAL_KEYS.has(k)) continue;
+    if (infoKeys.includes(k)) continue;
     if (EMAIL_FIELDS.includes(k)) {
       payload[k] = v && /^[^@]+@[^@]+\.[^@]+$/.test(String(v).trim()) ? String(v).trim() : null;
     } else if (Array.isArray(v)) {
@@ -38,20 +38,22 @@ function sanitizePayload(row, infoKeys) {
     } else if (typeof v === 'string') {
       payload[k] = v.trim() || null;
     } else {
-      payload[k] = v;
+      payload[k] = v ?? null;
     }
   }
+  // Explicit overrides for derived fields
   payload.recommended_training = row.na_training ? 'N/A' : (row.recommended_training || null);
   payload.tlg_group = row.na_tlg ? 'N/A' : (row.tlg_primary || null);
-  // Pack all infoKeys into additional_info
+  // Pack dynamic infoKeys into additional_info
   const additional_info = {};
   for (const k of infoKeys) additional_info[k] = !!row[k];
   payload.additional_info = additional_info;
   return payload;
 }
 
-function rowHasTraining(entry) {
-  return !entry.na_training && !!entry.primary_training_name;
+// B11 fix: include ALL matrix rows, not just those with primary training
+function rowIsInMatrix(entry) {
+  return !!(entry.function && entry.role);
 }
 
 function normalizeYesNo(val) {
@@ -97,26 +99,24 @@ function parseExcelUsers(buffer, infoKeys) {
     for (const k of infoKeys) {
       const idx = headers.findIndex(h => h === k);
       entry.additional_info[k] = idx >= 0 ? normalizeYesNo(row[idx]) : false;
-      entry[k] = entry.additional_info[k]; // keep flat for display
+      entry[k] = entry.additional_info[k];
     }
     users.push(entry);
   }
   return users;
 }
 
-// Normalize a user row from the server.
-// The backend unpacks additional_info to flat fields; we also keep the object.
 function normalizeUser(u) {
   const naTraining = u.recommended_training === 'N/A';
   const naTlg = (u.tlg_group === 'N/A') || (u.tlg_primary === 'N/A');
   const info = u.additional_info && typeof u.additional_info === 'object' ? u.additional_info : {};
   return {
     ...u,
-    ...info, // spread flat so existing checkbox rendering works
+    ...info,
     additional_info: info,
     complementary_names: Array.isArray(u.complementary_names) ? u.complementary_names : [],
     tlg_addon: Array.isArray(u.tlg_addon) ? u.tlg_addon : [],
-    tlg_primary: u.tlg_primary || u.tlg_group || '',
+    tlg_primary: u.tlg_primary || (u.tlg_group !== 'N/A' ? u.tlg_group : '') || '',
     na_training: naTraining,
     na_tlg: naTlg,
   };
@@ -187,20 +187,26 @@ export default function UserListPage() {
   const [importError, setImportError] = useState('');
   const [importStats, setImportStats] = useState(null);
 
+  // New-row state
   const [newRow, setNewRow] = useState(null);
   const newRowRef = useRef(null);
-  const newRowSaved = useRef(false);
+  const newRowPending = useRef(false); // B3: guard against double-POST
   const newRowId = useRef(null);
+  const newRowSaved = useRef(false);
   const [newRowSaving, setNewRowSaving] = useState(false);
 
+  // Edit-row state
   const [editingRowId, setEditingRowId] = useState(null);
   const editingRowIdRef = useRef(null);
   const [editRowDraft, setEditRowDraft] = useState({});
   const editRowDraftRef = useRef({});
   const [editRowSaving, setEditRowSaving] = useState(false);
 
+  // B8: longer blur delay + per-row focus tracking to survive native select dropdowns
   const blurTimerEdit = useRef(null);
   const blurTimerNew  = useRef(null);
+  const newRowHasFocus = useRef(false);
+  const editRowHasFocus = useRef(false);
 
   const { data: rawUsers = [], isLoading } = useQuery({
     queryKey: ['users', projectId],
@@ -221,10 +227,11 @@ export default function UserListPage() {
   });
   const infoKeys = useMemo(() => dimensions?.info_keys ?? [], [dimensions]);
 
+  // B11 fix: include all matrix rows that have function+role, not just rows with training
   const validFnRolePairs = useMemo(() => {
     const set = new Set();
     for (const e of matrixEntries) {
-      if (rowHasTraining(e)) set.add(`${e.function}||${e.role}`);
+      if (rowIsInMatrix(e)) set.add(`${e.function}||${e.role}`);
     }
     return set;
   }, [matrixEntries]);
@@ -276,17 +283,20 @@ export default function UserListPage() {
     };
   }
 
+  // B2 fix: onSuccess closes the new-row form only when called from Enter/blur, not mid-flight
   const createMutation = useMutation({
     mutationFn: payload => client.post(`/projects/${projectId}/users`, payload),
     onSuccess: res => {
       newRowId.current = res.data.id;
       newRowSaved.current = true;
+      newRowPending.current = false;
       setNewRowSaving(false);
       qc.setQueryData(['users', projectId], old =>
-        Array.isArray(old) ? [...old, res.data] : [res.data]
+        Array.isArray(old) ? [...old, normalizeUser(res.data)] : [normalizeUser(res.data)]
       );
     },
     onError: err => {
+      newRowPending.current = false;
       setNewRowSaving(false);
       console.error('[create user]', err?.response?.data || err.message);
     },
@@ -336,80 +346,76 @@ export default function UserListPage() {
     setNewRow(fresh);
     newRowRef.current = fresh;
     newRowSaved.current = false;
+    newRowPending.current = false;
     newRowId.current = null;
     setNewRowSaving(false);
   }
 
   function discardNewRow() {
     clearTimeout(blurTimerNew.current);
+    newRowHasFocus.current = false;
     setNewRow(null);
     newRowRef.current = null;
     newRowSaved.current = false;
+    newRowPending.current = false;
     newRowId.current = null;
     setNewRowSaving(false);
   }
 
-  function doCommitNewRow() {
-    const snap = newRowRef.current;
-    if (!snap) return;
-    const hasAnyData = [
+  function hasNewRowData(snap) {
+    return [
       snap.sesa_id, snap.first_name, snap.last_name,
       snap.mail, snap.manager_mail, snap.function,
       snap.role, snap.description, snap.comments,
     ].some(v => v && String(v).trim());
-    if (!hasAnyData) return;
-    setNewRowSaving(true);
-    const payload = sanitizePayload(snap, infoKeys);
-    if (!newRowSaved.current) {
-      createMutation.mutate(payload);
-      const fresh = emptyNewRow(infoKeys);
-      setNewRow(fresh);
-      newRowRef.current = fresh;
-      newRowSaved.current = false;
-      newRowId.current = null;
-    } else if (newRowId.current) {
-      updateMutation.mutate({ id: newRowId.current, payload });
-    }
   }
 
-  function doCommitAndCloseNewRow() {
+  // B1 fix: blur now commits AND closes (same as Enter)
+  // B3 fix: newRowPending guards against double-POST
+  function commitAndCloseNewRow() {
     clearTimeout(blurTimerNew.current);
     const snap = newRowRef.current;
     if (!snap) return;
-    const hasAnyData = [
-      snap.sesa_id, snap.first_name, snap.last_name,
-      snap.mail, snap.manager_mail, snap.function,
-      snap.role, snap.description, snap.comments,
-    ].some(v => v && String(v).trim());
-    if (hasAnyData) {
-      setNewRowSaving(true);
-      const payload = sanitizePayload(snap, infoKeys);
-      if (!newRowSaved.current) {
-        createMutation.mutate(payload);
-      } else if (newRowId.current) {
-        updateMutation.mutate({ id: newRowId.current, payload });
+    if (hasNewRowData(snap)) {
+      if (!newRowPending.current) {
+        newRowPending.current = true;
+        setNewRowSaving(true);
+        const payload = sanitizePayload(snap, infoKeys);
+        if (!newRowSaved.current) {
+          createMutation.mutate(payload);
+        } else if (newRowId.current) {
+          updateMutation.mutate({ id: newRowId.current, payload });
+        }
       }
     }
-    discardNewRow();
+    // Close the form immediately; the cache update happens in onSuccess
+    setNewRow(null);
+    newRowRef.current = null;
   }
 
+  // B8 fix: use a window-level mousedown listener to detect true outside clicks,
+  // combined with a 200ms timer that checks our own focus-tracking ref.
   function handleNewRowBlur(e) {
+    // relatedTarget is null when native select dropdown opens -- do not save yet
+    if (e.relatedTarget === null) return;
     if (e.currentTarget.contains(e.relatedTarget)) return;
     clearTimeout(blurTimerNew.current);
+    newRowHasFocus.current = false;
     blurTimerNew.current = setTimeout(() => {
-      if (!newRowRef.current) return;
-      doCommitNewRow();
-    }, 150);
+      if (newRowHasFocus.current) return;
+      commitAndCloseNewRow();
+    }, 200);
   }
 
   function handleNewRowFocus() {
     clearTimeout(blurTimerNew.current);
+    newRowHasFocus.current = true;
   }
 
   function handleNewRowKeyDown(e) {
     if (e.key === 'Enter' && e.target.tagName !== 'SELECT') {
       e.preventDefault();
-      doCommitAndCloseNewRow();
+      commitAndCloseNewRow();
     } else if (e.key === 'Escape') {
       e.preventDefault();
       discardNewRow();
@@ -463,14 +469,18 @@ export default function UserListPage() {
     setEditingRowId(user.id);
     setEditRowDraft(draft);
     editRowDraftRef.current = draft;
+    editRowHasFocus.current = true;
   }
 
+  // B7 fix: also re-run lookup when any infoKey changed vs the original
   async function doSaveEditRow(userId, draft) {
     if (!userId || !draft) return;
     setEditRowSaving(true);
     const original = users.find(u => u.id === userId) || {};
     let finalDraft = { ...draft };
-    if (draft.function !== original.function || draft.role !== original.role) {
+    const fnOrRoleChanged = draft.function !== original.function || draft.role !== original.role;
+    const infoKeyChanged = infoKeys.some(k => !!draft[k] !== !!original[k]);
+    if (fnOrRoleChanged || infoKeyChanged) {
       const result = await lookup(draft);
       const lookupData = applyLookup(result);
       finalDraft = { ...finalDraft, ...lookupData };
@@ -480,7 +490,9 @@ export default function UserListPage() {
   }
 
   function saveEditRow(userId, draft) {
+    clearTimeout(blurTimerEdit.current);
     editingRowIdRef.current = null;
+    editRowHasFocus.current = false;
     setEditingRowId(null);
     doSaveEditRow(userId, draft);
   }
@@ -488,23 +500,29 @@ export default function UserListPage() {
   function cancelEditRow() {
     clearTimeout(blurTimerEdit.current);
     editingRowIdRef.current = null;
+    editRowHasFocus.current = false;
     setEditingRowId(null);
     setEditRowDraft({});
     editRowDraftRef.current = {};
     setEditRowSaving(false);
   }
 
+  // B8 fix: same pattern as new-row -- skip null relatedTarget (native select opening)
   function handleEditRowBlur(e, userId) {
+    if (e.relatedTarget === null) return;
     if (e.currentTarget.contains(e.relatedTarget)) return;
     clearTimeout(blurTimerEdit.current);
+    editRowHasFocus.current = false;
     blurTimerEdit.current = setTimeout(() => {
+      if (editRowHasFocus.current) return;
       if (editingRowIdRef.current !== userId) return;
       saveEditRow(userId, editRowDraftRef.current);
-    }, 150);
+    }, 200);
   }
 
   function handleEditRowFocus() {
     clearTimeout(blurTimerEdit.current);
+    editRowHasFocus.current = true;
   }
 
   function handleEditRowKeyDown(e, userId) {
@@ -596,11 +614,12 @@ export default function UserListPage() {
     }
   }
 
+  // B13 fix: search also covers last_contact
   const filtered = useMemo(() => {
     if (!filter) return users;
     const q = filter.toLowerCase();
     return users.filter(u =>
-      ['sesa_id', 'first_name', 'last_name', 'mail', 'manager_mail', 'function', 'role', 'description', 'status', 'comments']
+      ['sesa_id', 'first_name', 'last_name', 'mail', 'manager_mail', 'function', 'role', 'description', 'status', 'comments', 'last_contact']
         .some(k => String(u[k] ?? '').toLowerCase().includes(q))
     );
   }, [users, filter]);
@@ -625,6 +644,7 @@ export default function UserListPage() {
               value={newRow.sesa_id}
               placeholder="SESA ID"
               onChange={e => setNewField('sesa_id', e.target.value)}
+              autoFocus
             />
             {newRowSaving && (
               <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[9px] text-blue-400">saving...</span>
@@ -687,7 +707,7 @@ export default function UserListPage() {
         placeholder={isEditing ? placeholder : undefined}
         readOnly={!isEditing}
         onChange={e => isEditing && setDraftField(field, e.target.value)}
-        onClick={() => !isEditing && startEditRow(user)}
+        onClick={() => !isEditing && editMode && startEditRow(user)}
         title={String(draft[field] ?? '')}
       />
     );
@@ -695,11 +715,11 @@ export default function UserListPage() {
     return (
       <tr
         key={user.id}
-        className={`border-b transition-colors ${isEditing ? 'bg-amber-50/50 ring-1 ring-inset ring-amber-300' : `${STATUS_BG[rowStatus]} ${STATUS_HOVER[rowStatus]}`}`}
+        className={`border-b transition-colors ${isEditing ? 'bg-amber-50/50 ring-1 ring-inset ring-amber-300' : `${STATUS_BG[rowStatus]} ${editMode ? STATUS_HOVER[rowStatus] + ' cursor-pointer' : ''}`}`}
         onBlur={isEditing ? e => handleEditRowBlur(e, user.id) : undefined}
         onFocus={isEditing ? handleEditRowFocus : undefined}
         onKeyDown={isEditing ? e => handleEditRowKeyDown(e, user.id) : undefined}
-        onClick={!isEditing ? () => startEditRow(user) : undefined}
+        onClick={!isEditing && editMode ? () => startEditRow(user) : undefined}
       >
         <td className="px-2 py-1.5 overflow-hidden">{cellInput('sesa_id', 'SESA ID')}</td>
         <td className="px-2 py-1.5 overflow-hidden">{cellInput('first_name', 'First name')}</td>
@@ -772,7 +792,9 @@ export default function UserListPage() {
 
   const thBase = 'px-2 py-2 text-left text-[10px] font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
   const colCount = 15 + infoKeys.length;
-  const minW = 1632 + infoKeys.length * 44;
+  // B14 fix: compute minWidth from actual column widths
+  const fixedColWidths = [90, 100, 100, 160, 160, 140, 140, 180, 220, 140, 90, 100, 180, 32];
+  const minW = fixedColWidths.reduce((a, b) => a + b, 0) + infoKeys.length * 44;
 
   return (
     <div className="flex flex-col h-full">
@@ -781,6 +803,8 @@ export default function UserListPage() {
           <h1 className="text-xl font-bold text-slate-800">User List</h1>
           <p className="text-sm text-slate-500">
             {users.length} user{users.length !== 1 ? 's' : ''}
+            {/* B15 fix: always show the edit mode hint in the subtitle */}
+            {!editMode && <span className="ml-2 text-slate-400 font-normal">- Enable Edit mode to add or modify users</span>}
           </p>
         </div>
         <div className="flex gap-3 items-center flex-wrap justify-end">
@@ -798,17 +822,21 @@ export default function UserListPage() {
               {clearAllMutation.isPending ? 'Deleting...' : 'Empty list'}
             </button>
           )}
+          {/* B16 fix: wait for save to complete before toggling off edit mode */}
           <ToggleSwitch
             checked={editMode}
-            onChange={v => {
-              setEditMode(v);
-              editModeRef.current = v;
+            onChange={async v => {
               if (!v) {
                 discardNewRow();
                 if (editingRowIdRef.current !== null) {
-                  saveEditRow(editingRowIdRef.current, editRowDraftRef.current);
+                  await doSaveEditRow(editingRowIdRef.current, editRowDraftRef.current);
+                  editingRowIdRef.current = null;
+                  editRowHasFocus.current = false;
+                  setEditingRowId(null);
                 }
               }
+              setEditMode(v);
+              editModeRef.current = v;
             }}
             label="Edit mode"
           />
@@ -827,7 +855,7 @@ export default function UserListPage() {
       {importStats && !importMutation.isPending && (
         <p className="text-sm text-green-600 mb-2 shrink-0">Import complete: {importStats.imported} users.</p>
       )}
-      {editRowSaving && <p className="text-xs text-blue-500 mb-1 shrink-0">Saving...</p>}
+      {(editRowSaving || newRowSaving) && <p className="text-xs text-blue-500 mb-1 shrink-0">Saving...</p>}
 
       <div className="overflow-y-auto overflow-x-auto rounded-xl border bg-white flex-1">
         <table className="text-sm border-collapse" style={{ tableLayout: 'fixed', minWidth: minW }}>
@@ -896,7 +924,7 @@ export default function UserListPage() {
             )}
             {!isLoading && filtered.length === 0 && !newRow && (
               <tr><td colSpan={colCount} className="px-3 py-12 text-center text-slate-400 text-sm">
-                {users.length === 0 ? 'No users yet. Import an Excel file or click Add user in Edit mode.' : 'No users match the search.'}
+                {users.length === 0 ? 'No users yet. Enable Edit mode then click Add user, or import an Excel file.' : 'No users match the search.'}
               </td></tr>
             )}
             {filtered.map(user => renderRow(user))}
