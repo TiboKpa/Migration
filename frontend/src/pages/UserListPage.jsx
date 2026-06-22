@@ -123,9 +123,11 @@ function colIdx(headerMap, excelHeader) {
 }
 
 // ---------------------------------------------------------------------------
-// Excel parse -- Training and TLG are intentionally NOT imported.
-// The website re-derives them from the matrix after Function/Role/Additional Info.
-// Complementary: <anything> columns map to additional_info keys.
+// Excel parse
+// - Training (auto) and TLG (auto) are intentionally NOT imported.
+//   The website re-derives them from the matrix after Function/Role/Additional Info.
+// - Each infoKey is read from a column whose header exactly matches the key name
+//   (case-insensitive). Only known infoKeys are read; any other columns are ignored.
 // ---------------------------------------------------------------------------
 function parseExcelUsers(buffer, infoKeys) {
   const wb = XLSX.read(buffer, { type: 'array' });
@@ -143,14 +145,6 @@ function parseExcelUsers(buffer, infoKeys) {
   if (headerRowIdx === -1) throw new Error(`Header row with "${sesaColDef.excelHeader}" not found`);
 
   const headerMap = buildHeaderMap(raw[headerRowIdx]);
-
-  // Collect Complementary: <key> column indices from the header row.
-  const complementaryColMap = {}; // key (without prefix) -> col index
-  raw[headerRowIdx].forEach((h, i) => {
-    const cleaned = String(h).trim();
-    const m = cleaned.match(/^Complementary:\s*(.+)$/i);
-    if (m) complementaryColMap[m[1].trim()] = i;
-  });
 
   function cell(row, excelHeader) {
     const idx = colIdx(headerMap, excelHeader);
@@ -171,14 +165,12 @@ function parseExcelUsers(buffer, infoKeys) {
     const sesaId = cell(row, sesaColDef.excelHeader);
     if (!sesaId) continue;
 
-    // Build additional_info from both infoKeys (direct columns) and Complementary: <key> columns.
+    // Build additional_info: for each known infoKey, look for a column with
+    // that exact name (case-insensitive). Unknown columns are never read.
     const additional_info = {};
     for (const k of infoKeys) {
       const idx = headerMap[k.toLowerCase()] ?? -1;
       additional_info[k] = idx >= 0 ? normalizeYesNo(row[idx]) : false;
-    }
-    for (const [key, colI] of Object.entries(complementaryColMap)) {
-      additional_info[key] = normalizeYesNo(row[colI]);
     }
 
     const entry = {
@@ -190,7 +182,7 @@ function parseExcelUsers(buffer, infoKeys) {
       function:             cell(row, 'Function') || null,
       role:                 cell(row, 'Role') || null,
       description:          cell(row, 'Description') || null,
-      // Training (auto) and TLG (auto) are intentionally not read -- re-derived server-side via matrix lookup.
+      // Training (auto) and TLG (auto) are intentionally not read.
       recommended_training: null,
       complementary_names:  [],
       tlg_group:            null,
@@ -786,7 +778,6 @@ export default function UserListPage() {
   function handleExport() {
     const data = users.map(u => {
       const row = {};
-      // Fixed columns (excluding auto and actions)
       for (const col of COLUMNS) {
         if (!col.excelHeader) continue;
         if (col.key === '_training') {
@@ -804,9 +795,9 @@ export default function UserListPage() {
         }
         row[col.excelHeader] = u[col.key] ?? '';
       }
-      // Complementary: <key> columns for each additional_info key
+      // Each infoKey is written as a column using the key name directly.
       for (const k of infoKeys) {
-        row[`Complementary: ${k}`] = u[k] ? 'Yes' : 'No';
+        row[k] = u[k] ? 'Yes' : 'No';
       }
       return row;
     });
