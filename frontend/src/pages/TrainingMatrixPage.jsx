@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
+import * as XLSX from 'xlsx';
 import client from '../api/client';
 import { parseTrainingPathFlat } from '../utils/parseTrainingPathFlat';
 import { reResolveRoleMatrix } from '../utils/reResolveRoleMatrix';
@@ -28,6 +29,32 @@ function curriculumDurationParts(modules) {
   };
 }
 
+function minutesToHHMM(minutes) {
+  if (!minutes) return '0:00';
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return `${h}:${String(m).padStart(2, '0')}`;
+}
+
+// -- Toggle switch (mirrors RoleMatrixPage) ------------------------------------
+function ToggleSwitch({ checked, onChange, label }) {
+  return (
+    <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+      <span className="text-xs text-slate-500">{label}</span>
+      <span
+        onClick={() => onChange(!checked)}
+        className={`relative inline-block w-9 h-5 rounded-full transition-colors duration-200 ${
+          checked ? 'bg-blue-600' : 'bg-slate-300'
+        }`}
+      >
+        <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${
+          checked ? 'translate-x-4' : 'translate-x-0'
+        }`} />
+      </span>
+    </label>
+  );
+}
+
 // -- Highlight matching text ---------------------------------------------------
 function Highlight({ text, query }) {
   if (!query || !text) return <>{text}</>;
@@ -48,7 +75,6 @@ function matchesQuery(fields, q) {
   return fields.some(f => (f || '').toLowerCase().includes(q));
 }
 
-// Returns true if a fully-loaded playlist detail matches the query anywhere
 function detailMatchesQuery(d, q) {
   if (!q || !d) return true;
   if (matchesQuery([d.title, d.description, d.content_id], q)) return true;
@@ -223,7 +249,7 @@ function DraggableList({ items, onReorder, renderItem }) {
 
 // -- Modules tab ---------------------------------------------------------------
 
-function ModulesTab({ projectId, search }) {
+function ModulesTab({ projectId, search, editMode, reloadKey }) {
   const [modules, setModules]     = useState([]);
   const [showAdd, setShowAdd]     = useState(false);
   const [form, setForm]           = useState({ title: '', content_id: '', duration_min: '', link: '' });
@@ -235,7 +261,7 @@ function ModulesTab({ projectId, search }) {
     setModules(Array.isArray(r.data) ? r.data : []);
   }, [projectId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, reloadKey]);
 
   async function save() {
     if (!form.title.trim()) return;
@@ -299,7 +325,7 @@ function ModulesTab({ projectId, search }) {
           {filtered.length}{filtered.length !== modules.length ? ` / ${modules.length}` : ''} module{modules.length !== 1 ? 's' : ''}
         </h3>
         <div className="flex gap-2">
-          {modules.length > 0 && (
+          {editMode && modules.length > 0 && (
             <button onClick={delAll}
               className="border border-red-200 px-3 py-1.5 rounded-lg text-sm text-red-500 hover:bg-red-50">
               Delete all
@@ -373,7 +399,9 @@ function ModulesTab({ projectId, search }) {
                   <LinkButton href={mod.link} />
                   {mod.link && <Sep />}
                   <button onClick={() => startEdit(mod)} className="text-xs text-slate-400 hover:text-slate-700">Edit</button>
-                  <button onClick={() => del(mod.id)} className="text-xs text-red-300 hover:text-red-500">Delete</button>
+                  {editMode && (
+                    <button onClick={() => del(mod.id)} className="text-xs text-red-300 hover:text-red-500">Delete</button>
+                  )}
                 </div>
               </div>
             )}
@@ -386,7 +414,7 @@ function ModulesTab({ projectId, search }) {
 
 // -- Curricula tab -------------------------------------------------------------
 
-function CurriculaTab({ projectId, search }) {
+function CurriculaTab({ projectId, search, editMode, reloadKey }) {
   const [curricula, setCurricula]     = useState([]);
   const [allModules, setAllModules]   = useState([]);
   const [showAdd, setShowAdd]         = useState(false);
@@ -406,7 +434,7 @@ function CurriculaTab({ projectId, search }) {
     setAllModules(Array.isArray(mRes.data) ? mRes.data : []);
   }, [projectId]);
 
-  useEffect(() => { loadAll(); }, [loadAll]);
+  useEffect(() => { loadAll(); }, [loadAll, reloadKey]);
 
   async function saveCurriculum() {
     if (!form.title.trim()) return;
@@ -505,7 +533,7 @@ function CurriculaTab({ projectId, search }) {
           {filtered.length}{filtered.length !== curricula.length ? ` / ${curricula.length}` : ''} {curricula.length === 1 ? 'curriculum' : 'curricula'}
         </h3>
         <div className="flex gap-2">
-          {curricula.length > 0 && (
+          {editMode && curricula.length > 0 && (
             <button onClick={delAll}
               className="border border-red-200 px-3 py-1.5 rounded-lg text-sm text-red-500 hover:bg-red-50">
               Delete all
@@ -609,8 +637,10 @@ function CurriculaTab({ projectId, search }) {
                       {cur.link && <Sep />}
                       <button onClick={() => { setEditingId(cur.id); setEditForm({ title: cur.title, content_id: cur.content_id || '', link: cur.link || '' }); }}
                         className="text-xs text-slate-400 hover:text-slate-700">Edit</button>
-                      <button onClick={() => delCurriculum(cur.id)}
-                        className="text-xs text-red-300 hover:text-red-500">Delete</button>
+                      {editMode && (
+                        <button onClick={() => delCurriculum(cur.id)}
+                          className="text-xs text-red-300 hover:text-red-500">Delete</button>
+                      )}
                     </div>
                   </>
                 )}
@@ -649,8 +679,10 @@ function CurriculaTab({ projectId, search }) {
                               </>
                             )}
                             <Badge color={item.requirement === 'mandatory' ? 'green' : 'amber'}>{item.requirement}</Badge>
-                            <button onClick={() => removeModuleFromCurriculum(cur.id, item.module_id)}
-                              className="text-xs text-red-300 hover:text-red-500">Remove</button>
+                            {editMode && (
+                              <button onClick={() => removeModuleFromCurriculum(cur.id, item.module_id)}
+                                className="text-xs text-red-300 hover:text-red-500">Remove</button>
+                            )}
                           </div>
                         </div>
                       );
@@ -701,14 +733,14 @@ function CurriculaTab({ projectId, search }) {
 
 // -- Trainings tab -------------------------------------------------------------
 
-function TrainingsTab({ projectId, search }) {
+function TrainingsTab({ projectId, search, editMode, reloadKey }) {
   const [playlists, setPlaylists]         = useState([]);
   const [selected, setSelected]           = useState(null);
   const [detail, setDetail]               = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [showAdd, setShowAdd]             = useState(false);
   const [form, setForm]                   = useState({ title: '', description: '', link: '', content_id: '' });
-  const [editMode, setEditMode]           = useState(false);
+  const [editingMode, setEditingMode]     = useState(false);
   const [editForm, setEditForm]           = useState({});
   const [allModules, setAllModules]       = useState([]);
   const [allCurricula, setAllCurricula]   = useState([]);
@@ -716,15 +748,13 @@ function TrainingsTab({ projectId, search }) {
   const [newItem, setNewItem]             = useState({ type: 'curriculum', id: '', sequence_order: '' });
   const { requestReorder, ToastUI }       = useReorderToast();
 
-  // Cache of fully-loaded playlist details keyed by id, used for deep search
   const detailCache = useRef({});
-  const [cacheVersion, setCacheVersion] = useState(0); // bumped to trigger re-render after cache fills
+  const [cacheVersion, setCacheVersion] = useState(0);
 
   const loadList = useCallback(async () => {
     const r = await client.get(`/projects/${projectId}/playlists`);
     const list = Array.isArray(r.data) ? r.data : [];
     setPlaylists(list);
-    // Fetch all details in parallel to power deep search in the sidebar
     const results = await Promise.allSettled(
       list.map(pl => client.get(`/projects/${projectId}/playlists/${pl.id}`))
     );
@@ -751,12 +781,17 @@ function TrainingsTab({ projectId, search }) {
     setLoadingDetail(false);
   }, [projectId]);
 
-  useEffect(() => { loadList(); }, [loadList]);
+  useEffect(() => {
+    detailCache.current = {};
+    setSelected(null);
+    setDetail(null);
+    loadList();
+  }, [loadList, reloadKey]);
 
   function select(pl) {
     setSelected(pl.id);
     loadDetail(pl.id);
-    setEditMode(false);
+    setEditingMode(false);
     setShowAddItem(false);
   }
 
@@ -771,7 +806,7 @@ function TrainingsTab({ projectId, search }) {
 
   async function update() {
     await client.put(`/projects/${projectId}/playlists/${selected}`, { ...editForm, is_complementary: !editForm.link?.trim() });
-    setEditMode(false);
+    setEditingMode(false);
     loadList();
     loadDetail(selected);
     reResolveRoleMatrix(projectId);
@@ -858,12 +893,10 @@ function TrainingsTab({ projectId, search }) {
 
   const q = search.trim().toLowerCase();
 
-  // Deep match: use cached detail when available, fall back to shallow fields
   function playlistMatches(pl) {
     if (!q) return true;
     const cached = detailCache.current[pl.id];
     if (cached) return detailMatchesQuery(cached, q);
-    // Cache not yet loaded: match on shallow fields only
     return matchesQuery([pl.title, pl.description, pl.content_id], q);
   }
 
@@ -942,7 +975,7 @@ function TrainingsTab({ projectId, search }) {
           </div>
         )}
 
-        {playlists.length > 0 && (
+        {editMode && playlists.length > 0 && (
           <button onClick={delAll}
             className="border border-red-200 px-3 py-1.5 rounded-lg text-sm text-red-500 hover:bg-red-50 w-full">
             Delete all trainings
@@ -976,8 +1009,8 @@ function TrainingsTab({ projectId, search }) {
 
         {selected && !loadingDetail && detail && (
           <div className="flex flex-col gap-6">
-            {editMode ? (
-              <FormBox title="Edit training" onSave={update} onCancel={() => setEditMode(false)} saveDisabled={!editForm.title?.trim()}>
+            {editingMode ? (
+              <FormBox title="Edit training" onSave={update} onCancel={() => setEditingMode(false)} saveDisabled={!editForm.title?.trim()}>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="col-span-2">
                     <InlineField label="Title *" value={editForm.title || ''} onChange={v => setEditForm(f => ({ ...f, title: v }))} />
@@ -1013,10 +1046,12 @@ function TrainingsTab({ projectId, search }) {
                 </div>
                 <div className="flex gap-2 shrink-0">
                   <button
-                    onClick={() => { setEditMode(true); setEditForm({ title: detail.title, description: detail.description, link: detail.link, content_id: detail.content_id }); }}
+                    onClick={() => { setEditingMode(true); setEditForm({ title: detail.title, description: detail.description, link: detail.link, content_id: detail.content_id }); }}
                     className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Edit</button>
-                  <button onClick={del}
-                    className="border border-red-200 px-3 py-1.5 rounded-lg text-sm text-red-500 hover:bg-red-50">Delete</button>
+                  {editMode && (
+                    <button onClick={del}
+                      className="border border-red-200 px-3 py-1.5 rounded-lg text-sm text-red-500 hover:bg-red-50">Delete</button>
+                  )}
                 </div>
               </div>
             )}
@@ -1114,8 +1149,10 @@ function TrainingsTab({ projectId, search }) {
                               {hasDuration && <Sep />}
                               <LinkButton href={item.link} />
                               {item.link && <Sep />}
-                              <button onClick={e => { e.preventDefault(); removeItem(item.playlist_item_id); }}
-                                className="text-xs text-red-300 hover:text-red-500">Remove</button>
+                              {editMode && (
+                                <button onClick={e => { e.preventDefault(); removeItem(item.playlist_item_id); }}
+                                  className="text-xs text-red-300 hover:text-red-500">Remove</button>
+                              )}
                             </div>
                           </summary>
                           <div className="px-4 py-2">
@@ -1180,8 +1217,10 @@ function TrainingsTab({ projectId, search }) {
                           )}
                           <LinkButton href={item.link} />
                           {item.link && <Sep />}
-                          <button onClick={() => removeItem(item.playlist_item_id)}
-                            className="text-xs text-red-300 hover:text-red-500">Remove</button>
+                          {editMode && (
+                            <button onClick={() => removeItem(item.playlist_item_id)}
+                              className="text-xs text-red-300 hover:text-red-500">Remove</button>
+                          )}
                         </div>
                       </div>
                     );
@@ -1196,6 +1235,176 @@ function TrainingsTab({ projectId, search }) {
   );
 }
 
+// -- Export helper -------------------------------------------------------------
+
+async function buildExportWorkbook(projectId) {
+  const [mRes, cRes, pRes] = await Promise.all([
+    client.get(`/projects/${projectId}/modules`),
+    client.get(`/projects/${projectId}/curricula`),
+    client.get(`/projects/${projectId}/playlists`),
+  ]);
+
+  const modules   = Array.isArray(mRes.data) ? mRes.data : [];
+  const curricula = Array.isArray(cRes.data) ? cRes.data : [];
+  const playlists = Array.isArray(pRes.data) ? pRes.data.filter(p => !p.is_complementary) : [];
+
+  // Fetch all playlist details
+  const detailResults = await Promise.allSettled(
+    playlists.map(pl => client.get(`/projects/${projectId}/playlists/${pl.id}`))
+  );
+  const detailedPlaylists = playlists.map((pl, i) => ({
+    ...pl,
+    ordered_items: detailResults[i].status === 'fulfilled' ? (detailResults[i].value.data.ordered_items || []) : [],
+  }));
+
+  const wb = XLSX.utils.book_new();
+
+  // ---- Sheet: Training Path Flat ----
+  // Row 1 (index 0): blank
+  // Row 2 (index 1): playlist titles from col L (index 11)
+  // Row 3 (index 2): descriptions
+  // Row 4 (index 3): links
+  // Rows 5-11 (indices 4-10): blank
+  // Rows 12+ (index 11+): data
+
+  const COL_PLAYLIST_START = 11;
+
+  // Build sequence maps: playlistId -> Map<itemTitle.lower -> sequence_order>
+  const playlistSeqMaps = detailedPlaylists.map(pl => {
+    const m = new Map();
+    for (const item of pl.ordered_items) {
+      m.set((item.title || '').toLowerCase(), item.sequence_order);
+    }
+    return m;
+  });
+
+  // Build all data rows
+  // Each curriculum becomes a header row (C=0, D=0)
+  // Each module inside a curriculum becomes a detail row (C=chapterIdx, D=brick)
+  // Standalone modules (not in any curriculum) become standalone rows (C=0, D=moduleIdx)
+
+  const curriculumIds = new Set(curricula.map(c => c.id));
+  const moduleInCurriculumIds = new Set(
+    curricula.flatMap(c => (c.modules || []).map(m => m.module_id))
+  );
+  const standaloneModules = modules.filter(m => !moduleInCurriculumIds.has(m.id));
+
+  const dataRows = [];
+
+  // Curricula and their modules
+  curricula.forEach((cur, cIdx) => {
+    const chapterNum = cIdx + 1;
+    const sortedMods = [...(cur.modules || [])].sort((a, b) => a.sequence_order - b.sequence_order);
+    // Curriculum header row: C=0, D=0
+    const curSeqs = detailedPlaylists.map((_, pi) => playlistSeqMaps[pi].get((cur.title || '').toLowerCase()) ?? '');
+    dataRows.push({
+      group: '',
+      rowNum: '',
+      chapter: 0,
+      brick: 0,
+      title: cur.title || '',
+      family: '',
+      mandDur: '',
+      optDur: '',
+      totalDur: '',
+      content_id: cur.content_id || '',
+      contentType: 'Curriculum',
+      plSeqs: curSeqs,
+    });
+    // Module rows inside curriculum: C=chapterNum, D=brick
+    sortedMods.forEach((mod) => {
+      const modData = modules.find(m => m.id === mod.module_id) || {};
+      const durationMin = modData.duration_min || 0;
+      const isMandatory = (mod.requirement || 'mandatory') === 'mandatory';
+      const modSeqs = detailedPlaylists.map((_, pi) => playlistSeqMaps[pi].get((modData.title || '').toLowerCase()) ?? '');
+      dataRows.push({
+        group: '',
+        rowNum: '',
+        chapter: chapterNum,
+        brick: mod.sequence_order,
+        title: modData.title || '',
+        family: '',
+        mandDur: isMandatory ? minutesToHHMM(durationMin) : '',
+        optDur: !isMandatory ? minutesToHHMM(durationMin) : '',
+        totalDur: minutesToHHMM(durationMin),
+        content_id: modData.content_id || '',
+        contentType: 'Module',
+        plSeqs: modSeqs,
+      });
+    });
+  });
+
+  // Standalone modules: C=0, D=index
+  standaloneModules.forEach((mod, idx) => {
+    const modSeqs = detailedPlaylists.map((_, pi) => playlistSeqMaps[pi].get((mod.title || '').toLowerCase()) ?? '');
+    dataRows.push({
+      group: '',
+      rowNum: '',
+      chapter: 0,
+      brick: idx + 1,
+      title: mod.title || '',
+      family: '',
+      mandDur: minutesToHHMM(mod.duration_min || 0),
+      optDur: '',
+      totalDur: minutesToHHMM(mod.duration_min || 0),
+      content_id: mod.content_id || '',
+      contentType: 'Module',
+      plSeqs: modSeqs,
+    });
+  });
+
+  // Build the aoa (array of arrays)
+  const numPlaylists = detailedPlaylists.length;
+  const totalCols = COL_PLAYLIST_START + numPlaylists;
+
+  const makeEmptyRow = () => Array(totalCols).fill('');
+
+  const aoa = [];
+  // Row 0: blank
+  aoa.push(makeEmptyRow());
+  // Row 1: playlist titles
+  const titleRow = makeEmptyRow();
+  detailedPlaylists.forEach((pl, i) => { titleRow[COL_PLAYLIST_START + i] = pl.title || ''; });
+  aoa.push(titleRow);
+  // Row 2: descriptions
+  const descRow = makeEmptyRow();
+  detailedPlaylists.forEach((pl, i) => { descRow[COL_PLAYLIST_START + i] = pl.description || ''; });
+  aoa.push(descRow);
+  // Row 3: links
+  const linkRow = makeEmptyRow();
+  detailedPlaylists.forEach((pl, i) => { linkRow[COL_PLAYLIST_START + i] = pl.link || ''; });
+  aoa.push(linkRow);
+  // Rows 4-10: blank (7 rows)
+  for (let i = 0; i < 7; i++) aoa.push(makeEmptyRow());
+  // Header row (row 11, index 11) -- col labels matching what the parser expects
+  const headerRow = makeEmptyRow();
+  ['Group', 'Row', 'Chapter', 'Brick', 'Title', 'Family', 'Mandatory Duration', 'Optional Duration', 'Total Duration', 'Content ID', 'Content Type'].forEach((h, i) => { headerRow[i] = h; });
+  detailedPlaylists.forEach((pl, i) => { headerRow[COL_PLAYLIST_START + i] = pl.title || ''; });
+  aoa.push(headerRow);
+  // Data rows
+  for (const dr of dataRows) {
+    const row = makeEmptyRow();
+    row[0]  = dr.group;
+    row[1]  = dr.rowNum;
+    row[2]  = dr.chapter;
+    row[3]  = dr.brick;
+    row[4]  = dr.title;
+    row[5]  = dr.family;
+    row[6]  = dr.mandDur;
+    row[7]  = dr.optDur;
+    row[8]  = dr.totalDur;
+    row[9]  = dr.content_id;
+    row[10] = dr.contentType;
+    dr.plSeqs.forEach((seq, i) => { row[COL_PLAYLIST_START + i] = seq; });
+    aoa.push(row);
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  XLSX.utils.book_append_sheet(wb, ws, 'Training Path Flat');
+
+  return wb;
+}
+
 // -- Page shell ----------------------------------------------------------------
 
 const TABS = ['Modules', 'Curricula', 'Trainings'];
@@ -1205,7 +1414,10 @@ export default function TrainingMatrixPage() {
   const [tab, setTab]                   = useState('Modules');
   const [search, setSearch]             = useState('');
   const [importing, setImporting]       = useState(false);
+  const [exporting, setExporting]       = useState(false);
   const [importResult, setImportResult] = useState(null);
+  const [reloadKey, setReloadKey]       = useState(0);
+  const [editMode, setEditMode]         = useState(false);
   const importRef = useRef();
 
   function handleTabChange(t) {
@@ -1227,6 +1439,7 @@ export default function TrainingMatrixPage() {
         ok:  true,
         msg: `${r.data.imported_modules} modules, ${r.data.imported_curricula} curricula, ${r.data.imported_playlists} trainings imported.`,
       });
+      setReloadKey(k => k + 1);
       reResolveRoleMatrix(projectId);
     } catch (err) {
       setImportResult({ ok: false, msg: err.response?.data?.error || err.message });
@@ -1235,11 +1448,24 @@ export default function TrainingMatrixPage() {
     }
   }
 
+  async function handleExport() {
+    setExporting(true);
+    try {
+      const wb = await buildExportWorkbook(projectId);
+      XLSX.writeFile(wb, 'training-matrix-export.xlsx');
+    } catch (err) {
+      console.error('Export failed:', err);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between mb-4 shrink-0">
         <h1 className="text-xl font-bold text-slate-800">Training Matrix</h1>
         <div className="flex gap-2 items-center">
+          <ToggleSwitch checked={editMode} onChange={setEditMode} label="Edit mode" />
           <input
             type="text"
             value={search}
@@ -1250,6 +1476,10 @@ export default function TrainingMatrixPage() {
           <button onClick={() => importRef.current.click()} disabled={importing}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
             {importing ? 'Importing...' : 'Import Excel'}
+          </button>
+          <button onClick={handleExport} disabled={exporting}
+            className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
+            {exporting ? 'Exporting...' : 'Export Excel'}
           </button>
           <input ref={importRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportFile} />
         </div>
@@ -1272,9 +1502,9 @@ export default function TrainingMatrixPage() {
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {tab === 'Modules'   && <ModulesTab   projectId={projectId} search={search} />}
-        {tab === 'Curricula' && <CurriculaTab projectId={projectId} search={search} />}
-        {tab === 'Trainings' && <TrainingsTab projectId={projectId} search={search} />}
+        {tab === 'Modules'   && <ModulesTab   projectId={projectId} search={search} editMode={editMode} reloadKey={reloadKey} />}
+        {tab === 'Curricula' && <CurriculaTab projectId={projectId} search={search} editMode={editMode} reloadKey={reloadKey} />}
+        {tab === 'Trainings' && <TrainingsTab projectId={projectId} search={search} editMode={editMode} reloadKey={reloadKey} />}
       </div>
     </div>
   );
