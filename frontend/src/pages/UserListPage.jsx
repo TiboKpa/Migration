@@ -26,7 +26,7 @@ const STATUS_BG    = { inactive: 'bg-slate-100', active: '' };
 const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slate-50/50' };
 
 // ---------------------------------------------------------------------------
-// Format training for display
+// Helpers
 // ---------------------------------------------------------------------------
 function formatTraining(user) {
   if (user.na_training) return 'N/A';
@@ -46,9 +46,11 @@ function formatTlg(user) {
   return `${primary} + ${addon.join(', ')}`;
 }
 
-// ---------------------------------------------------------------------------
-// Excel helpers
-// ---------------------------------------------------------------------------
+// A matrix row is "valid" when it can produce a real training (not N/A and not empty)
+function rowHasTraining(entry) {
+  return !entry.na_training && !!entry.primary_training_name;
+}
+
 function normalizeYesNo(val) {
   if (val === true || val === 1) return true;
   if (typeof val === 'string') return val.trim().toLowerCase() === 'yes';
@@ -154,40 +156,55 @@ export default function UserListPage() {
   });
   const infoKeys = useMemo(() => dimensions?.info_keys ?? [], [dimensions]);
 
-  // Reset newUser when infoKeys load so all keys are present
-  const initialNewUser = useMemo(() => emptyUser(infoKeys), [infoKeys]);
+  // ------------------------------------------------------------------
+  // Valid function / role sets
+  // A function is valid if it has at least one fn+role pair where
+  // ANY matrix row (across all additional_info combos) has real training.
+  // A role is valid for a given function by the same rule.
+  // ------------------------------------------------------------------
+  const validFnRolePairs = useMemo(() => {
+    // Set of "fn||role" strings that have at least one non-N/A training row
+    const set = new Set();
+    for (const e of matrixEntries) {
+      if (rowHasTraining(e)) set.add(`${e.function}||${e.role}`);
+    }
+    return set;
+  }, [matrixEntries]);
 
-  const matrixFunctions = useMemo(() =>
-    [...new Set(matrixEntries.map(e => e.function).filter(Boolean))].sort()
-  , [matrixEntries]);
+  const matrixFunctions = useMemo(() => {
+    // Only functions that have at least one valid fn+role pair
+    const fns = new Set();
+    for (const key of validFnRolePairs) fns.add(key.split('||')[0]);
+    return [...fns].sort();
+  }, [validFnRolePairs]);
 
-  const rolesForFn = useCallback((fn) =>
-    [...new Set(
-      matrixEntries.filter(e => e.function === fn).map(e => e.role).filter(Boolean)
-    )].sort()
-  , [matrixEntries]);
+  const rolesForFn = useCallback((fn) => {
+    // Only roles where the fn+role pair has at least one non-N/A training row
+    const roles = new Set();
+    for (const key of validFnRolePairs) {
+      const [f, r] = key.split('||');
+      if (f === fn) roles.add(r);
+    }
+    return [...roles].sort();
+  }, [validFnRolePairs]);
 
   // ------------------------------------------------------------------
-  // Lookup: build additional_info object from user snapshot + infoKeys
+  // Lookup
   // ------------------------------------------------------------------
   async function lookup(snapshot) {
     if (!snapshot.function || !snapshot.role) return null;
-    // Build additional_info as { key: bool } from the known info_keys
     const additional_info = {};
-    for (const k of infoKeys) {
-      additional_info[k] = !!snapshot[k];
-    }
+    for (const k of infoKeys) additional_info[k] = !!snapshot[k];
     try {
       const res = await client.post(`/projects/${projectId}/role-matrix/lookup`, {
         function: snapshot.function,
         role: snapshot.role,
         additional_info,
       });
-      return res.data; // { found, primary_training_name, complementary_names, tlg_primary, tlg_addon, na_training, na_tlg, ... }
+      return res.data;
     } catch { return null; }
   }
 
-  // Apply lookup result onto a user patch object
   function applyLookup(result) {
     if (!result || !result.found) {
       return { recommended_training: '', complementary_names: [], tlg_primary: '', tlg_addon: [], na_training: false, na_tlg: false };
@@ -248,7 +265,7 @@ export default function UserListPage() {
   });
 
   // ------------------------------------------------------------------
-  // Add-user form handlers
+  // Add-user form
   // ------------------------------------------------------------------
   function openAddForm() {
     setNewUser(emptyUser(infoKeys));
@@ -257,38 +274,26 @@ export default function UserListPage() {
   }
 
   async function handleNewUserChange(field, value) {
-    setNewUser(prev => {
-      const updated = { ...prev, [field]: value };
-      if (field === 'function') updated.role = '';
-      return updated;
-    });
-    // Trigger lookup after state settles
-    setTimeout(async () => {
-      setNewUser(prev => {
-        const snap = { ...prev, [field]: value };
-        if (field === 'function') snap.role = '';
-        if (snap.function && snap.role) {
-          lookup(snap).then(result => {
-            setAddLookup(result);
-            setNewUser(u => ({ ...u, ...applyLookup(result) }));
-          });
-        }
-        return snap;
-      });
-    }, 0);
+    const snap = { ...newUser, [field]: value };
+    if (field === 'function') snap.role = '';
+    setNewUser(snap);
+    if (snap.function && snap.role) {
+      const result = await lookup(snap);
+      setAddLookup(result);
+      setNewUser(u => ({ ...u, ...applyLookup(result) }));
+    } else {
+      setNewUser(u => ({ ...u, recommended_training: '', complementary_names: [], tlg_primary: '', tlg_addon: [], na_training: false, na_tlg: false }));
+    }
   }
 
   async function handleNewUserBoolChange(field, value) {
-    setNewUser(prev => {
-      const updated = { ...prev, [field]: value };
-      if (updated.function && updated.role) {
-        lookup(updated).then(result => {
-          setAddLookup(result);
-          setNewUser(u => ({ ...u, ...applyLookup(result) }));
-        });
-      }
-      return updated;
-    });
+    const snap = { ...newUser, [field]: value };
+    setNewUser(snap);
+    if (snap.function && snap.role) {
+      const result = await lookup(snap);
+      setAddLookup(result);
+      setNewUser(u => ({ ...u, ...applyLookup(result) }));
+    }
   }
 
   async function saveNewUser() {
@@ -312,8 +317,7 @@ export default function UserListPage() {
     const value = editValue === '' ? null : editValue;
     const fields = { [field]: value };
     if (field === 'function') fields.role = null;
-    const needsLookup = ['function', 'role'].includes(field);
-    if (needsLookup) {
+    if (['function', 'role'].includes(field)) {
       const merged = { ...user, ...fields };
       const result = await lookup(merged);
       Object.assign(fields, applyLookup(result));
@@ -324,16 +328,14 @@ export default function UserListPage() {
   async function toggleBool(user, field) {
     if (!editMode) return;
     const value = !user[field];
-    const fields = { [field]: value };
-    // info_keys toggles always trigger lookup
     const merged = { ...user, [field]: value };
     const result = await lookup(merged);
-    Object.assign(fields, applyLookup(result));
+    const fields = { [field]: value, ...applyLookup(result) };
     updateMutation.mutate({ id: user.id, fields });
   }
 
   // ------------------------------------------------------------------
-  // File import / export
+  // Import / export
   // ------------------------------------------------------------------
   function handleFileChange(e) {
     const file = e.target.files[0];
@@ -411,17 +413,6 @@ export default function UserListPage() {
       );
     }
 
-    if (opts.bool) {
-      return (
-        <div className="flex justify-center">
-          <input type="checkbox" checked={!!raw}
-            onChange={() => toggleBool(user, field)}
-            disabled={!editMode}
-            className={`w-3.5 h-3.5 rounded accent-blue-600 ${editMode ? 'cursor-pointer' : 'cursor-default'}`} />
-        </div>
-      );
-    }
-
     if (opts.select === 'status') {
       const isActive = raw === 'active';
       if (!editMode) {
@@ -472,12 +463,14 @@ export default function UserListPage() {
     if (opts.select === 'role') {
       if (!editMode) return <span className="text-xs text-slate-700 truncate block" title={raw || ''}>{raw || <span className="text-slate-300">-</span>}</span>;
       if (isEditing) {
+        // Only show roles that have at least one non-N/A training row for this function
+        const validRoles = rolesForFn(user.function);
         return (
           <select autoFocus className="border rounded px-1 py-0.5 text-xs w-full"
             value={editValue} onChange={e => setEditValue(e.target.value)}
             onBlur={() => commitEdit(user, field)}>
             <option value="">-</option>
-            {rolesForFn(user.function).map(r => <option key={r} value={r}>{r}</option>)}
+            {validRoles.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
         );
       }
@@ -606,7 +599,7 @@ export default function UserListPage() {
         )}
         {(trainingDisplay || tlgDisplay) && (
           <div className={`flex gap-8 mb-3 px-3 py-2 rounded-lg text-xs ${
-            addLookup?.is_error ? 'bg-red-50 text-red-600' : 'bg-blue-50 text-blue-700'
+            addLookup?.na_training ? 'bg-amber-50 text-amber-700' : 'bg-blue-50 text-blue-700'
           }`}>
             <span><strong>Training:</strong> {trainingDisplay || '-'}</span>
             <span><strong>TLG:</strong> {tlgDisplay || '-'}</span>
@@ -656,7 +649,6 @@ export default function UserListPage() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
       <div className="flex items-center justify-between mb-4 shrink-0">
         <div>
           <h1 className="text-xl font-bold text-slate-800">User List</h1>
@@ -712,10 +704,8 @@ export default function UserListPage() {
         <p className="text-sm text-green-600 mb-2 shrink-0">Import complete: {importStats.imported} users.</p>
       )}
 
-      {/* Add form */}
       {editMode && showAdd && renderAddForm()}
 
-      {/* Table */}
       <div className="overflow-y-auto overflow-x-auto rounded-xl border bg-white flex-1">
         <table className="text-sm border-collapse" style={{ tableLayout: 'fixed', minWidth: minW }}>
           <colgroup>
