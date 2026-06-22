@@ -6,7 +6,6 @@ import client from '../api/client';
 
 const STATUS_OPTIONS = ['active', 'inactive'];
 
-// Columns that must never be sent to the backend as top-level fields
 const INTERNAL_KEYS = new Set(['id', 'created_at', 'updated_at', 'additional_info', 'na_training', 'na_tlg', 'tlg_primary', 'primary_training_name']);
 
 function emptyNewRow(infoKeys) {
@@ -24,7 +23,6 @@ function emptyNewRow(infoKeys) {
 const STATUS_BG    = { inactive: 'bg-slate-100', active: '' };
 const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slate-50/50' };
 
-// B6 fix: skip internal/computed keys; pack infoKeys into additional_info
 function sanitizePayload(row, infoKeys) {
   const EMAIL_FIELDS = ['mail', 'manager_mail'];
   const payload = {};
@@ -32,6 +30,7 @@ function sanitizePayload(row, infoKeys) {
     if (INTERNAL_KEYS.has(k)) continue;
     if (infoKeys.includes(k)) continue;
     if (EMAIL_FIELDS.includes(k)) {
+      // Always send null for missing/invalid emails -- backend accepts null cleanly
       payload[k] = v && /^[^@]+@[^@]+\.[^@]+$/.test(String(v).trim()) ? String(v).trim() : null;
     } else if (Array.isArray(v)) {
       payload[k] = v;
@@ -41,17 +40,14 @@ function sanitizePayload(row, infoKeys) {
       payload[k] = v ?? null;
     }
   }
-  // Explicit overrides for derived fields
   payload.recommended_training = row.na_training ? 'N/A' : (row.recommended_training || null);
   payload.tlg_group = row.na_tlg ? 'N/A' : (row.tlg_primary || null);
-  // Pack dynamic infoKeys into additional_info
   const additional_info = {};
   for (const k of infoKeys) additional_info[k] = !!row[k];
   payload.additional_info = additional_info;
   return payload;
 }
 
-// B11 fix: include ALL matrix rows, not just those with primary training
 function rowIsInMatrix(entry) {
   return !!(entry.function && entry.role);
 }
@@ -186,23 +182,21 @@ export default function UserListPage() {
   const [filter, setFilter] = useState('');
   const [importError, setImportError] = useState('');
   const [importStats, setImportStats] = useState(null);
+  const [saveError, setSaveError] = useState('');
 
-  // New-row state
   const [newRow, setNewRow] = useState(null);
   const newRowRef = useRef(null);
-  const newRowPending = useRef(false); // B3: guard against double-POST
+  const newRowPending = useRef(false);
   const newRowId = useRef(null);
   const newRowSaved = useRef(false);
   const [newRowSaving, setNewRowSaving] = useState(false);
 
-  // Edit-row state
   const [editingRowId, setEditingRowId] = useState(null);
   const editingRowIdRef = useRef(null);
   const [editRowDraft, setEditRowDraft] = useState({});
   const editRowDraftRef = useRef({});
   const [editRowSaving, setEditRowSaving] = useState(false);
 
-  // B8: longer blur delay + per-row focus tracking to survive native select dropdowns
   const blurTimerEdit = useRef(null);
   const blurTimerNew  = useRef(null);
   const newRowHasFocus = useRef(false);
@@ -227,7 +221,6 @@ export default function UserListPage() {
   });
   const infoKeys = useMemo(() => dimensions?.info_keys ?? [], [dimensions]);
 
-  // B11 fix: include all matrix rows that have function+role, not just rows with training
   const validFnRolePairs = useMemo(() => {
     const set = new Set();
     for (const e of matrixEntries) {
@@ -283,7 +276,12 @@ export default function UserListPage() {
     };
   }
 
-  // B2 fix: onSuccess closes the new-row form only when called from Enter/blur, not mid-flight
+  function reportSaveError(err) {
+    const msg = err?.response?.data?.error || err?.message || 'Save failed';
+    setSaveError(msg);
+    setTimeout(() => setSaveError(''), 5000);
+  }
+
   const createMutation = useMutation({
     mutationFn: payload => client.post(`/projects/${projectId}/users`, payload),
     onSuccess: res => {
@@ -291,6 +289,7 @@ export default function UserListPage() {
       newRowSaved.current = true;
       newRowPending.current = false;
       setNewRowSaving(false);
+      setSaveError('');
       qc.setQueryData(['users', projectId], old =>
         Array.isArray(old) ? [...old, normalizeUser(res.data)] : [normalizeUser(res.data)]
       );
@@ -298,7 +297,7 @@ export default function UserListPage() {
     onError: err => {
       newRowPending.current = false;
       setNewRowSaving(false);
-      console.error('[create user]', err?.response?.data || err.message);
+      reportSaveError(err);
     },
   });
 
@@ -307,6 +306,7 @@ export default function UserListPage() {
     onSuccess: res => {
       setNewRowSaving(false);
       setEditRowSaving(false);
+      setSaveError('');
       qc.setQueryData(['users', projectId], old =>
         Array.isArray(old) ? old.map(u => u.id === res.data.id ? normalizeUser(res.data) : u) : old
       );
@@ -314,13 +314,14 @@ export default function UserListPage() {
     onError: err => {
       setNewRowSaving(false);
       setEditRowSaving(false);
-      console.error('[update user]', err?.response?.data || err.message);
+      reportSaveError(err);
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: id => client.delete(`/projects/${projectId}/users/${id}`),
     onSuccess: () => qc.invalidateQueries(['users', projectId]),
+    onError: err => reportSaveError(err),
   });
 
   const clearAllMutation = useMutation({
@@ -329,6 +330,7 @@ export default function UserListPage() {
       qc.setQueryData(['users', projectId], []);
       setImportStats(null);
     },
+    onError: err => reportSaveError(err),
   });
 
   const importMutation = useMutation({
@@ -342,6 +344,7 @@ export default function UserListPage() {
   });
 
   function openNewRow() {
+    setSaveError('');
     const fresh = emptyNewRow(infoKeys);
     setNewRow(fresh);
     newRowRef.current = fresh;
@@ -370,33 +373,25 @@ export default function UserListPage() {
     ].some(v => v && String(v).trim());
   }
 
-  // B1 fix: blur now commits AND closes (same as Enter)
-  // B3 fix: newRowPending guards against double-POST
   function commitAndCloseNewRow() {
     clearTimeout(blurTimerNew.current);
     const snap = newRowRef.current;
     if (!snap) return;
-    if (hasNewRowData(snap)) {
-      if (!newRowPending.current) {
-        newRowPending.current = true;
-        setNewRowSaving(true);
-        const payload = sanitizePayload(snap, infoKeys);
-        if (!newRowSaved.current) {
-          createMutation.mutate(payload);
-        } else if (newRowId.current) {
-          updateMutation.mutate({ id: newRowId.current, payload });
-        }
+    if (hasNewRowData(snap) && !newRowPending.current) {
+      newRowPending.current = true;
+      setNewRowSaving(true);
+      const payload = sanitizePayload(snap, infoKeys);
+      if (!newRowSaved.current) {
+        createMutation.mutate(payload);
+      } else if (newRowId.current) {
+        updateMutation.mutate({ id: newRowId.current, payload });
       }
     }
-    // Close the form immediately; the cache update happens in onSuccess
     setNewRow(null);
     newRowRef.current = null;
   }
 
-  // B8 fix: use a window-level mousedown listener to detect true outside clicks,
-  // combined with a 200ms timer that checks our own focus-tracking ref.
   function handleNewRowBlur(e) {
-    // relatedTarget is null when native select dropdown opens -- do not save yet
     if (e.relatedTarget === null) return;
     if (e.currentTarget.contains(e.relatedTarget)) return;
     clearTimeout(blurTimerNew.current);
@@ -472,7 +467,6 @@ export default function UserListPage() {
     editRowHasFocus.current = true;
   }
 
-  // B7 fix: also re-run lookup when any infoKey changed vs the original
   async function doSaveEditRow(userId, draft) {
     if (!userId || !draft) return;
     setEditRowSaving(true);
@@ -507,7 +501,6 @@ export default function UserListPage() {
     setEditRowSaving(false);
   }
 
-  // B8 fix: same pattern as new-row -- skip null relatedTarget (native select opening)
   function handleEditRowBlur(e, userId) {
     if (e.relatedTarget === null) return;
     if (e.currentTarget.contains(e.relatedTarget)) return;
@@ -614,7 +607,6 @@ export default function UserListPage() {
     }
   }
 
-  // B13 fix: search also covers last_contact
   const filtered = useMemo(() => {
     if (!filter) return users;
     const q = filter.toLowerCase();
@@ -792,7 +784,6 @@ export default function UserListPage() {
 
   const thBase = 'px-2 py-2 text-left text-[10px] font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
   const colCount = 15 + infoKeys.length;
-  // B14 fix: compute minWidth from actual column widths
   const fixedColWidths = [90, 100, 100, 160, 160, 140, 140, 180, 220, 140, 90, 100, 180, 32];
   const minW = fixedColWidths.reduce((a, b) => a + b, 0) + infoKeys.length * 44;
 
@@ -803,7 +794,6 @@ export default function UserListPage() {
           <h1 className="text-xl font-bold text-slate-800">User List</h1>
           <p className="text-sm text-slate-500">
             {users.length} user{users.length !== 1 ? 's' : ''}
-            {/* B15 fix: always show the edit mode hint in the subtitle */}
             {!editMode && <span className="ml-2 text-slate-400 font-normal">- Enable Edit mode to add or modify users</span>}
           </p>
         </div>
@@ -822,7 +812,6 @@ export default function UserListPage() {
               {clearAllMutation.isPending ? 'Deleting...' : 'Empty list'}
             </button>
           )}
-          {/* B16 fix: wait for save to complete before toggling off edit mode */}
           <ToggleSwitch
             checked={editMode}
             onChange={async v => {
@@ -851,6 +840,11 @@ export default function UserListPage() {
         </div>
       </div>
 
+      {saveError && (
+        <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-2 shrink-0">
+          Save failed: {saveError}
+        </p>
+      )}
       {importError && <p className="text-sm text-red-500 mb-2 shrink-0">{importError}</p>}
       {importStats && !importMutation.isPending && (
         <p className="text-sm text-green-600 mb-2 shrink-0">Import complete: {importStats.imported} users.</p>
