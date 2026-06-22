@@ -53,7 +53,6 @@ const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slat
 function excelSerialToDate(serial) {
   const n = Number(serial);
   if (!n || isNaN(n) || n < 1) return '';
-  // Excel epoch: January 0, 1900 = Dec 30 1899 in JS
   const date = new Date(Date.UTC(1899, 11, 30) + n * 86400000);
   if (isNaN(date.getTime())) return '';
   return date.toISOString().slice(0, 10);
@@ -61,11 +60,8 @@ function excelSerialToDate(serial) {
 
 function toDateOnly(val) {
   if (!val && val !== 0) return '';
-  // Already a YYYY-MM-DD string
   if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val)) return val;
-  // ISO datetime string
   if (typeof val === 'string' && val.includes('T')) return val.split('T')[0];
-  // Numeric Excel serial (may arrive as number or numeric string)
   if (!isNaN(Number(val)) && String(val).trim() !== '') return excelSerialToDate(Number(val));
   return String(val).split('T')[0];
 }
@@ -140,13 +136,6 @@ function colIdx(headerMap, excelHeader) {
 
 // ---------------------------------------------------------------------------
 // Excel parse
-// - Training (auto) and TLG (auto) are intentionally NOT imported.
-//   The website re-derives them from the matrix after Function/Role/Additional Info.
-// - Each infoKey is read from a column whose header exactly matches the key name
-//   (case-insensitive). Only known infoKeys are read; any other columns are ignored.
-// - An empty SESA ID cell signals the end of data; parsing stops immediately.
-// - If the row immediately after the header row contains the literal header label
-//   (e.g. the template repeats the column name as a hint row), it is skipped.
 // ---------------------------------------------------------------------------
 function parseExcelUsers(buffer, infoKeys) {
   const wb = XLSX.read(buffer, { type: 'array' });
@@ -154,7 +143,7 @@ function parseExcelUsers(buffer, infoKeys) {
   const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
   const sesaColDef = COLUMNS.find(c => c.key === 'sesa_id');
-  const sesaHeaderLabel = sesaColDef.excelHeader.toLowerCase(); // "sesa id"
+  const sesaHeaderLabel = sesaColDef.excelHeader.toLowerCase();
 
   let headerRowIdx = -1;
   for (let i = 0; i < raw.length; i++) {
@@ -180,7 +169,6 @@ function parseExcelUsers(buffer, infoKeys) {
     return normalizeYesNo(v);
   }
 
-  // Raw value from the SESA column (before stringification) to detect numerics.
   function rawSesaCell(row) {
     const idx = colIdx(headerMap, sesaHeaderLabel);
     return idx >= 0 ? row[idx] : '';
@@ -192,21 +180,15 @@ function parseExcelUsers(buffer, infoKeys) {
     const sesaRaw = rawSesaCell(row);
     const sesaId = String(sesaRaw ?? '').trim();
 
-    // Empty SESA cell = end of data, stop parsing.
     if (!sesaId) break;
-
-    // Skip a row that is just the column header label repeated (template hint rows).
     if (sesaId.toLowerCase() === sesaHeaderLabel) continue;
 
-    // Build additional_info: for each known infoKey, look for a column with
-    // that exact name (case-insensitive). Unknown columns are never read.
     const additional_info = {};
     for (const k of infoKeys) {
       const idx = headerMap[k.toLowerCase()] ?? -1;
       additional_info[k] = idx >= 0 ? normalizeYesNo(row[idx]) : false;
     }
 
-    // last_contact: read raw cell value so numeric serials are handled correctly.
     const lastContactIdx = colIdx(headerMap, 'last contact');
     const lastContactRaw = lastContactIdx >= 0 ? row[lastContactIdx] : '';
 
@@ -219,7 +201,6 @@ function parseExcelUsers(buffer, infoKeys) {
       function:             cell(row, 'Function') || null,
       role:                 cell(row, 'Role') || null,
       description:          cell(row, 'Description') || null,
-      // Training (auto) and TLG (auto) are intentionally not read.
       recommended_training: null,
       complementary_names:  [],
       tlg_group:            null,
@@ -421,6 +402,12 @@ export default function UserListPage() {
   const [importStats, setImportStats] = useState(null);
   const [saveError, setSaveError] = useState('');
   const [sortState, setSortState] = useState({ col: null, dir: 'asc' });
+  const [syncing, setSyncing] = useState(false);
+
+  // Tracks whether the initial training/TLG sync for the current data set has
+  // already been triggered. Reset whenever the users query data changes identity
+  // so that a fresh import triggers a new sync pass.
+  const syncedForData = useRef(null);
 
   const [newRow, setNewRow] = useState(null);
   const newRowRef = useRef(null);
@@ -487,6 +474,83 @@ export default function UserListPage() {
     }
     return [...roles].sort();
   }, [validFnRolePairs]);
+
+  // ---------------------------------------------------------------------------
+  // Auto-sync: after users + infoKeys are loaded, re-derive training & TLG for
+  // every user that has a function/role and persist any changes to the backend.
+  // Runs once per unique rawUsers array reference to avoid looping on updates.
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (isLoading) return;
+    if (users.length === 0) return;
+    if (infoKeys.length === 0) return;
+    // Use rawUsers as the identity key so a fresh import resets the guard.
+    if (syncedForData.current === rawUsers) return;
+    syncedForData.current = rawUsers;
+
+    async function runSync() {
+      setSyncing(true);
+      const toUpdate = users.filter(u => u.function && u.role && u.id);
+      await Promise.all(toUpdate.map(async u => {
+        try {
+          const additional_info = {};
+          for (const k of infoKeys) additional_info[k] = !!u[k];
+          const res = await client.post(`/projects/${projectId}/role-matrix/lookup`, {
+            function: u.function,
+            role: u.role,
+            additional_info,
+          });
+          const result = res.data;
+          if (!result || !result.found) return;
+
+          const freshTraining = result.na_training ? 'N/A' : (result.primary_training_name || '');
+          const freshComp     = result.na_training ? [] : (Array.isArray(result.complementary_names) ? result.complementary_names : []);
+          const freshTlg      = result.na_tlg ? 'N/A' : (result.tlg_primary || '');
+          const freshAddon    = result.na_tlg ? [] : (Array.isArray(result.tlg_addon) ? result.tlg_addon : []);
+          const freshNaT      = !!result.na_training;
+          const freshNaTlg    = !!result.na_tlg;
+
+          const currentTraining = u.na_training ? 'N/A' : (u.recommended_training || '');
+          const currentTlg      = u.na_tlg ? 'N/A' : (u.tlg_primary || u.tlg_group || '');
+          const currentAddon    = JSON.stringify(Array.isArray(u.tlg_addon) ? u.tlg_addon : []);
+          const currentComp     = JSON.stringify(Array.isArray(u.complementary_names) ? u.complementary_names : []);
+
+          const changed =
+            freshTraining !== currentTraining ||
+            freshTlg      !== currentTlg ||
+            JSON.stringify(freshAddon) !== currentAddon ||
+            JSON.stringify(freshComp)  !== currentComp ||
+            freshNaT   !== u.na_training ||
+            freshNaTlg !== u.na_tlg;
+
+          if (!changed) return;
+
+          const updated = {
+            ...u,
+            recommended_training: freshNaT ? 'N/A' : freshTraining,
+            complementary_names:  freshComp,
+            tlg_primary:          freshNaTlg ? 'N/A' : freshTlg,
+            tlg_addon:            freshAddon,
+            na_training:          freshNaT,
+            na_tlg:               freshNaTlg,
+          };
+          const payload = sanitizePayload(updated, infoKeys);
+          const updateRes = await client.put(`/projects/${projectId}/users/${u.id}`, payload);
+          qc.setQueryData(['users', projectId], old =>
+            Array.isArray(old)
+              ? old.map(r => r.id === u.id ? normalizeUser(updateRes.data) : r)
+              : old
+          );
+        } catch {
+          // Non-blocking: skip silently if one user fails
+        }
+      }));
+      setSyncing(false);
+    }
+
+    runSync();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawUsers, users, infoKeys, isLoading]);
 
   useEffect(() => {
     function onPointerDown(e) {
@@ -598,7 +662,13 @@ export default function UserListPage() {
 
   const importMutation = useMutation({
     mutationFn: data => client.post(`/projects/${projectId}/users/import-json`, { users: data }),
-    onSuccess: res => { qc.invalidateQueries(['users', projectId]); setImportError(''); setImportStats(res.data); },
+    onSuccess: res => {
+      qc.invalidateQueries(['users', projectId]);
+      setImportError('');
+      setImportStats(res.data);
+      // Reset sync guard so the next load triggers a fresh sync pass.
+      syncedForData.current = null;
+    },
     onError: err => setImportError(err?.response?.data?.error || err.message || 'Import failed'),
   });
 
@@ -832,7 +902,6 @@ export default function UserListPage() {
         }
         row[col.excelHeader] = u[col.key] ?? '';
       }
-      // Each infoKey is written as a column using the key name directly.
       for (const k of infoKeys) {
         row[k] = u[k] ? 'Yes' : 'No';
       }
@@ -1103,7 +1172,8 @@ export default function UserListPage() {
           <h1 className="text-xl font-bold text-slate-800">User List</h1>
           <p className="text-sm text-slate-500">
             {users.length} user{users.length !== 1 ? 's' : ''}
-            {!editMode && <span className="ml-2 text-slate-400 font-normal">- Enable Edit mode to add or modify users</span>}
+            {syncing && <span className="ml-2 text-blue-400 font-normal">Syncing training & TLG...</span>}
+            {!editMode && !syncing && <span className="ml-2 text-slate-400 font-normal">- Enable Edit mode to add or modify users</span>}
           </p>
         </div>
         <div className="flex gap-3 items-center flex-wrap justify-end">
