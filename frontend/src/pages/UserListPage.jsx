@@ -16,7 +16,7 @@ const COLUMNS = [
   { key: 'function',     label: 'Function',          width: 160, excelHeader: 'Function' },
   { key: 'role',         label: 'Role',              width: 160, excelHeader: 'Role' },
   { key: 'description',  label: 'Description',       width: 180, excelHeader: 'Description' },
-  { key: '_training',    label: 'Primary Training',  width: 220, excelHeader: 'PDM Windchill' },
+  { key: '_training',    label: 'Training',          width: 220, excelHeader: 'PDM Windchill' },
   { key: '_tlg',         label: 'TLG',               width: 140, excelHeader: 'TLG' },
   { key: 'status',       label: 'Status',            width: 90,  excelHeader: 'Status' },
   { key: 'last_contact', label: 'Last Contact',      width: 100, excelHeader: 'Last Contact' },
