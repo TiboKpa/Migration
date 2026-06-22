@@ -121,7 +121,6 @@ const ROW_HOVER = {
 // Sort icon (inline SVG, no dependency)
 // ---------------------------------------------------------------------------
 function SortIcon({ dir }) {
-  // dir: null = unsorted, 'asc' = A-Z, 'desc' = Z-A
   const top    = dir === 'asc'  ? '#3b82f6' : '#cbd5e1';
   const bottom = dir === 'desc' ? '#3b82f6' : '#cbd5e1';
   return (
@@ -132,7 +131,6 @@ function SortIcon({ dir }) {
   );
 }
 
-// Sortable table-header button
 function SortTh({ label, colKey, sortState, onSort, className, children, vertical }) {
   const dir = sortState.col === colKey ? sortState.dir : null;
   if (vertical) {
@@ -261,12 +259,11 @@ function AddDimModal({ label, badge, existing, onAdd, onClose }) {
 }
 
 // ---------------------------------------------------------------------------
-// Selector panel -- A-Z is now hardcoded, button removed
+// Selector panel
 // ---------------------------------------------------------------------------
 function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNew, onRemove, editMode }) {
   const [search, setSearch] = useState('');
 
-  // Always sorted A-Z
   const displayed = useMemo(() => {
     const list = items.filter(v => v.toLowerCase().includes(search.toLowerCase()));
     return [...list].sort((a, b) => a.localeCompare(b));
@@ -667,12 +664,29 @@ function sortEntries(rows, sortState, profiles) {
       va = Array.isArray(a.tlg_addon) ? a.tlg_addon.join(' ') : '';
       vb = Array.isArray(b.tlg_addon) ? b.tlg_addon.join(' ') : '';
     } else {
-      // info key column
       va = a.additional_info?.[col] ? '1' : '0';
       vb = b.additional_info?.[col] ? '1' : '0';
     }
     return mul * va.localeCompare(vb);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Shape normalizers -- guarantee safe types regardless of cache state
+// ---------------------------------------------------------------------------
+function normalizeDimensions(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { functions: [], roles: [], info_keys: [] };
+  }
+  return {
+    functions: Array.isArray(data.functions) ? data.functions : [],
+    roles:     Array.isArray(data.roles)     ? data.roles     : [],
+    info_keys: Array.isArray(data.info_keys) ? data.info_keys : [],
+  };
+}
+
+function normalizeEntries(data) {
+  return Array.isArray(data) ? data : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -697,17 +711,21 @@ export default function RoleMatrixPage() {
   const dimKey    = ['role-matrix-dimensions', projectId];
   const matrixKey = ['role-matrix', projectId];
 
-  const { data: dimensions = { functions: [], roles: [], info_keys: [] } } = useQuery({
+  const { data: dimensions } = useQuery({
     queryKey: dimKey,
     queryFn: () => client.get(`/projects/${projectId}/role-matrix/dimensions`).then(r => r.data),
     staleTime: 0,
+    select: normalizeDimensions,
   });
+  const safeDimensions = dimensions ?? { functions: [], roles: [], info_keys: [] };
 
-  const { data: entries = [], isLoading } = useQuery({
+  const { data: entries, isLoading } = useQuery({
     queryKey: matrixKey,
     queryFn: () => client.get(`/projects/${projectId}/role-matrix`).then(r => r.data),
     staleTime: 0,
+    select: normalizeEntries,
   });
+  const safeEntries = entries ?? [];
 
   const { data: profiles = [] } = useQuery({
     queryKey: ['role-matrix-profiles', projectId],
@@ -723,7 +741,7 @@ export default function RoleMatrixPage() {
     mutationFn: ({ type, value }) =>
       client.post(`/projects/${projectId}/role-matrix/dimensions`, { type, value }).then(r => r.data),
     onSuccess: (data, variables) => {
-      qc.setQueryData(dimKey, data);
+      qc.setQueryData(dimKey, normalizeDimensions(data));
       qc.refetchQueries({ queryKey: matrixKey, exact: true });
       if (variables.type === 'function') setSelectedFn(variables.value);
       if (variables.type === 'role')     setSelectedRole(variables.value);
@@ -736,7 +754,7 @@ export default function RoleMatrixPage() {
     mutationFn: ({ type, value }) =>
       client.delete(`/projects/${projectId}/role-matrix/dimensions`, { data: { type, value } }).then(r => r.data),
     onSuccess: (data, variables) => {
-      qc.setQueryData(dimKey, data);
+      qc.setQueryData(dimKey, normalizeDimensions(data));
       qc.refetchQueries({ queryKey: matrixKey, exact: true });
       if (variables.type === 'function' && selectedFn === variables.value)   setSelectedFn(null);
       if (variables.type === 'role'     && selectedRole === variables.value) setSelectedRole(null);
@@ -749,7 +767,10 @@ export default function RoleMatrixPage() {
     mutationFn: ({ id, data }) =>
       client.put(`/projects/${projectId}/role-matrix/${id}`, data).then(r => r.data),
     onSuccess: updated => {
-      qc.setQueryData(matrixKey, (old = []) => old.map(row => row.id === updated.id ? updated : row));
+      qc.setQueryData(matrixKey, old => {
+        if (!Array.isArray(old)) return [updated];
+        return old.map(row => row.id === updated.id ? updated : row);
+      });
       setModalEntry(null);
     },
   });
@@ -771,19 +792,21 @@ export default function RoleMatrixPage() {
   const importMutation = useMutation({
     mutationFn: payload =>
       client.post(`/projects/${projectId}/role-matrix/import`, payload).then(r => r.data),
-    onSuccess: data => {
+    onSuccess: async data => {
       setImportError('');
       setImportStats(data);
-      qc.refetchQueries({ queryKey: dimKey, exact: true });
-      qc.refetchQueries({ queryKey: matrixKey, exact: true });
+      await Promise.all([
+        qc.refetchQueries({ queryKey: dimKey, exact: true }),
+        qc.refetchQueries({ queryKey: matrixKey, exact: true }),
+      ]);
     },
     onError: err => setImportError(err?.response?.data?.error || err.message || 'Import failed'),
   });
 
   function handleExport() {
-    const data = entries.map(e => {
+    const data = safeEntries.map(e => {
       const row = { Function: e.function, Role: e.role };
-      for (const k of dimensions.info_keys) row[`Additional Info ${k}`] = e.additional_info?.[k] ? 'Yes' : 'No';
+      for (const k of safeDimensions.info_keys) row[`Additional Info ${k}`] = e.additional_info?.[k] ? 'Yes' : 'No';
       row['Concatenate'] = '';
       const rec = profiles.find(p => p.id === e.recommended_training_id);
       const compTitles = Array.isArray(e.complementary_items) ? e.complementary_items.map(i => i.title) : [];
@@ -823,13 +846,13 @@ export default function RoleMatrixPage() {
   }
 
   const dimFilteredEntries = useMemo(() => {
-    let rows = entries;
+    let rows = safeEntries;
     if (selectedFn)           rows = rows.filter(r => r.function === selectedFn);
     if (selectedRole)         rows = rows.filter(r => r.role === selectedRole);
     if (selectedInfo.length > 0)
       rows = rows.filter(r => selectedInfo.every(k => r.additional_info && r.additional_info[k]));
     return rows;
-  }, [entries, selectedFn, selectedRole, selectedInfo]);
+  }, [safeEntries, selectedFn, selectedRole, selectedInfo]);
 
   const statusCounts = useMemo(() => {
     const counts = {};
@@ -868,9 +891,9 @@ export default function RoleMatrixPage() {
           label={addModalType === 'function' ? 'Function' : addModalType === 'role' ? 'Role' : 'Info Key'}
           badge={addModalType === 'function' ? 'FNC' : addModalType === 'role' ? 'ROL' : 'INF'}
           existing={
-            addModalType === 'function' ? dimensions.functions
-            : addModalType === 'role'   ? dimensions.roles
-            : dimensions.info_keys
+            addModalType === 'function' ? safeDimensions.functions
+            : addModalType === 'role'   ? safeDimensions.roles
+            : safeDimensions.info_keys
           }
           onAdd={value => addDimMutation.mutate({ type: addModalType, value })}
           onClose={() => setAddModalType(null)}
@@ -881,7 +904,7 @@ export default function RoleMatrixPage() {
       <div className="flex items-center justify-between mb-4 shrink-0">
         <div>
           <h1 className="text-xl font-bold text-slate-800">Role Matrix</h1>
-          <p className="text-sm text-slate-500">{entries.length} rules</p>
+          <p className="text-sm text-slate-500">{safeEntries.length} rules</p>
         </div>
         <div className="flex gap-3 items-center flex-wrap justify-end">
           {editMode && (
@@ -895,7 +918,7 @@ export default function RoleMatrixPage() {
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
             {importMutation.isPending ? 'Importing...' : 'Import Excel'}
           </button>
-          <button onClick={handleExport} disabled={entries.length === 0}
+          <button onClick={handleExport} disabled={safeEntries.length === 0}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">Export Excel</button>
           <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleFileChange} />
         </div>
@@ -912,17 +935,17 @@ export default function RoleMatrixPage() {
 
       {/* 3-panel selector */}
       <div className="grid grid-cols-3 gap-4 mb-4 shrink-0" style={{ height: '16rem' }}>
-        <SelectorPanel title="Function" badge="FNC" items={dimensions.functions}
+        <SelectorPanel title="Function" badge="FNC" items={safeDimensions.functions}
           selected={selectedFn} multi={false} onChange={v => { setSelectedFn(v); setStatusFilter(null); }}
           onAddNew={() => setAddModalType('function')}
           onRemove={v => removeDimMutation.mutate({ type: 'function', value: v })}
           editMode={editMode} />
-        <SelectorPanel title="Role" badge="ROL" items={dimensions.roles}
+        <SelectorPanel title="Role" badge="ROL" items={safeDimensions.roles}
           selected={selectedRole} multi={false} onChange={v => { setSelectedRole(v); setStatusFilter(null); }}
           onAddNew={() => setAddModalType('role')}
           onRemove={v => removeDimMutation.mutate({ type: 'role', value: v })}
           editMode={editMode} />
-        <SelectorPanel title="Additional Info" badge="INF" items={dimensions.info_keys}
+        <SelectorPanel title="Additional Info" badge="INF" items={safeDimensions.info_keys}
           selected={selectedInfo} multi={true} onChange={v => { setSelectedInfo(v); setStatusFilter(null); }}
           onAddNew={() => setAddModalType('info_key')}
           onRemove={v => removeDimMutation.mutate({ type: 'info_key', value: v })}
@@ -942,7 +965,7 @@ export default function RoleMatrixPage() {
           <colgroup>
             <col style={{ width: COL.function }} />
             <col style={{ width: COL.role }} />
-            {dimensions.info_keys.map(k => <col key={k} style={{ width: COL.info }} />)}
+            {safeDimensions.info_keys.map(k => <col key={k} style={{ width: COL.info }} />)}
             <col style={{ width: COL.primary }} />
             <col />
             <col style={{ width: COL.tlgGroup }} />
@@ -953,7 +976,7 @@ export default function RoleMatrixPage() {
             <tr>
               <SortTh label="Function"     colKey="function"      sortState={sortState} onSort={handleSort} className={thBase} />
               <SortTh label="Role"         colKey="role"          sortState={sortState} onSort={handleSort} className={thBase} />
-              {dimensions.info_keys.map(k => (
+              {safeDimensions.info_keys.map(k => (
                 <SortTh key={k} label={k} colKey={k} sortState={sortState} onSort={handleSort} vertical />
               ))}
               <SortTh label="Primary Training"       colKey="primary"       sortState={sortState} onSort={handleSort} className={thBase} />
@@ -965,12 +988,12 @@ export default function RoleMatrixPage() {
           </thead>
           <tbody>
             {isLoading && (
-              <tr><td colSpan={6 + dimensions.info_keys.length} className="px-3 py-8 text-center text-slate-400">Loading...</td></tr>
+              <tr><td colSpan={6 + safeDimensions.info_keys.length} className="px-3 py-8 text-center text-slate-400">Loading...</td></tr>
             )}
             {!isLoading && filteredEntries.length === 0 && (
-              <tr><td colSpan={6 + dimensions.info_keys.length} className="px-3 py-8 text-center text-slate-400">
-                {entries.length === 0
-                  ? dimensions.functions.length === 0 || dimensions.roles.length === 0
+              <tr><td colSpan={6 + safeDimensions.info_keys.length} className="px-3 py-8 text-center text-slate-400">
+                {safeEntries.length === 0
+                  ? safeDimensions.functions.length === 0 || safeDimensions.roles.length === 0
                     ? 'Add at least one function and one role to generate matrix rows.'
                     : 'Import an Excel file or add dimensions above to get started.'
                   : 'No rows match the current selection.'}
@@ -984,7 +1007,7 @@ export default function RoleMatrixPage() {
                 <tr key={entry.id} className={`border-b ${ROW_BG[status]} ${ROW_HOVER[status]}`}>
                   <td className="px-3 py-2 text-xs font-medium text-slate-700 overflow-hidden text-ellipsis whitespace-nowrap">{entry.function}</td>
                   <td className="px-3 py-2 text-xs text-slate-600 overflow-hidden text-ellipsis whitespace-nowrap">{entry.role}</td>
-                  {dimensions.info_keys.map(k => (
+                  {safeDimensions.info_keys.map(k => (
                     <td key={k} className="py-2 text-center">
                       <span className={`text-xs font-medium ${entry.additional_info?.[k] ? 'text-blue-600' : 'text-slate-300'}`}>
                         {entry.additional_info?.[k] ? 'Y' : 'N'}
