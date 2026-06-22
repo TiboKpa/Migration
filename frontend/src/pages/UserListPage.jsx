@@ -9,11 +9,11 @@ import client from '../api/client';
 // ---------------------------------------------------------------------------
 const STATUS_OPTIONS = ['active', 'inactive'];
 
-function emptyUser(infoKeys) {
+function emptyNewRow(infoKeys) {
   const base = {
+    _isNew: true,
     sesa_id: '', first_name: '', last_name: '', mail: '', manager_mail: '',
-    function: '', role: '',
-    description: '',
+    function: '', role: '', description: '',
     recommended_training: '', complementary_names: [], tlg_primary: '', tlg_addon: [],
     na_training: false, na_tlg: false,
     status: 'active', last_contact: '', comments: '',
@@ -46,7 +46,6 @@ function formatTlg(user) {
   return `${primary} + ${addon.join(', ')}`;
 }
 
-// A matrix row is "valid" when it can produce a real training (not N/A and not empty)
 function rowHasTraining(entry) {
   return !entry.na_training && !!entry.primary_training_name;
 }
@@ -119,6 +118,20 @@ function ToggleSwitch({ checked, onChange, label }) {
 }
 
 // ---------------------------------------------------------------------------
+// Inline text input cell
+// ---------------------------------------------------------------------------
+function InlineInput({ value, onChange, placeholder, className = '' }) {
+  return (
+    <input
+      className={`border rounded px-1 py-0.5 text-xs w-full min-w-0 bg-white ${className}`}
+      value={value}
+      placeholder={placeholder}
+      onChange={e => onChange(e.target.value)}
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 export default function UserListPage() {
@@ -127,14 +140,13 @@ export default function UserListPage() {
   const fileRef = useRef();
 
   const [editMode,    setEditMode]    = useState(false);
-  const [showAdd,     setShowAdd]     = useState(false);
   const [filter,      setFilter]      = useState('');
   const [editingCell, setEditingCell] = useState(null);
   const [editValue,   setEditValue]   = useState('');
   const [importError, setImportError] = useState('');
   const [importStats, setImportStats] = useState(null);
-  const [newUser,     setNewUser]     = useState(null);
-  const [addLookup,   setAddLookup]   = useState(null);
+  // newRow: the unsaved inline row, null when not adding
+  const [newRow,      setNewRow]      = useState(null);
 
   // ------------------------------------------------------------------
   // Queries
@@ -157,13 +169,9 @@ export default function UserListPage() {
   const infoKeys = useMemo(() => dimensions?.info_keys ?? [], [dimensions]);
 
   // ------------------------------------------------------------------
-  // Valid function / role sets
-  // A function is valid if it has at least one fn+role pair where
-  // ANY matrix row (across all additional_info combos) has real training.
-  // A role is valid for a given function by the same rule.
+  // Valid function / role filtering (no N/A-only pairs)
   // ------------------------------------------------------------------
   const validFnRolePairs = useMemo(() => {
-    // Set of "fn||role" strings that have at least one non-N/A training row
     const set = new Set();
     for (const e of matrixEntries) {
       if (rowHasTraining(e)) set.add(`${e.function}||${e.role}`);
@@ -172,14 +180,12 @@ export default function UserListPage() {
   }, [matrixEntries]);
 
   const matrixFunctions = useMemo(() => {
-    // Only functions that have at least one valid fn+role pair
     const fns = new Set();
     for (const key of validFnRolePairs) fns.add(key.split('||')[0]);
     return [...fns].sort();
   }, [validFnRolePairs]);
 
   const rolesForFn = useCallback((fn) => {
-    // Only roles where the fn+role pair has at least one non-N/A training row
     const roles = new Set();
     for (const key of validFnRolePairs) {
       const [f, r] = key.split('||');
@@ -226,9 +232,7 @@ export default function UserListPage() {
     mutationFn: data => client.post(`/projects/${projectId}/users`, data),
     onSuccess: () => {
       qc.invalidateQueries(['users', projectId]);
-      setShowAdd(false);
-      setNewUser(null);
-      setAddLookup(null);
+      setNewRow(null);
     },
   });
 
@@ -265,44 +269,54 @@ export default function UserListPage() {
   });
 
   // ------------------------------------------------------------------
-  // Add-user form
+  // New inline row handlers
   // ------------------------------------------------------------------
-  function openAddForm() {
-    setNewUser(emptyUser(infoKeys));
-    setAddLookup(null);
-    setShowAdd(true);
+  // A row is considered "dirty" (has content) if any text field is non-empty
+  const newRowIsDirty = useMemo(() => {
+    if (!newRow) return false;
+    return ['sesa_id','first_name','last_name','mail','manager_mail','function','role','description','comments']
+      .some(k => String(newRow[k] || '').trim() !== '');
+  }, [newRow]);
+
+  function openNewRow() {
+    // Block if an unsaved row already exists with content
+    if (newRow && newRowIsDirty) return;
+    setNewRow(emptyNewRow(infoKeys));
   }
 
-  async function handleNewUserChange(field, value) {
-    const snap = { ...newUser, [field]: value };
+  async function handleNewRowField(field, value) {
+    const snap = { ...newRow, [field]: value };
     if (field === 'function') snap.role = '';
-    setNewUser(snap);
+    setNewRow(snap);
     if (snap.function && snap.role) {
       const result = await lookup(snap);
-      setAddLookup(result);
-      setNewUser(u => ({ ...u, ...applyLookup(result) }));
-    } else {
-      setNewUser(u => ({ ...u, recommended_training: '', complementary_names: [], tlg_primary: '', tlg_addon: [], na_training: false, na_tlg: false }));
+      setNewRow(u => ({ ...u, ...applyLookup(result) }));
+    } else if (field === 'function') {
+      setNewRow(u => ({ ...u, recommended_training: '', complementary_names: [], tlg_primary: '', tlg_addon: [], na_training: false, na_tlg: false }));
     }
   }
 
-  async function handleNewUserBoolChange(field, value) {
-    const snap = { ...newUser, [field]: value };
-    setNewUser(snap);
+  async function handleNewRowBool(field, value) {
+    const snap = { ...newRow, [field]: value };
+    setNewRow(snap);
     if (snap.function && snap.role) {
       const result = await lookup(snap);
-      setAddLookup(result);
-      setNewUser(u => ({ ...u, ...applyLookup(result) }));
+      setNewRow(u => ({ ...u, ...applyLookup(result) }));
     }
   }
 
-  async function saveNewUser() {
-    if (!newUser || !newUser.sesa_id) return;
-    createMutation.mutate(newUser);
+  async function saveNewRow() {
+    if (!newRow || !newRow.sesa_id) return;
+    const { _isNew, ...payload } = newRow;
+    createMutation.mutate(payload);
+  }
+
+  function discardNewRow() {
+    setNewRow(null);
   }
 
   // ------------------------------------------------------------------
-  // Inline edit
+  // Inline edit (existing rows)
   // ------------------------------------------------------------------
   function startEdit(userId, field, currentValue) {
     if (!editMode) return;
@@ -393,7 +407,7 @@ export default function UserListPage() {
   }, [users, filter]);
 
   // ------------------------------------------------------------------
-  // Cell renderer
+  // Cell renderer (existing rows)
   // ------------------------------------------------------------------
   function renderCell(user, field, opts = {}) {
     const cellId = `${user.id}-${field}`;
@@ -463,14 +477,12 @@ export default function UserListPage() {
     if (opts.select === 'role') {
       if (!editMode) return <span className="text-xs text-slate-700 truncate block" title={raw || ''}>{raw || <span className="text-slate-300">-</span>}</span>;
       if (isEditing) {
-        // Only show roles that have at least one non-N/A training row for this function
-        const validRoles = rolesForFn(user.function);
         return (
           <select autoFocus className="border rounded px-1 py-0.5 text-xs w-full"
             value={editValue} onChange={e => setEditValue(e.target.value)}
             onBlur={() => commitEdit(user, field)}>
             <option value="">-</option>
-            {validRoles.map(r => <option key={r} value={r}>{r}</option>)}
+            {rolesForFn(user.function).map(r => <option key={r} value={r}>{r}</option>)}
           </select>
         );
       }
@@ -501,7 +513,6 @@ export default function UserListPage() {
       );
     }
 
-    // Default plain text
     if (!editMode) return <span className="text-xs text-slate-700 truncate block" title={String(raw ?? '')}>{raw || <span className="text-slate-300">-</span>}</span>;
     if (isEditing) {
       return (
@@ -521,122 +532,125 @@ export default function UserListPage() {
   }
 
   // ------------------------------------------------------------------
-  // Add user form
+  // New inline row renderer
   // ------------------------------------------------------------------
-  function renderAddForm() {
-    if (!newUser) return null;
-    const roles = rolesForFn(newUser.function);
-    const trainingDisplay = formatTraining({
-      recommended_training: newUser.recommended_training,
-      complementary_names: newUser.complementary_names,
-      na_training: newUser.na_training,
-    });
-    const tlgDisplay = formatTlg({
-      tlg_primary: newUser.tlg_primary,
-      tlg_addon: newUser.tlg_addon,
-      na_tlg: newUser.na_tlg,
-    });
+  function renderNewRow() {
+    if (!newRow) return null;
+    const roles = rolesForFn(newRow.function);
+    const trainingDisplay = formatTraining(newRow);
+    const tlgDisplay = formatTlg(newRow);
+    const canSave = !!newRow.sesa_id.trim() && !createMutation.isPending;
+
     return (
-      <div className="bg-slate-50 border rounded-xl p-4 mb-4 shrink-0">
-        <h2 className="text-sm font-semibold text-slate-700 mb-3">New user</h2>
-        <div className="grid grid-cols-4 gap-3 mb-3">
-          {['sesa_id','first_name','last_name','mail'].map(key => (
-            <div key={key}>
-              <label className="text-xs text-slate-500 block mb-1">{key.replace(/_/g,' ').replace(/\b\w/g, c => c.toUpperCase())}</label>
-              <input className="border rounded-lg px-2 py-1.5 text-xs w-full"
-                value={newUser[key] || ''}
-                onChange={e => setNewUser(u => ({ ...u, [key]: e.target.value }))} />
-            </div>
-          ))}
-        </div>
-        <div className="grid grid-cols-4 gap-3 mb-3">
-          <div>
-            <label className="text-xs text-slate-500 block mb-1">Manager Mail</label>
-            <input className="border rounded-lg px-2 py-1.5 text-xs w-full"
-              value={newUser.manager_mail || ''}
-              onChange={e => setNewUser(u => ({ ...u, manager_mail: e.target.value }))} />
+      <tr className="border-b bg-blue-50/40">
+        {/* SESA ID */}
+        <td className="px-2 py-1">
+          <InlineInput
+            value={newRow.sesa_id}
+            onChange={v => handleNewRowField('sesa_id', v)}
+            placeholder="SESA ID"
+            className="border-blue-300 focus:ring-1 focus:ring-blue-400 outline-none"
+          />
+        </td>
+        {/* First Name */}
+        <td className="px-2 py-1">
+          <InlineInput value={newRow.first_name} onChange={v => handleNewRowField('first_name', v)} placeholder="First name" />
+        </td>
+        {/* Last Name */}
+        <td className="px-2 py-1">
+          <InlineInput value={newRow.last_name} onChange={v => handleNewRowField('last_name', v)} placeholder="Last name" />
+        </td>
+        {/* Mail */}
+        <td className="px-2 py-1">
+          <InlineInput value={newRow.mail} onChange={v => handleNewRowField('mail', v)} placeholder="Mail" />
+        </td>
+        {/* Manager Mail */}
+        <td className="px-2 py-1">
+          <InlineInput value={newRow.manager_mail} onChange={v => handleNewRowField('manager_mail', v)} placeholder="Manager mail" />
+        </td>
+        {/* Function */}
+        <td className="px-2 py-1">
+          <select
+            className="border rounded px-1 py-0.5 text-xs w-full bg-white"
+            value={newRow.function}
+            onChange={e => handleNewRowField('function', e.target.value)}>
+            <option value="">Select...</option>
+            {matrixFunctions.map(f => <option key={f} value={f}>{f}</option>)}
+          </select>
+        </td>
+        {/* Role */}
+        <td className="px-2 py-1">
+          <select
+            className="border rounded px-1 py-0.5 text-xs w-full bg-white"
+            value={newRow.role}
+            onChange={e => handleNewRowField('role', e.target.value)}
+            disabled={!newRow.function}>
+            <option value="">Select...</option>
+            {roles.map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </td>
+        {/* Description */}
+        <td className="px-2 py-1">
+          <InlineInput value={newRow.description} onChange={v => handleNewRowField('description', v)} placeholder="Description" />
+        </td>
+        {/* Additional Info checkboxes */}
+        {infoKeys.map(k => (
+          <td key={k} className="px-2 py-1 text-center">
+            <input type="checkbox" checked={!!newRow[k]}
+              onChange={e => handleNewRowBool(k, e.target.checked)}
+              className="w-3.5 h-3.5 rounded accent-blue-600 cursor-pointer" />
+          </td>
+        ))}
+        {/* Training (auto) */}
+        <td className="px-2 py-1">
+          <span className="text-xs text-slate-400 italic truncate block" title={trainingDisplay}>
+            {trainingDisplay || <span className="text-slate-200">-</span>}
+          </span>
+        </td>
+        {/* TLG (auto) */}
+        <td className="px-2 py-1">
+          <span className="text-xs text-slate-400 italic truncate block" title={tlgDisplay}>
+            {tlgDisplay || <span className="text-slate-200">-</span>}
+          </span>
+        </td>
+        {/* Status */}
+        <td className="px-2 py-1">
+          <select
+            className="border rounded px-1 py-0.5 text-xs w-full bg-white"
+            value={newRow.status}
+            onChange={e => handleNewRowField('status', e.target.value)}>
+            {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+          </select>
+        </td>
+        {/* Last Contact */}
+        <td className="px-2 py-1">
+          <input type="date"
+            className="border rounded px-1 py-0.5 text-xs w-full bg-white"
+            value={newRow.last_contact || ''}
+            onChange={e => handleNewRowField('last_contact', e.target.value || null)} />
+        </td>
+        {/* Comments */}
+        <td className="px-2 py-1">
+          <InlineInput value={newRow.comments} onChange={v => handleNewRowField('comments', v)} placeholder="Comments" />
+        </td>
+        {/* Save / discard */}
+        <td className="px-2 py-1">
+          <div className="flex flex-col gap-1 items-center">
+            <button
+              onClick={saveNewRow}
+              disabled={!canSave}
+              title={!newRow.sesa_id.trim() ? 'SESA ID is required' : ''}
+              className="text-[10px] font-semibold text-white bg-blue-600 rounded px-2 py-0.5 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
+              {createMutation.isPending ? '...' : 'Save'}
+            </button>
+            <button
+              onClick={discardNewRow}
+              className="text-[10px] text-slate-400 hover:text-slate-600">
+              Cancel
+            </button>
           </div>
-          <div>
-            <label className="text-xs text-slate-500 block mb-1">Function</label>
-            <select className="border rounded-lg px-2 py-1.5 text-xs w-full"
-              value={newUser.function}
-              onChange={e => handleNewUserChange('function', e.target.value)}>
-              <option value="">Select...</option>
-              {matrixFunctions.map(f => <option key={f} value={f}>{f}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs text-slate-500 block mb-1">Role</label>
-            <select className="border rounded-lg px-2 py-1.5 text-xs w-full"
-              value={newUser.role}
-              onChange={e => handleNewUserChange('role', e.target.value)}
-              disabled={!newUser.function}>
-              <option value="">Select...</option>
-              {roles.map(r => <option key={r} value={r}>{r}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs text-slate-500 block mb-1">Status</label>
-            <select className="border rounded-lg px-2 py-1.5 text-xs w-full"
-              value={newUser.status}
-              onChange={e => setNewUser(u => ({ ...u, status: e.target.value }))}>
-              {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
-            </select>
-          </div>
-        </div>
-        {infoKeys.length > 0 && (
-          <div className="flex flex-wrap gap-4 mb-3 py-2 px-3 bg-white border rounded-lg">
-            <span className="text-xs text-slate-400 self-center">Additional Info:</span>
-            {infoKeys.map(k => (
-              <label key={k} className="flex items-center gap-2 text-xs cursor-pointer select-none">
-                <input type="checkbox" checked={!!newUser[k]}
-                  onChange={e => handleNewUserBoolChange(k, e.target.checked)}
-                  className="w-3.5 h-3.5 rounded accent-blue-600" />
-                {k}
-              </label>
-            ))}
-          </div>
-        )}
-        {(trainingDisplay || tlgDisplay) && (
-          <div className={`flex gap-8 mb-3 px-3 py-2 rounded-lg text-xs ${
-            addLookup?.na_training ? 'bg-amber-50 text-amber-700' : 'bg-blue-50 text-blue-700'
-          }`}>
-            <span><strong>Training:</strong> {trainingDisplay || '-'}</span>
-            <span><strong>TLG:</strong> {tlgDisplay || '-'}</span>
-          </div>
-        )}
-        <div className="grid grid-cols-3 gap-3 mb-4">
-          <div>
-            <label className="text-xs text-slate-500 block mb-1">Description</label>
-            <input className="border rounded-lg px-2 py-1.5 text-xs w-full"
-              value={newUser.description || ''}
-              onChange={e => setNewUser(u => ({ ...u, description: e.target.value }))} />
-          </div>
-          <div>
-            <label className="text-xs text-slate-500 block mb-1">Last Contact</label>
-            <input type="date" className="border rounded-lg px-2 py-1.5 text-xs w-full"
-              value={newUser.last_contact || ''}
-              onChange={e => setNewUser(u => ({ ...u, last_contact: e.target.value || null }))} />
-          </div>
-          <div>
-            <label className="text-xs text-slate-500 block mb-1">Comments</label>
-            <input className="border rounded-lg px-2 py-1.5 text-xs w-full"
-              value={newUser.comments || ''}
-              onChange={e => setNewUser(u => ({ ...u, comments: e.target.value }))} />
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={saveNewUser}
-            disabled={!newUser.sesa_id || createMutation.isPending}
-            className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-700 disabled:opacity-40">
-            {createMutation.isPending ? 'Saving...' : 'Save user'}
-          </button>
-          <button
-            onClick={() => { setShowAdd(false); setNewUser(null); setAddLookup(null); }}
-            className="border px-4 py-1.5 rounded-lg text-xs text-slate-600 hover:bg-slate-50">Cancel</button>
-        </div>
-      </div>
+        </td>
+      </tr>
     );
   }
 
@@ -647,8 +661,12 @@ export default function UserListPage() {
   const colCount = 14 + infoKeys.length + (editMode ? 1 : 0);
   const minW = 1600 + infoKeys.length * 80;
 
+  // "Add user" is blocked while an unsaved dirty row exists
+  const addUserBlocked = newRow !== null && newRowIsDirty;
+
   return (
     <div className="flex flex-col h-full">
+      {/* Header */}
       <div className="flex items-center justify-between mb-4 shrink-0">
         <div>
           <h1 className="text-xl font-bold text-slate-800">User List</h1>
@@ -667,13 +685,19 @@ export default function UserListPage() {
           )}
           <ToggleSwitch
             checked={editMode}
-            onChange={v => { setEditMode(v); setEditingCell(null); if (!v) { setShowAdd(false); setNewUser(null); } }}
+            onChange={v => {
+              setEditMode(v);
+              setEditingCell(null);
+              if (!v) setNewRow(null);
+            }}
             label="Edit mode"
           />
           {editMode && (
             <button
-              onClick={openAddForm}
-              className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">
+              onClick={openNewRow}
+              disabled={addUserBlocked}
+              title={addUserBlocked ? 'Save or cancel the current new row first' : ''}
+              className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed">
               Add user
             </button>
           )}
@@ -704,8 +728,7 @@ export default function UserListPage() {
         <p className="text-sm text-green-600 mb-2 shrink-0">Import complete: {importStats.imported} users.</p>
       )}
 
-      {editMode && showAdd && renderAddForm()}
-
+      {/* Table */}
       <div className="overflow-y-auto overflow-x-auto rounded-xl border bg-white flex-1">
         <table className="text-sm border-collapse" style={{ tableLayout: 'fixed', minWidth: minW }}>
           <colgroup>
@@ -723,7 +746,8 @@ export default function UserListPage() {
             <col style={{ width: 90 }} />
             <col style={{ width: 100 }} />
             <col style={{ width: 180 }} />
-            {editMode && <col style={{ width: 48 }} />}
+            {/* always reserve the action column in edit mode (new row needs it) */}
+            {editMode && <col style={{ width: 64 }} />}
           </colgroup>
           <thead className="sticky top-0 z-10 bg-slate-50 border-b">
             <tr>
@@ -758,16 +782,19 @@ export default function UserListPage() {
             </tr>
           </thead>
           <tbody>
+            {/* New inline row always at the top */}
+            {editMode && renderNewRow()}
+
             {isLoading && (
               <tr>
                 <td colSpan={colCount} className="px-3 py-8 text-center text-slate-400 text-sm">Loading...</td>
               </tr>
             )}
-            {!isLoading && filtered.length === 0 && (
+            {!isLoading && filtered.length === 0 && !newRow && (
               <tr>
                 <td colSpan={colCount} className="px-3 py-12 text-center text-slate-400 text-sm">
                   {users.length === 0
-                    ? 'No users yet. Import an Excel file or add one manually in Edit mode.'
+                    ? 'No users yet. Import an Excel file or click Add user in Edit mode.'
                     : 'No users match the search.'}
                 </td>
               </tr>
