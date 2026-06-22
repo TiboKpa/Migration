@@ -21,12 +21,16 @@ function emptyNewRow(infoKeys) {
 const STATUS_BG    = { inactive: 'bg-slate-100', active: '' };
 const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slate-50/50' };
 
+// Build the payload sent to the backend.
+// Dynamic infoKeys are packed into an `additional_info` object.
+// tlg_primary is sent as tlg_group.
 function sanitizePayload(row, infoKeys) {
   const EMAIL_FIELDS = ['mail', 'manager_mail'];
   const SKIP = ['na_training', 'na_tlg', 'tlg_primary'];
   const payload = {};
   for (const [k, v] of Object.entries(row)) {
     if (SKIP.includes(k)) continue;
+    if (infoKeys.includes(k)) continue; // handled below in additional_info
     if (EMAIL_FIELDS.includes(k)) {
       payload[k] = v && /^[^@]+@[^@]+\.[^@]+$/.test(String(v).trim()) ? String(v).trim() : null;
     } else if (Array.isArray(v)) {
@@ -37,10 +41,12 @@ function sanitizePayload(row, infoKeys) {
       payload[k] = v;
     }
   }
-  // Store N/A as the literal string so we can derive na_training/na_tlg on reload
   payload.recommended_training = row.na_training ? 'N/A' : (row.recommended_training || null);
   payload.tlg_group = row.na_tlg ? 'N/A' : (row.tlg_primary || null);
-  for (const k of infoKeys) payload[k] = !!row[k];
+  // Pack all infoKeys into additional_info
+  const additional_info = {};
+  for (const k of infoKeys) additional_info[k] = !!row[k];
+  payload.additional_info = additional_info;
   return payload;
 }
 
@@ -86,22 +92,28 @@ function parseExcelUsers(buffer, infoKeys) {
       status: String(row[col('Status')] || 'active').trim() || 'active',
       last_contact: String(row[col('Last Contact')] || '').trim() || null,
       comments: String(row[col('Comments')] || '').trim(),
+      additional_info: {},
     };
     for (const k of infoKeys) {
       const idx = headers.findIndex(h => h === k);
-      entry[k] = idx >= 0 ? normalizeYesNo(row[idx]) : false;
+      entry.additional_info[k] = idx >= 0 ? normalizeYesNo(row[idx]) : false;
+      entry[k] = entry.additional_info[k]; // keep flat for display
     }
     users.push(entry);
   }
   return users;
 }
 
-// Derive na_training / na_tlg from stored string so display is correct after reload.
+// Normalize a user row from the server.
+// The backend unpacks additional_info to flat fields; we also keep the object.
 function normalizeUser(u) {
   const naTraining = u.recommended_training === 'N/A';
   const naTlg = (u.tlg_group === 'N/A') || (u.tlg_primary === 'N/A');
+  const info = u.additional_info && typeof u.additional_info === 'object' ? u.additional_info : {};
   return {
     ...u,
+    ...info, // spread flat so existing checkbox rendering works
+    additional_info: info,
     complementary_names: Array.isArray(u.complementary_names) ? u.complementary_names : [],
     tlg_addon: Array.isArray(u.tlg_addon) ? u.tlg_addon : [],
     tlg_primary: u.tlg_primary || u.tlg_group || '',
@@ -187,8 +199,6 @@ export default function UserListPage() {
   const editRowDraftRef = useRef({});
   const [editRowSaving, setEditRowSaving] = useState(false);
 
-  // Blur debounce: we defer the blur handler so that focus can settle
-  // (e.g. when a native <select> popup closes and refocuses the element).
   const blurTimerEdit = useRef(null);
   const blurTimerNew  = useRef(null);
 
@@ -339,8 +349,6 @@ export default function UserListPage() {
     setNewRowSaving(false);
   }
 
-  // --- new-row save helpers ------------------------------------------------
-
   function doCommitNewRow() {
     const snap = newRowRef.current;
     if (!snap) return;
@@ -354,7 +362,6 @@ export default function UserListPage() {
     const payload = sanitizePayload(snap, infoKeys);
     if (!newRowSaved.current) {
       createMutation.mutate(payload);
-      // reset to blank so the row stays open for another entry
       const fresh = emptyNewRow(infoKeys);
       setNewRow(fresh);
       newRowRef.current = fresh;
@@ -386,8 +393,6 @@ export default function UserListPage() {
     discardNewRow();
   }
 
-  // Bug fix 1+2: onBlur deferred so native <select>/<date> popups don't fire it
-  // prematurely. Enter on <select> is skipped (the select handles it itself).
   function handleNewRowBlur(e) {
     if (e.currentTarget.contains(e.relatedTarget)) return;
     clearTimeout(blurTimerNew.current);
@@ -402,7 +407,6 @@ export default function UserListPage() {
   }
 
   function handleNewRowKeyDown(e) {
-    // Bug fix 2: ignore Enter fired by a <select> confirming its own selection
     if (e.key === 'Enter' && e.target.tagName !== 'SELECT') {
       e.preventDefault();
       doCommitAndCloseNewRow();
@@ -426,7 +430,6 @@ export default function UserListPage() {
       if (!snap.function || !snap.role) return;
       const result = await lookup(snap);
       const lookupData = applyLookup(result);
-      // Bug fix 4: merge onto latest ref, not onto stale snap
       const merged = { ...newRowRef.current, ...lookupData };
       newRowRef.current = merged;
       setNewRow({ ...merged });
@@ -434,7 +437,6 @@ export default function UserListPage() {
   }
 
   async function handleNewBool(field, value) {
-    // Bug fix 4: capture snapshot before await
     const snapBefore = { ...newRowRef.current, [field]: value };
     newRowRef.current = snapBefore;
     setNewRow({ ...snapBefore });
@@ -447,14 +449,11 @@ export default function UserListPage() {
     }
   }
 
-  // --- existing-row save helpers -------------------------------------------
-
   function startEditRow(user) {
     if (!editModeRef.current) return;
     if (editingRowIdRef.current === user.id) return;
     if (editingRowIdRef.current !== null) {
-      // Bug fix 3: capture values in locals before overwriting refs
-      const prevId   = editingRowIdRef.current;
+      const prevId    = editingRowIdRef.current;
       const prevDraft = { ...editRowDraftRef.current };
       editingRowIdRef.current = null;
       doSaveEditRow(prevId, prevDraft);
@@ -471,7 +470,6 @@ export default function UserListPage() {
     setEditRowSaving(true);
     const original = users.find(u => u.id === userId) || {};
     let finalDraft = { ...draft };
-    // Re-run lookup only when function or role changed
     if (draft.function !== original.function || draft.role !== original.role) {
       const result = await lookup(draft);
       const lookupData = applyLookup(result);
@@ -496,7 +494,6 @@ export default function UserListPage() {
     setEditRowSaving(false);
   }
 
-  // Bug fix 1+2: same deferred-blur pattern for existing rows
   function handleEditRowBlur(e, userId) {
     if (e.currentTarget.contains(e.relatedTarget)) return;
     clearTimeout(blurTimerEdit.current);
@@ -511,7 +508,6 @@ export default function UserListPage() {
   }
 
   function handleEditRowKeyDown(e, userId) {
-    // Bug fix 2: ignore Enter on <select>
     if (e.key === 'Enter' && e.target.tagName !== 'SELECT') {
       e.preventDefault();
       saveEditRow(userId, editRowDraftRef.current);
@@ -537,7 +533,6 @@ export default function UserListPage() {
       if (!snap.function || !snap.role) return;
       const result = await lookup(snap);
       const lookupData = applyLookup(result);
-      // Bug fix 5: merge onto latest ref after await
       const merged = { ...editRowDraftRef.current, ...lookupData };
       editRowDraftRef.current = merged;
       setEditRowDraft({ ...merged });
@@ -545,7 +540,6 @@ export default function UserListPage() {
   }
 
   async function handleDraftBool(field, value) {
-    // Bug fix 4: capture snapshot before await
     const snapBefore = { ...editRowDraftRef.current, [field]: value };
     editRowDraftRef.current = snapBefore;
     setEditRowDraft({ ...snapBefore });
