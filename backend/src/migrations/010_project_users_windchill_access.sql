@@ -1,0 +1,2 @@
+ALTER TABLE project_users
+  ADD COLUMN IF NOT EXISTS windchill_access BOOLEAN DEFAULT NULL;

@@ -8,20 +8,21 @@ import client from '../api/client';
 // Column definitions
 // ---------------------------------------------------------------------------
 const COLUMNS = [
-  { key: 'sesa_id',      label: 'SESA ID',          width: 90,  excelHeader: 'SESA ID' },
-  { key: 'first_name',   label: 'First Name',        width: 100, excelHeader: 'First Name' },
-  { key: 'last_name',    label: 'Last Name',         width: 100, excelHeader: 'Last Name' },
-  { key: 'mail',         label: 'Mail',              width: 160, excelHeader: 'Mail' },
-  { key: 'manager_mail', label: 'Manager Mail',      width: 160, excelHeader: 'Manager Mail' },
-  { key: 'function',     label: 'Function',          width: 160, excelHeader: 'Function' },
-  { key: 'role',         label: 'Role',              width: 160, excelHeader: 'Role' },
-  { key: 'description',  label: 'Description',       width: 180, excelHeader: 'Description' },
-  { key: '_training',    label: 'Training',          width: 220, excelHeader: 'PDM Windchill' },
-  { key: '_tlg',         label: 'TLG',               width: 140, excelHeader: 'TLG' },
-  { key: 'status',       label: 'Status',            width: 90,  excelHeader: 'Status' },
-  { key: 'last_contact', label: 'Last Contact',      width: 100, excelHeader: 'Last Contact' },
-  { key: 'comments',     label: 'Comments',          width: 180, excelHeader: 'Comments' },
-  { key: '_actions',     label: '',                  width: 32,  excelHeader: null },
+  { key: 'sesa_id',          label: 'SESA ID',          width: 90,  excelHeader: 'SESA ID' },
+  { key: 'first_name',       label: 'First Name',        width: 100, excelHeader: 'First Name' },
+  { key: 'last_name',        label: 'Last Name',         width: 100, excelHeader: 'Last Name' },
+  { key: 'mail',             label: 'Mail',              width: 160, excelHeader: 'Mail' },
+  { key: 'manager_mail',     label: 'Manager Mail',      width: 160, excelHeader: 'Manager Mail' },
+  { key: 'function',         label: 'Function',          width: 160, excelHeader: 'Function' },
+  { key: 'role',             label: 'Role',              width: 160, excelHeader: 'Role' },
+  { key: 'description',      label: 'Description',       width: 180, excelHeader: 'Description' },
+  { key: '_training',        label: 'Training',          width: 220, excelHeader: 'Training (auto)' },
+  { key: '_tlg',             label: 'TLG',               width: 140, excelHeader: 'TLG (auto)' },
+  { key: 'windchill_access', label: 'Windchill Access',  width: 110, excelHeader: 'Windchill Access' },
+  { key: 'status',           label: 'Status',            width: 90,  excelHeader: 'Status' },
+  { key: 'last_contact',     label: 'Last Contact',      width: 100, excelHeader: 'Last contact' },
+  { key: 'comments',         label: 'Comments',          width: 180, excelHeader: 'Comments' },
+  { key: '_actions',         label: '',                  width: 32,  excelHeader: null },
 ];
 
 const FIXED_BEFORE = 8;
@@ -33,6 +34,7 @@ const FIXED_PAYLOAD_KEYS = new Set([
   'function', 'role', 'description',
   'recommended_training', 'complementary_names',
   'tlg_group', 'tlg_addon',
+  'windchill_access',
   'status', 'last_contact', 'comments',
   'additional_info',
 ]);
@@ -59,10 +61,17 @@ function emptyNewRow(infoKeys) {
     recommended_training: '', complementary_names: [],
     tlg_primary: '', tlg_addon: [],
     na_training: false, na_tlg: false,
+    windchill_access: null,
     status: 'active', last_contact: '', comments: '',
   };
   for (const k of infoKeys) base[k] = false;
   return base;
+}
+
+function normalizeYesNo(val) {
+  if (val === true || val === 1) return true;
+  if (typeof val === 'string') return val.trim().toLowerCase() === 'yes';
+  return false;
 }
 
 function sanitizePayload(row, infoKeys) {
@@ -78,6 +87,8 @@ function sanitizePayload(row, infoKeys) {
       payload[k] = v ? toDateOnly(v) : null;
     } else if (EMAIL_FIELDS.has(k)) {
       payload[k] = (v && /^[^@]+@[^@]+\.[^@]+$/.test(String(v).trim())) ? String(v).trim() : null;
+    } else if (k === 'windchill_access') {
+      payload[k] = v === null || v === undefined ? null : !!v;
     } else if (Array.isArray(v)) {
       payload[k] = v;
     } else if (typeof v === 'string') {
@@ -101,12 +112,6 @@ function rowIsInMatrix(entry) {
   return !!(entry.function && entry.role);
 }
 
-function normalizeYesNo(val) {
-  if (val === true || val === 1) return true;
-  if (typeof val === 'string') return val.trim().toLowerCase() === 'yes';
-  return false;
-}
-
 function buildHeaderMap(headers) {
   const map = {};
   headers.forEach((h, i) => { map[String(h).trim().toLowerCase()] = i; });
@@ -117,6 +122,11 @@ function colIdx(headerMap, excelHeader) {
   return headerMap[excelHeader.toLowerCase()] ?? -1;
 }
 
+// ---------------------------------------------------------------------------
+// Excel parse -- Training and TLG are intentionally NOT imported.
+// The website re-derives them from the matrix after Function/Role/Additional Info.
+// Complementary: <anything> columns map to additional_info keys.
+// ---------------------------------------------------------------------------
 function parseExcelUsers(buffer, infoKeys) {
   const wb = XLSX.read(buffer, { type: 'array' });
   const ws = wb.Sheets[wb.SheetNames[0]];
@@ -134,9 +144,25 @@ function parseExcelUsers(buffer, infoKeys) {
 
   const headerMap = buildHeaderMap(raw[headerRowIdx]);
 
+  // Collect Complementary: <key> column indices from the header row.
+  const complementaryColMap = {}; // key (without prefix) -> col index
+  raw[headerRowIdx].forEach((h, i) => {
+    const cleaned = String(h).trim();
+    const m = cleaned.match(/^Complementary:\s*(.+)$/i);
+    if (m) complementaryColMap[m[1].trim()] = i;
+  });
+
   function cell(row, excelHeader) {
     const idx = colIdx(headerMap, excelHeader);
     return idx >= 0 ? String(row[idx] ?? '').trim() : '';
+  }
+
+  function getWindchillAccess(row) {
+    const idx = colIdx(headerMap, 'windchill access');
+    if (idx < 0) return null;
+    const v = row[idx];
+    if (v === null || v === undefined || v === '') return null;
+    return normalizeYesNo(v);
   }
 
   const users = [];
@@ -145,30 +171,37 @@ function parseExcelUsers(buffer, infoKeys) {
     const sesaId = cell(row, sesaColDef.excelHeader);
     if (!sesaId) continue;
 
-    const entry = {
-      sesa_id:              sesaId,
-      first_name:           cell(row, COLUMNS.find(c => c.key === 'first_name').excelHeader) || null,
-      last_name:            cell(row, COLUMNS.find(c => c.key === 'last_name').excelHeader) || null,
-      mail:                 cell(row, COLUMNS.find(c => c.key === 'mail').excelHeader) || null,
-      manager_mail:         cell(row, COLUMNS.find(c => c.key === 'manager_mail').excelHeader) || null,
-      function:             cell(row, COLUMNS.find(c => c.key === 'function').excelHeader) || null,
-      role:                 cell(row, COLUMNS.find(c => c.key === 'role').excelHeader) || null,
-      description:          cell(row, COLUMNS.find(c => c.key === 'description').excelHeader) || null,
-      recommended_training: cell(row, COLUMNS.find(c => c.key === '_training').excelHeader) || null,
-      complementary_names:  [],
-      tlg_group:            cell(row, COLUMNS.find(c => c.key === '_tlg').excelHeader) || null,
-      tlg_addon:            [],
-      status:               cell(row, COLUMNS.find(c => c.key === 'status').excelHeader) || 'active',
-      last_contact:         toDateOnly(cell(row, COLUMNS.find(c => c.key === 'last_contact').excelHeader)) || null,
-      comments:             cell(row, COLUMNS.find(c => c.key === 'comments').excelHeader) || null,
-      additional_info:      {},
-    };
-
+    // Build additional_info from both infoKeys (direct columns) and Complementary: <key> columns.
+    const additional_info = {};
     for (const k of infoKeys) {
       const idx = headerMap[k.toLowerCase()] ?? -1;
-      entry.additional_info[k] = idx >= 0 ? normalizeYesNo(row[idx]) : false;
-      entry[k] = entry.additional_info[k];
+      additional_info[k] = idx >= 0 ? normalizeYesNo(row[idx]) : false;
     }
+    for (const [key, colI] of Object.entries(complementaryColMap)) {
+      additional_info[key] = normalizeYesNo(row[colI]);
+    }
+
+    const entry = {
+      sesa_id:              sesaId,
+      first_name:           cell(row, 'First Name') || null,
+      last_name:            cell(row, 'Last Name') || null,
+      mail:                 cell(row, 'Mail') || null,
+      manager_mail:         cell(row, 'Manager Mail') || null,
+      function:             cell(row, 'Function') || null,
+      role:                 cell(row, 'Role') || null,
+      description:          cell(row, 'Description') || null,
+      // Training (auto) and TLG (auto) are intentionally not read -- re-derived server-side via matrix lookup.
+      recommended_training: null,
+      complementary_names:  [],
+      tlg_group:            null,
+      tlg_addon:            [],
+      windchill_access:     getWindchillAccess(row),
+      status:               cell(row, 'Status') || 'active',
+      last_contact:         toDateOnly(cell(row, 'Last contact')) || null,
+      comments:             cell(row, 'Comments') || null,
+      additional_info,
+    };
+
     users.push(entry);
   }
   return users;
@@ -199,6 +232,7 @@ function normalizeUser(u) {
     na_training: naTraining,
     na_tlg: naTlg,
     last_contact: toDateOnly(u.last_contact),
+    windchill_access: u.windchill_access ?? null,
   };
 }
 
@@ -331,6 +365,18 @@ function TlgCell({ user }) {
   );
 }
 
+function WindchillCell({ value }) {
+  if (value === null || value === undefined)
+    return <span className="text-xs text-slate-300">-</span>;
+  return (
+    <span className={`text-[10px] font-semibold rounded-full px-2 py-0.5 ${
+      value ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-500'
+    }`}>
+      {value ? 'Yes' : 'No'}
+    </span>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -386,8 +432,6 @@ export default function UserListPage() {
   });
   const infoKeys = useMemo(() => dimensions?.info_keys ?? [], [dimensions]);
 
-  // Build the set of valid (non-N/A) function/role pairs from the matrix.
-  // A pair is excluded when both na_training and na_tlg are true.
   const validFnRolePairs = useMemo(() => {
     const set = new Set();
     for (const e of matrixEntries) {
@@ -742,19 +786,28 @@ export default function UserListPage() {
   function handleExport() {
     const data = users.map(u => {
       const row = {};
+      // Fixed columns (excluding auto and actions)
       for (const col of COLUMNS) {
         if (!col.excelHeader) continue;
         if (col.key === '_training') {
-          row[col.excelHeader] = (u.na_training ? 'N/A' : u.recommended_training) || '';
-        } else if (col.key === '_tlg') {
-          row[col.excelHeader] = u.na_tlg ? 'N/A' : (u.tlg_primary || u.tlg_group || '');
-        } else {
-          row[col.excelHeader] = u[col.key] ?? '';
+          row['Training (auto)'] = (u.na_training ? 'N/A' : u.recommended_training) || '';
+          continue;
         }
+        if (col.key === '_tlg') {
+          row['TLG (auto)'] = u.na_tlg ? 'N/A' : (u.tlg_primary || u.tlg_group || '');
+          continue;
+        }
+        if (col.key === 'windchill_access') {
+          row['Windchill Access'] = u.windchill_access === null || u.windchill_access === undefined
+            ? '' : (u.windchill_access ? 'Yes' : 'No');
+          continue;
+        }
+        row[col.excelHeader] = u[col.key] ?? '';
       }
-      for (const k of infoKeys) row[k] = u[k] ? 'Yes' : 'No';
-      row['Training Complementary'] = Array.isArray(u.complementary_names) ? u.complementary_names.join(', ') : '';
-      row['TLG Addon'] = Array.isArray(u.tlg_addon) ? u.tlg_addon.join(', ') : '';
+      // Complementary: <key> columns for each additional_info key
+      for (const k of infoKeys) {
+        row[`Complementary: ${k}`] = u[k] ? 'Yes' : 'No';
+      }
       return row;
     });
     const ws = XLSX.utils.json_to_sheet(data);
@@ -851,6 +904,17 @@ export default function UserListPage() {
         ))}
         <td className="px-3 py-2"><TrainingCell user={newRow} /></td>
         <td className="px-3 py-2"><TlgCell user={newRow} /></td>
+        <td className="px-3 py-2 text-center">
+          <select
+            className={selectCls}
+            value={newRow.windchill_access === null ? '' : (newRow.windchill_access ? 'yes' : 'no')}
+            onChange={e => setNewField('windchill_access', e.target.value === '' ? null : e.target.value === 'yes')}
+          >
+            <option value="">-</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </td>
         <td className="px-3 py-2">
           <select className={selectCls} value={newRow.status} onChange={e => setNewField('status', e.target.value)}>
             {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
@@ -950,6 +1014,21 @@ export default function UserListPage() {
         ))}
         <td className="px-3 py-2"><TrainingCell user={draft} /></td>
         <td className="px-3 py-2"><TlgCell user={draft} /></td>
+        <td className="px-3 py-2 text-center">
+          {isEditing ? (
+            <select
+              className={selectCls}
+              value={draft.windchill_access === null || draft.windchill_access === undefined ? '' : (draft.windchill_access ? 'yes' : 'no')}
+              onChange={e => setDraftField('windchill_access', e.target.value === '' ? null : e.target.value === 'yes')}
+            >
+              <option value="">-</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+          ) : (
+            <WindchillCell value={user.windchill_access} />
+          )}
+        </td>
         <td className="px-3 py-2 overflow-hidden">
           {isEditing ? (
             <select className={selectCls} value={draft.status || 'active'} onChange={e => setDraftField('status', e.target.value)}>
@@ -1068,23 +1147,11 @@ export default function UserListPage() {
               {infoKeys.map(k => (
                 <SortTh key={k} label={k} colKey={k} sortState={sortState} onSort={handleSort} vertical />
               ))}
-              <SortTh
-                label={COLS_AFTER.find(c => c.key === '_training').label}
-                colKey="_training"
-                sortState={sortState}
-                onSort={handleSort}
-                className={thBase}
-              >
+              <SortTh label={COLS_AFTER.find(c => c.key === '_training').label} colKey="_training" sortState={sortState} onSort={handleSort} className={thBase}>
                 {COLS_AFTER.find(c => c.key === '_training').label}
                 <span className="text-blue-400 normal-case font-normal ml-1">(auto)</span>
               </SortTh>
-              <SortTh
-                label={COLS_AFTER.find(c => c.key === '_tlg').label}
-                colKey="_tlg"
-                sortState={sortState}
-                onSort={handleSort}
-                className={thBase}
-              >
+              <SortTh label={COLS_AFTER.find(c => c.key === '_tlg').label} colKey="_tlg" sortState={sortState} onSort={handleSort} className={thBase}>
                 {COLS_AFTER.find(c => c.key === '_tlg').label}
                 <span className="text-blue-400 normal-case font-normal ml-1">(auto)</span>
               </SortTh>

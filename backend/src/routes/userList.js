@@ -27,6 +27,7 @@ const fixedSchema = z.object({
   complementary_names:  z.array(z.string()).optional().default([]),
   tlg_group:            z.string().max(200).optional().nullable(),
   tlg_addon:            z.array(z.string()).optional().default([]),
+  windchill_access:     z.boolean().optional().nullable(),
   status:               z.string().max(50).optional().nullable(),
   comments:             z.string().max(2000).optional().nullable(),
   last_contact:         z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
@@ -93,8 +94,8 @@ router.post('/:projectId/users', authenticate, requireMember(['owner', 'editor']
       `INSERT INTO project_users
          (project_id, sesa_id, first_name, last_name, mail, manager_mail,
           function, role, description, recommended_training, complementary_names,
-          tlg_group, tlg_addon, status, comments, last_contact, additional_info)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+          tlg_group, tlg_addon, windchill_access, status, comments, last_contact, additional_info)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
        RETURNING *`,
       [
         req.params.projectId,
@@ -103,6 +104,7 @@ router.post('/:projectId/users', authenticate, requireMember(['owner', 'editor']
         u.function, u.role, u.description, u.recommended_training,
         JSON.stringify(u.complementary_names ?? []),
         u.tlg_group, JSON.stringify(u.tlg_addon ?? []),
+        u.windchill_access ?? null,
         u.status ?? 'active', u.comments, u.last_contact ?? null,
         JSON.stringify(u.additional_info ?? {}),
       ]
@@ -140,8 +142,8 @@ router.post('/:projectId/users/import-json', authenticate, requireMember(['owner
         `INSERT INTO project_users
            (project_id, sesa_id, first_name, last_name, mail, manager_mail,
             function, role, description, recommended_training, complementary_names,
-            tlg_group, tlg_addon, status, comments, last_contact, additional_info)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+            tlg_group, tlg_addon, windchill_access, status, comments, last_contact, additional_info)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
          ON CONFLICT (project_id, sesa_id) DO UPDATE SET
            first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
            mail=EXCLUDED.mail, manager_mail=EXCLUDED.manager_mail,
@@ -150,6 +152,7 @@ router.post('/:projectId/users/import-json', authenticate, requireMember(['owner
            recommended_training=EXCLUDED.recommended_training,
            complementary_names=EXCLUDED.complementary_names,
            tlg_group=EXCLUDED.tlg_group, tlg_addon=EXCLUDED.tlg_addon,
+           windchill_access=EXCLUDED.windchill_access,
            status=EXCLUDED.status, comments=EXCLUDED.comments,
            last_contact=EXCLUDED.last_contact,
            additional_info=EXCLUDED.additional_info,
@@ -161,6 +164,7 @@ router.post('/:projectId/users/import-json', authenticate, requireMember(['owner
           d.function, d.role, d.description, d.recommended_training,
           JSON.stringify(d.complementary_names ?? []),
           d.tlg_group, JSON.stringify(d.tlg_addon ?? []),
+          d.windchill_access ?? null,
           d.status ?? 'active', d.comments, d.last_contact ?? null,
           JSON.stringify(d.additional_info ?? {}),
         ]
