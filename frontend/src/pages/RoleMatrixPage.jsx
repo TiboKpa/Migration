@@ -118,6 +118,64 @@ const ROW_HOVER = {
 };
 
 // ---------------------------------------------------------------------------
+// Sort icon (inline SVG, no dependency)
+// ---------------------------------------------------------------------------
+function SortIcon({ dir }) {
+  const top    = dir === 'asc'  ? '#3b82f6' : '#cbd5e1';
+  const bottom = dir === 'desc' ? '#3b82f6' : '#cbd5e1';
+  return (
+    <svg width="10" height="12" viewBox="0 0 10 12" fill="none" className="inline-block shrink-0">
+      <path d="M5 1L2 4h6L5 1Z" fill={top} />
+      <path d="M5 11L8 8H2l3 3Z" fill={bottom} />
+    </svg>
+  );
+}
+
+function SortTh({ label, colKey, sortState, onSort, className, children, vertical }) {
+  const dir = sortState.col === colKey ? sortState.dir : null;
+  if (vertical) {
+    return (
+      <th
+        title={label}
+        className="px-0 pb-2 pt-3 text-center align-bottom overflow-hidden cursor-pointer select-none group"
+        onClick={() => onSort(colKey)}
+      >
+        <span style={{
+          writingMode: 'vertical-rl',
+          transform: 'rotate(180deg)',
+          display: 'inline-block',
+          maxHeight: 120,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          fontSize: 10,
+          fontWeight: 600,
+          color: dir ? '#3b82f6' : '#94a3b8',
+          letterSpacing: '0.04em',
+          textTransform: 'uppercase',
+        }}>
+          {label}
+        </span>
+        <span className="block mt-0.5">
+          <SortIcon dir={dir} />
+        </span>
+      </th>
+    );
+  }
+  return (
+    <th
+      className={`${className} cursor-pointer select-none group`}
+      onClick={() => onSort(colKey)}
+    >
+      <span className="inline-flex items-center gap-1">
+        <span className={dir ? 'text-blue-600' : ''}>{children || label}</span>
+        <SortIcon dir={dir} />
+      </span>
+    </th>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Toggle switch
 // ---------------------------------------------------------------------------
 function ToggleSwitch({ checked, onChange, label }) {
@@ -204,14 +262,12 @@ function AddDimModal({ label, badge, existing, onAdd, onClose }) {
 // Selector panel
 // ---------------------------------------------------------------------------
 function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNew, onRemove, editMode }) {
-  const [search,  setSearch]  = useState('');
-  const [sortAZ,  setSortAZ]  = useState(false);
+  const [search, setSearch] = useState('');
 
   const displayed = useMemo(() => {
-    let list = items.filter(v => v.toLowerCase().includes(search.toLowerCase()));
-    if (sortAZ) list = [...list].sort((a, b) => a.localeCompare(b));
-    return list;
-  }, [items, search, sortAZ]);
+    const list = items.filter(v => v.toLowerCase().includes(search.toLowerCase()));
+    return [...list].sort((a, b) => a.localeCompare(b));
+  }, [items, search]);
 
   const hasSelection = multi ? selected.length > 0 : selected !== null;
 
@@ -232,49 +288,36 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
 
   return (
     <div className="flex flex-col border rounded-xl bg-white overflow-hidden" style={{ minHeight: 0 }}>
-      <div className="px-3 pt-3 pb-2 border-b bg-slate-50 shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide shrink-0">{title}</p>
+      <div className="px-2.5 pt-2 pb-1.5 border-b bg-slate-50 shrink-0">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide shrink-0">{title}</p>
           <input
-            className="border rounded-lg px-2 py-1 text-xs flex-1 min-w-0"
+            className="border rounded-md px-1.5 py-0.5 text-[11px] flex-1 min-w-0"
             placeholder="Search..."
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
-          <div className="flex items-center gap-1.5 shrink-0">
-            {hasSelection && (
-              <button
-                onClick={handleReset}
-                className="text-[10px] text-slate-400 hover:text-red-500 underline leading-none"
-                title="Clear selection"
-              >
-                Reset
-              </button>
-            )}
+          {hasSelection && (
             <button
-              onClick={() => setSortAZ(s => !s)}
-              title={sortAZ ? 'Back to original order' : 'Sort A to Z'}
-              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border transition-colors ${
-                sortAZ
-                  ? 'bg-blue-50 border-blue-200 text-blue-600'
-                  : 'bg-white border-slate-200 text-slate-400 hover:border-slate-300 hover:text-slate-600'
-              }`}
+              onClick={handleReset}
+              className="text-[10px] text-slate-400 hover:text-red-500 underline leading-none shrink-0"
+              title="Clear selection"
             >
-              A-Z
+              Reset
             </button>
-          </div>
+          )}
         </div>
       </div>
       <div className="overflow-y-auto flex-1">
         {displayed.length === 0 && (
-          <p className="text-xs text-slate-400 text-center py-4">No {title.toLowerCase()} yet</p>
+          <p className="text-[11px] text-slate-400 text-center py-3">No {title.toLowerCase()} yet</p>
         )}
         {displayed.map(v => (
           <div key={v}
             className={`flex items-center border-b last:border-0 ${
               isSelected(v) ? 'bg-indigo-50' : 'hover:bg-slate-50'
             }`}>
-            <label className="flex items-center gap-2 px-3 py-2 cursor-pointer flex-1 min-w-0">
+            <label className="flex items-center gap-1.5 px-2.5 py-1.5 cursor-pointer flex-1 min-w-0">
               <input
                 type={multi ? 'checkbox' : 'radio'}
                 checked={isSelected(v)}
@@ -282,13 +325,13 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
                 onClick={!multi ? () => { if (isSelected(v)) onChange(null); } : undefined}
                 className={multi ? 'rounded accent-teal-600' : ''}
               />
-              <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">{badge}</span>
-              <span className="text-xs text-slate-700 truncate">{v}</span>
+              <span className="text-[9px] font-semibold uppercase text-slate-400 w-7 shrink-0">{badge}</span>
+              <span className="text-[11px] text-slate-700 truncate">{v}</span>
             </label>
             {editMode && (
               <button
                 onClick={e => { e.stopPropagation(); onRemove(v); }}
-                className="pr-3 pl-1 py-2 text-slate-300 hover:text-red-400 shrink-0 leading-none"
+                className="pr-2.5 pl-1 py-1.5 text-slate-300 hover:text-red-400 shrink-0 leading-none"
                 title={`Remove ${v}`}
               >
                 &times;
@@ -298,10 +341,10 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
         ))}
       </div>
       {editMode && (
-        <div className="px-3 py-2 border-t bg-slate-50 shrink-0">
+        <div className="px-2.5 py-1.5 border-t bg-slate-50 shrink-0">
           <button
             onClick={onAddNew}
-            className="w-full border border-dashed border-slate-300 rounded-lg py-1.5 text-xs text-slate-500 hover:border-blue-400 hover:text-blue-600"
+            className="w-full border border-dashed border-slate-300 rounded-lg py-1 text-[11px] text-slate-500 hover:border-blue-400 hover:text-blue-600"
           >
             + Add new
           </button>
@@ -577,19 +620,74 @@ function StatusBar({ counts, activeStatus, onToggle, totalShown }) {
 }
 
 // ---------------------------------------------------------------------------
-// Column width constants (px) -- drives both <th> and <td> via table-layout:fixed
-// Complementary gets no fixed width: it fills whatever is left.
+// Column width constants
 // ---------------------------------------------------------------------------
 const COL = {
   function:  160,
   role:      160,
   info:       32,
   primary:   170,
-  // complementary: auto (remaining space)
   tlgGroup:  148,
   tlgAddon:  220,
   action:     44,
 };
+
+// ---------------------------------------------------------------------------
+// Sorting helpers
+// ---------------------------------------------------------------------------
+function nextDir(current, col, clickedCol) {
+  if (current.col !== clickedCol) return 'asc';
+  if (current.dir === 'asc') return 'desc';
+  return 'asc';
+}
+
+function sortEntries(rows, sortState, profiles) {
+  const { col, dir } = sortState;
+  if (!col) return rows;
+  const mul = dir === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    let va = '', vb = '';
+    if (col === 'function') { va = a.function; vb = b.function; }
+    else if (col === 'role') { va = a.role; vb = b.role; }
+    else if (col === 'primary') {
+      const ra = profiles.find(p => p.id === a.recommended_training_id);
+      const rb = profiles.find(p => p.id === b.recommended_training_id);
+      va = ra ? ra.profile_name : (a.primary_training_name || '');
+      vb = rb ? rb.profile_name : (b.primary_training_name || '');
+    } else if (col === 'complementary') {
+      const ca = Array.isArray(a.complementary_items) ? a.complementary_items.map(i => i.title).join(' ') : '';
+      const cb = Array.isArray(b.complementary_items) ? b.complementary_items.map(i => i.title).join(' ') : '';
+      va = ca; vb = cb;
+    } else if (col === 'tlgGroup') {
+      va = a.tlg_primary || ''; vb = b.tlg_primary || '';
+    } else if (col === 'tlgAddon') {
+      va = Array.isArray(a.tlg_addon) ? a.tlg_addon.join(' ') : '';
+      vb = Array.isArray(b.tlg_addon) ? b.tlg_addon.join(' ') : '';
+    } else {
+      va = a.additional_info?.[col] ? '1' : '0';
+      vb = b.additional_info?.[col] ? '1' : '0';
+    }
+    return mul * va.localeCompare(vb);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Shape normalizers -- guarantee safe types regardless of cache state
+// ---------------------------------------------------------------------------
+function normalizeDimensions(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { functions: [], roles: [], info_keys: [] };
+  }
+  return {
+    functions: Array.isArray(data.functions) ? data.functions : [],
+    roles:     Array.isArray(data.roles)     ? data.roles     : [],
+    info_keys: Array.isArray(data.info_keys) ? data.info_keys : [],
+  };
+}
+
+function normalizeEntries(data) {
+  return Array.isArray(data) ? data : [];
+}
 
 // ---------------------------------------------------------------------------
 // Main page
@@ -608,21 +706,26 @@ export default function RoleMatrixPage() {
   const [importError,   setImportError]   = useState('');
   const [importStats,   setImportStats]   = useState(null);
   const [addModalType,  setAddModalType]  = useState(null);
+  const [sortState,     setSortState]     = useState({ col: null, dir: 'asc' });
 
   const dimKey    = ['role-matrix-dimensions', projectId];
   const matrixKey = ['role-matrix', projectId];
 
-  const { data: dimensions = { functions: [], roles: [], info_keys: [] } } = useQuery({
+  const { data: dimensions } = useQuery({
     queryKey: dimKey,
     queryFn: () => client.get(`/projects/${projectId}/role-matrix/dimensions`).then(r => r.data),
     staleTime: 0,
+    select: normalizeDimensions,
   });
+  const safeDimensions = dimensions ?? { functions: [], roles: [], info_keys: [] };
 
-  const { data: entries = [], isLoading } = useQuery({
+  const { data: entries, isLoading } = useQuery({
     queryKey: matrixKey,
     queryFn: () => client.get(`/projects/${projectId}/role-matrix`).then(r => r.data),
     staleTime: 0,
+    select: normalizeEntries,
   });
+  const safeEntries = entries ?? [];
 
   const { data: profiles = [] } = useQuery({
     queryKey: ['role-matrix-profiles', projectId],
@@ -638,7 +741,7 @@ export default function RoleMatrixPage() {
     mutationFn: ({ type, value }) =>
       client.post(`/projects/${projectId}/role-matrix/dimensions`, { type, value }).then(r => r.data),
     onSuccess: (data, variables) => {
-      qc.setQueryData(dimKey, data);
+      qc.setQueryData(dimKey, normalizeDimensions(data));
       qc.refetchQueries({ queryKey: matrixKey, exact: true });
       if (variables.type === 'function') setSelectedFn(variables.value);
       if (variables.type === 'role')     setSelectedRole(variables.value);
@@ -651,7 +754,7 @@ export default function RoleMatrixPage() {
     mutationFn: ({ type, value }) =>
       client.delete(`/projects/${projectId}/role-matrix/dimensions`, { data: { type, value } }).then(r => r.data),
     onSuccess: (data, variables) => {
-      qc.setQueryData(dimKey, data);
+      qc.setQueryData(dimKey, normalizeDimensions(data));
       qc.refetchQueries({ queryKey: matrixKey, exact: true });
       if (variables.type === 'function' && selectedFn === variables.value)   setSelectedFn(null);
       if (variables.type === 'role'     && selectedRole === variables.value) setSelectedRole(null);
@@ -664,7 +767,10 @@ export default function RoleMatrixPage() {
     mutationFn: ({ id, data }) =>
       client.put(`/projects/${projectId}/role-matrix/${id}`, data).then(r => r.data),
     onSuccess: updated => {
-      qc.setQueryData(matrixKey, (old = []) => old.map(row => row.id === updated.id ? updated : row));
+      qc.setQueryData(matrixKey, old => {
+        if (!Array.isArray(old)) return [updated];
+        return old.map(row => row.id === updated.id ? updated : row);
+      });
       setModalEntry(null);
     },
   });
@@ -679,25 +785,28 @@ export default function RoleMatrixPage() {
       setSelectedRole(null);
       setSelectedInfo([]);
       setStatusFilter(null);
+      setSortState({ col: null, dir: 'asc' });
     },
   });
 
   const importMutation = useMutation({
     mutationFn: payload =>
       client.post(`/projects/${projectId}/role-matrix/import`, payload).then(r => r.data),
-    onSuccess: data => {
+    onSuccess: async data => {
       setImportError('');
       setImportStats(data);
-      qc.refetchQueries({ queryKey: dimKey, exact: true });
-      qc.refetchQueries({ queryKey: matrixKey, exact: true });
+      await Promise.all([
+        qc.refetchQueries({ queryKey: dimKey, exact: true }),
+        qc.refetchQueries({ queryKey: matrixKey, exact: true }),
+      ]);
     },
     onError: err => setImportError(err?.response?.data?.error || err.message || 'Import failed'),
   });
 
   function handleExport() {
-    const data = entries.map(e => {
+    const data = safeEntries.map(e => {
       const row = { Function: e.function, Role: e.role };
-      for (const k of dimensions.info_keys) row[`Additional Info ${k}`] = e.additional_info?.[k] ? 'Yes' : 'No';
+      for (const k of safeDimensions.info_keys) row[`Additional Info ${k}`] = e.additional_info?.[k] ? 'Yes' : 'No';
       row['Concatenate'] = '';
       const rec = profiles.find(p => p.id === e.recommended_training_id);
       const compTitles = Array.isArray(e.complementary_items) ? e.complementary_items.map(i => i.title) : [];
@@ -732,14 +841,18 @@ export default function RoleMatrixPage() {
       clearAllMutation.mutate();
   }
 
+  function handleSort(col) {
+    setSortState(prev => ({ col, dir: nextDir(prev, prev.col, col) }));
+  }
+
   const dimFilteredEntries = useMemo(() => {
-    let rows = entries;
+    let rows = safeEntries;
     if (selectedFn)           rows = rows.filter(r => r.function === selectedFn);
     if (selectedRole)         rows = rows.filter(r => r.role === selectedRole);
     if (selectedInfo.length > 0)
       rows = rows.filter(r => selectedInfo.every(k => r.additional_info && r.additional_info[k]));
     return rows;
-  }, [entries, selectedFn, selectedRole, selectedInfo]);
+  }, [safeEntries, selectedFn, selectedRole, selectedInfo]);
 
   const statusCounts = useMemo(() => {
     const counts = {};
@@ -751,13 +864,21 @@ export default function RoleMatrixPage() {
   }, [dimFilteredEntries]);
 
   const filteredEntries = useMemo(() => {
-    if (!statusFilter) return dimFilteredEntries;
-    return dimFilteredEntries.filter(e => rowStatus(e) === statusFilter);
-  }, [dimFilteredEntries, statusFilter]);
+    const base = statusFilter
+      ? dimFilteredEntries.filter(e => rowStatus(e) === statusFilter)
+      : dimFilteredEntries;
+    return sortEntries(base, sortState, profiles);
+  }, [dimFilteredEntries, statusFilter, sortState, profiles]);
 
   const isDimPending = addDimMutation.isPending || removeDimMutation.isPending;
 
   const thBase = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide overflow-hidden text-ellipsis whitespace-nowrap';
+
+  // Compute a minimum table width so the Fill button is always reachable
+  const minTableWidth =
+    COL.function + COL.role +
+    safeDimensions.info_keys.length * COL.info +
+    COL.primary + 180 + COL.tlgGroup + COL.tlgAddon + COL.action;
 
   return (
     <div className="flex flex-col h-full">
@@ -776,9 +897,9 @@ export default function RoleMatrixPage() {
           label={addModalType === 'function' ? 'Function' : addModalType === 'role' ? 'Role' : 'Info Key'}
           badge={addModalType === 'function' ? 'FNC' : addModalType === 'role' ? 'ROL' : 'INF'}
           existing={
-            addModalType === 'function' ? dimensions.functions
-            : addModalType === 'role'   ? dimensions.roles
-            : dimensions.info_keys
+            addModalType === 'function' ? safeDimensions.functions
+            : addModalType === 'role'   ? safeDimensions.roles
+            : safeDimensions.info_keys
           }
           onAdd={value => addDimMutation.mutate({ type: addModalType, value })}
           onClose={() => setAddModalType(null)}
@@ -789,7 +910,7 @@ export default function RoleMatrixPage() {
       <div className="flex items-center justify-between mb-4 shrink-0">
         <div>
           <h1 className="text-xl font-bold text-slate-800">Role Matrix</h1>
-          <p className="text-sm text-slate-500">{entries.length} rules</p>
+          <p className="text-sm text-slate-500">{safeEntries.length} rules</p>
         </div>
         <div className="flex gap-3 items-center flex-wrap justify-end">
           {editMode && (
@@ -803,7 +924,7 @@ export default function RoleMatrixPage() {
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
             {importMutation.isPending ? 'Importing...' : 'Import Excel'}
           </button>
-          <button onClick={handleExport} disabled={entries.length === 0}
+          <button onClick={handleExport} disabled={safeEntries.length === 0}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">Export Excel</button>
           <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleFileChange} />
         </div>
@@ -818,19 +939,19 @@ export default function RoleMatrixPage() {
       )}
       {isDimPending && <p className="text-xs text-blue-500 mb-2">Updating matrix...</p>}
 
-      {/* 3-panel selector */}
-      <div className="grid grid-cols-3 gap-4 mb-4 shrink-0" style={{ height: '16rem' }}>
-        <SelectorPanel title="Function" badge="FNC" items={dimensions.functions}
+      {/* 3-panel selector -- ~30% shorter than before (11rem vs 16rem) */}
+      <div className="grid grid-cols-3 gap-3 mb-4 shrink-0" style={{ height: '11rem' }}>
+        <SelectorPanel title="Function" badge="FNC" items={safeDimensions.functions}
           selected={selectedFn} multi={false} onChange={v => { setSelectedFn(v); setStatusFilter(null); }}
           onAddNew={() => setAddModalType('function')}
           onRemove={v => removeDimMutation.mutate({ type: 'function', value: v })}
           editMode={editMode} />
-        <SelectorPanel title="Role" badge="ROL" items={dimensions.roles}
+        <SelectorPanel title="Role" badge="ROL" items={safeDimensions.roles}
           selected={selectedRole} multi={false} onChange={v => { setSelectedRole(v); setStatusFilter(null); }}
           onAddNew={() => setAddModalType('role')}
           onRemove={v => removeDimMutation.mutate({ type: 'role', value: v })}
           editMode={editMode} />
-        <SelectorPanel title="Additional Info" badge="INF" items={dimensions.info_keys}
+        <SelectorPanel title="Additional Info" badge="INF" items={safeDimensions.info_keys}
           selected={selectedInfo} multi={true} onChange={v => { setSelectedInfo(v); setStatusFilter(null); }}
           onAddNew={() => setAddModalType('info_key')}
           onRemove={v => removeDimMutation.mutate({ type: 'info_key', value: v })}
@@ -845,69 +966,44 @@ export default function RoleMatrixPage() {
         totalShown={filteredEntries.length}
       />
 
-      {/*
-        Table layout strategy:
-        - table-layout: fixed + width: 100% = table never exceeds container width
-        - Every column except Complementary has an explicit pixel width via <col>
-        - Complementary <col> has no width = it gets all remaining space
-        - Complementary <td> uses overflow-x: auto so chips scroll inside the cell
-        - The outer div is overflow-y: auto only (vertical scroll for rows)
-      */}
-      <div className="overflow-y-auto overflow-x-hidden rounded-xl border bg-white flex-1">
-        <table className="w-full text-sm border-collapse" style={{ tableLayout: 'fixed' }}>
+      {/* Table -- overflow-x-auto enables horizontal scroll on narrow viewports */}
+      <div className="overflow-y-auto overflow-x-auto rounded-xl border bg-white flex-1">
+        <table
+          className="w-full text-sm border-collapse"
+          style={{ tableLayout: 'fixed', minWidth: minTableWidth }}
+        >
           <colgroup>
             <col style={{ width: COL.function }} />
             <col style={{ width: COL.role }} />
-            {dimensions.info_keys.map(k => <col key={k} style={{ width: COL.info }} />)}
+            {safeDimensions.info_keys.map(k => <col key={k} style={{ width: COL.info }} />)}
             <col style={{ width: COL.primary }} />
-            <col />{/* Complementary: takes all remaining width */}
+            <col />
             <col style={{ width: COL.tlgGroup }} />
             <col style={{ width: COL.tlgAddon }} />
             <col style={{ width: COL.action }} />
           </colgroup>
           <thead className="sticky top-0 z-10 bg-slate-50 border-b">
             <tr>
-              <th className={thBase}>Function</th>
-              <th className={thBase}>Role</th>
-              {dimensions.info_keys.map(k => (
-                <th
-                  key={k}
-                  title={k}
-                  className="px-0 pb-2 pt-3 text-center align-bottom overflow-hidden"
-                >
-                  <span style={{
-                    writingMode: 'vertical-rl',
-                    transform: 'rotate(180deg)',
-                    display: 'inline-block',
-                    maxHeight: 120,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    fontSize: 10,
-                    fontWeight: 600,
-                    color: '#94a3b8',
-                    letterSpacing: '0.04em',
-                    textTransform: 'uppercase',
-                  }}>
-                    {k}
-                  </span>
-                </th>
+              <SortTh label="Function"     colKey="function"      sortState={sortState} onSort={handleSort} className={thBase} />
+              <SortTh label="Role"         colKey="role"          sortState={sortState} onSort={handleSort} className={thBase} />
+              {safeDimensions.info_keys.map(k => (
+                <SortTh key={k} label={k} colKey={k} sortState={sortState} onSort={handleSort} vertical />
               ))}
-              <th className={thBase}>Primary Training</th>
-              <th className={thBase}>Complementary Training</th>
-              <th className={thBase}>TLG Group</th>
-              <th className={thBase}>TLG Add-on</th>
+              <SortTh label="Primary Training"       colKey="primary"       sortState={sortState} onSort={handleSort} className={thBase} />
+              <SortTh label="Complementary Training" colKey="complementary"  sortState={sortState} onSort={handleSort} className={thBase} />
+              <SortTh label="TLG Group"              colKey="tlgGroup"       sortState={sortState} onSort={handleSort} className={thBase} />
+              <SortTh label="TLG Add-on"             colKey="tlgAddon"       sortState={sortState} onSort={handleSort} className={thBase} />
               <th className="px-2 py-2" />
             </tr>
           </thead>
           <tbody>
             {isLoading && (
-              <tr><td colSpan={6 + dimensions.info_keys.length} className="px-3 py-8 text-center text-slate-400">Loading...</td></tr>
+              <tr><td colSpan={6 + safeDimensions.info_keys.length} className="px-3 py-8 text-center text-slate-400">Loading...</td></tr>
             )}
             {!isLoading && filteredEntries.length === 0 && (
-              <tr><td colSpan={6 + dimensions.info_keys.length} className="px-3 py-8 text-center text-slate-400">
-                {entries.length === 0
-                  ? dimensions.functions.length === 0 || dimensions.roles.length === 0
+              <tr><td colSpan={6 + safeDimensions.info_keys.length} className="px-3 py-8 text-center text-slate-400">
+                {safeEntries.length === 0
+                  ? safeDimensions.functions.length === 0 || safeDimensions.roles.length === 0
                     ? 'Add at least one function and one role to generate matrix rows.'
                     : 'Import an Excel file or add dimensions above to get started.'
                   : 'No rows match the current selection.'}
@@ -921,7 +1017,7 @@ export default function RoleMatrixPage() {
                 <tr key={entry.id} className={`border-b ${ROW_BG[status]} ${ROW_HOVER[status]}`}>
                   <td className="px-3 py-2 text-xs font-medium text-slate-700 overflow-hidden text-ellipsis whitespace-nowrap">{entry.function}</td>
                   <td className="px-3 py-2 text-xs text-slate-600 overflow-hidden text-ellipsis whitespace-nowrap">{entry.role}</td>
-                  {dimensions.info_keys.map(k => (
+                  {safeDimensions.info_keys.map(k => (
                     <td key={k} className="py-2 text-center">
                       <span className={`text-xs font-medium ${entry.additional_info?.[k] ? 'text-blue-600' : 'text-slate-300'}`}>
                         {entry.additional_info?.[k] ? 'Y' : 'N'}
@@ -937,12 +1033,6 @@ export default function RoleMatrixPage() {
                           ? <span className="text-xs text-amber-600 font-medium" title="Not yet matched">{entry.primary_training_name}</span>
                           : <span className="text-xs text-slate-300">-</span>}
                   </td>
-                  {/*
-                    Complementary cell:
-                    - overflow-x: auto  => chips scroll horizontally inside this cell
-                    - The column width is "whatever is left" thanks to the bare <col />
-                    - The table is fixed-layout so this cell CANNOT push the table wider
-                  */}
                   <td className="px-2 py-2" style={{ overflow: 'hidden' }}>
                     {entry.na_training || compItems.length === 0
                       ? <span className="text-xs text-slate-300">-</span>
