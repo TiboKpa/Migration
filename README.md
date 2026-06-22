@@ -103,7 +103,8 @@ Migration/
       context/           # Auth context (JWT)
       api/               # Axios client
       utils/
-        parseTrainingPathFlat.js  # Training path import parser
+        parseTrainingPathFlat.js  # Training path Excel import parser
+        reResolveRoleMatrix.js    # Re-resolves role matrix after training changes
     Dockerfile
     nginx.conf
   docker-compose.yml
@@ -139,7 +140,43 @@ The Training Matrix page (`/projects/:id/matrix`) has three tabs:
 - **Trainings** -- Playlists that mix curricula and standalone modules in a defined sequence.
   Trainings can be Primary (linked to a platform URL) or Complementary (reference list).
 
-You can import an existing training path from a JSON export using the **Import** button on each tab.
+Use the **Import Excel** button to bulk-import a training path from a `.xlsx` file.
+Use the **Export Excel** button to download the current catalogue as a `.xlsx` file.
+
+---
+
+## Role Matrix
+
+The Role Matrix page (`/projects/:id/role-matrix`) maps every Function/Role combination to:
+
+- A **Primary Training** (recommended playlist)
+- One or more **Complementary Trainings** (curricula or standalone modules)
+- A **TLG Group** assignment (primary group + optional add-ons)
+
+### Filters
+
+Three compact filter panels at the top of the page let you narrow the table by Function, Role, and Additional Info flags. Each panel is independently scrollable.
+
+### Status indicators
+
+Rows are colour-coded to show their resolution state:
+
+| Colour | Meaning |
+|---|---|
+| White | Fully resolved |
+| Orange | Primary training name not matched to a playlist |
+| Yellow | One or more complementary trainings not matched |
+| Red | No training assigned at all |
+| Grey | Marked as N/A |
+
+### Import and Export
+
+- **Import Excel** -- Load a role matrix spreadsheet (`.xlsx`). The importer reads Function, Role, PDM Role, TLG Group, and Additional Info columns and creates or updates rows accordingly.
+- **Export Excel** -- Download the current role matrix as a `.xlsx` file in the same format accepted by Import.
+
+### Horizontal scroll
+
+The matrix table has a defined minimum width. On narrow viewports a horizontal scrollbar appears so the **Fill** button at the end of each row remains reachable without layout changes.
 
 ---
 
