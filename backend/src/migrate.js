@@ -55,8 +55,9 @@ async function migrate() {
         manager_mail TEXT,
         description TEXT,
         recommended_training TEXT,
-        status TEXT DEFAULT 'pending',
+        status TEXT DEFAULT 'active',
         comments TEXT,
+        last_contact DATE,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE(project_id, sesa_id)
@@ -324,7 +325,6 @@ async function migrate() {
             ADD CONSTRAINT role_matrix_project_concatenate_key UNIQUE (project_id, concatenate);
         END IF;
 
-        -- N/A flags added for TLG and Training
         IF NOT EXISTS (
           SELECT 1 FROM information_schema.columns
           WHERE table_name='role_matrix' AND column_name='na_tlg'
@@ -337,6 +337,14 @@ async function migrate() {
           WHERE table_name='role_matrix' AND column_name='na_training'
         ) THEN
           ALTER TABLE role_matrix ADD COLUMN na_training BOOLEAN NOT NULL DEFAULT false;
+        END IF;
+
+        -- last_contact date on project_users
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='project_users' AND column_name='last_contact'
+        ) THEN
+          ALTER TABLE project_users ADD COLUMN last_contact DATE;
         END IF;
 
       END$$;
