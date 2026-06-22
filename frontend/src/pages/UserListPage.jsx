@@ -4,15 +4,46 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
 import client from '../api/client';
 
+// ---------------------------------------------------------------------------
+// Column definitions -- single source of truth for table layout + Excel I/O
+// Each entry: { key, label, width, excelHeader }
+// excelHeader is what the Excel import expects (exact match, case-insensitive).
+// ---------------------------------------------------------------------------
+const COLUMNS = [
+  { key: 'sesa_id',              label: 'SESA ID',        width: 90,  excelHeader: 'SESA ID' },
+  { key: 'first_name',           label: 'First Name',     width: 100, excelHeader: 'First Name' },
+  { key: 'last_name',            label: 'Last Name',      width: 100, excelHeader: 'Last Name' },
+  { key: 'mail',                 label: 'Mail',           width: 160, excelHeader: 'Mail' },
+  { key: 'manager_mail',         label: 'Manager Mail',   width: 160, excelHeader: 'Manager Mail' },
+  { key: 'function',             label: 'Function',       width: 140, excelHeader: 'Function' },
+  { key: 'role',                 label: 'Role',           width: 140, excelHeader: 'Role' },
+  { key: 'description',          label: 'Description',    width: 180, excelHeader: 'Description' },
+  // infoKey columns are injected dynamically between description and training
+  { key: '_training',            label: 'Primary Training', width: 220, excelHeader: 'PDM Windchill' },
+  { key: '_tlg',                 label: 'TLG',            width: 140, excelHeader: 'TLG' },
+  { key: 'status',               label: 'Status',         width: 90,  excelHeader: 'Status' },
+  { key: 'last_contact',         label: 'Last Contact',   width: 100, excelHeader: 'Last Contact' },
+  { key: 'comments',             label: 'Comments',       width: 180, excelHeader: 'Comments' },
+  { key: '_actions',             label: '',               width: 32,  excelHeader: null },
+];
+
 const STATUS_OPTIONS = ['active', 'inactive'];
 
-const INTERNAL_KEYS = new Set(['id', 'created_at', 'updated_at', 'additional_info', 'na_training', 'na_tlg', 'tlg_primary', 'primary_training_name']);
+// Keys that must never be sent to the backend as top-level payload fields.
+const INTERNAL_KEYS = new Set([
+  'id', 'created_at', 'updated_at', 'additional_info',
+  'na_training', 'na_tlg', 'tlg_primary', 'primary_training_name',
+]);
+
+const STATUS_BG    = { inactive: 'bg-slate-100', active: '' };
+const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slate-50/50' };
 
 function emptyNewRow(infoKeys) {
   const base = {
     sesa_id: '', first_name: '', last_name: '', mail: '', manager_mail: '',
     function: '', role: '', description: '',
-    recommended_training: '', complementary_names: [], tlg_primary: '', tlg_addon: [],
+    recommended_training: '', complementary_names: [],
+    tlg_primary: '', tlg_addon: [],
     na_training: false, na_tlg: false,
     status: 'active', last_contact: '', comments: '',
   };
@@ -20,18 +51,16 @@ function emptyNewRow(infoKeys) {
   return base;
 }
 
-const STATUS_BG    = { inactive: 'bg-slate-100', active: '' };
-const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slate-50/50' };
-
+// Build the payload sent to the backend.
+// Strips internal/computed keys, validates emails, packs infoKeys into additional_info.
 function sanitizePayload(row, infoKeys) {
-  const EMAIL_FIELDS = ['mail', 'manager_mail'];
+  const EMAIL_FIELDS = new Set(['mail', 'manager_mail']);
   const payload = {};
   for (const [k, v] of Object.entries(row)) {
     if (INTERNAL_KEYS.has(k)) continue;
     if (infoKeys.includes(k)) continue;
-    if (EMAIL_FIELDS.includes(k)) {
-      // Always send null for missing/invalid emails -- backend accepts null cleanly
-      payload[k] = v && /^[^@]+@[^@]+\.[^@]+$/.test(String(v).trim()) ? String(v).trim() : null;
+    if (EMAIL_FIELDS.has(k)) {
+      payload[k] = (v && /^[^@]+@[^@]+\.[^@]+$/.test(String(v).trim())) ? String(v).trim() : null;
     } else if (Array.isArray(v)) {
       payload[k] = v;
     } else if (typeof v === 'string') {
@@ -58,42 +87,69 @@ function normalizeYesNo(val) {
   return false;
 }
 
+// Build a case-insensitive header-to-column-index map from an Excel header row.
+function buildHeaderMap(headers) {
+  const map = {};
+  headers.forEach((h, i) => { map[String(h).trim().toLowerCase()] = i; });
+  return map;
+}
+
+// Look up a column index by its exact excelHeader value (case-insensitive).
+function colIdx(headerMap, excelHeader) {
+  return headerMap[excelHeader.toLowerCase()] ?? -1;
+}
+
 function parseExcelUsers(buffer, infoKeys) {
   const wb = XLSX.read(buffer, { type: 'array' });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+  // Find the header row by looking for the SESA ID column header.
+  const sesaColDef = COLUMNS.find(c => c.key === 'sesa_id');
   let headerRowIdx = -1;
   for (let i = 0; i < raw.length; i++) {
-    if (raw[i].map(c => String(c).trim()).includes('SESA ID')) { headerRowIdx = i; break; }
+    if (raw[i].map(c => String(c).trim().toLowerCase()).includes(sesaColDef.excelHeader.toLowerCase())) {
+      headerRowIdx = i;
+      break;
+    }
   }
-  if (headerRowIdx === -1) throw new Error('Header row with "SESA ID" not found');
-  const headers = raw[headerRowIdx].map(c => String(c).trim());
-  const col = kw => headers.findIndex(h => h.toLowerCase().includes(kw.toLowerCase()));
+  if (headerRowIdx === -1) throw new Error(`Header row with "${sesaColDef.excelHeader}" not found`);
+
+  const headerMap = buildHeaderMap(raw[headerRowIdx]);
+
+  // Helper: read a cell value as trimmed string or null.
+  function cell(row, excelHeader) {
+    const idx = colIdx(headerMap, excelHeader);
+    return idx >= 0 ? String(row[idx] ?? '').trim() : '';
+  }
+
   const users = [];
   for (let i = headerRowIdx + 1; i < raw.length; i++) {
     const row = raw[i];
-    const sesaId = String(row[col('SESA ID')] || '').trim();
+    const sesaId = cell(row, COLUMNS.find(c => c.key === 'sesa_id').excelHeader);
     if (!sesaId) continue;
+
     const entry = {
-      sesa_id: sesaId,
-      first_name: String(row[col('First Name')] || '').trim(),
-      last_name: String(row[col('Last Name')] || '').trim(),
-      mail: String(row[col('Mail')] || '').trim() || null,
-      manager_mail: String(row[col('Manager')] || '').trim() || null,
-      function: String(row[col('Function')] || '').trim(),
-      role: String(row[col('Role')] || '').trim(),
-      description: String(row[col('Description')] || '').trim(),
-      recommended_training: String(row[col('PDM Windchill')] || '').trim() || null,
-      complementary_names: [],
-      tlg_group: String(row[col('TLG')] || '').trim() || null,
-      tlg_addon: [],
-      status: String(row[col('Status')] || 'active').trim() || 'active',
-      last_contact: String(row[col('Last Contact')] || '').trim() || null,
-      comments: String(row[col('Comments')] || '').trim(),
-      additional_info: {},
+      sesa_id:              sesaId,
+      first_name:           cell(row, COLUMNS.find(c => c.key === 'first_name').excelHeader) || null,
+      last_name:            cell(row, COLUMNS.find(c => c.key === 'last_name').excelHeader) || null,
+      mail:                 cell(row, COLUMNS.find(c => c.key === 'mail').excelHeader) || null,
+      manager_mail:         cell(row, COLUMNS.find(c => c.key === 'manager_mail').excelHeader) || null,
+      function:             cell(row, COLUMNS.find(c => c.key === 'function').excelHeader) || null,
+      role:                 cell(row, COLUMNS.find(c => c.key === 'role').excelHeader) || null,
+      description:          cell(row, COLUMNS.find(c => c.key === 'description').excelHeader) || null,
+      recommended_training: cell(row, COLUMNS.find(c => c.key === '_training').excelHeader) || null,
+      complementary_names:  [],
+      tlg_group:            cell(row, COLUMNS.find(c => c.key === '_tlg').excelHeader) || null,
+      tlg_addon:            [],
+      status:               cell(row, COLUMNS.find(c => c.key === 'status').excelHeader) || 'active',
+      last_contact:         cell(row, COLUMNS.find(c => c.key === 'last_contact').excelHeader) || null,
+      comments:             cell(row, COLUMNS.find(c => c.key === 'comments').excelHeader) || null,
+      additional_info:      {},
     };
+
     for (const k of infoKeys) {
-      const idx = headers.findIndex(h => h === k);
+      const idx = headerMap[k.toLowerCase()] ?? -1;
       entry.additional_info[k] = idx >= 0 ? normalizeYesNo(row[idx]) : false;
       entry[k] = entry.additional_info[k];
     }
@@ -104,8 +160,8 @@ function parseExcelUsers(buffer, infoKeys) {
 
 function normalizeUser(u) {
   const naTraining = u.recommended_training === 'N/A';
-  const naTlg = (u.tlg_group === 'N/A') || (u.tlg_primary === 'N/A');
-  const info = u.additional_info && typeof u.additional_info === 'object' ? u.additional_info : {};
+  const naTlg = u.tlg_group === 'N/A' || u.tlg_primary === 'N/A';
+  const info = (u.additional_info && typeof u.additional_info === 'object') ? u.additional_info : {};
   return {
     ...u,
     ...info,
@@ -140,8 +196,7 @@ function TrainingCell({ user }) {
   if (user.na_training)
     return <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>;
   const primary = (user.recommended_training && user.recommended_training !== 'N/A')
-    ? user.recommended_training
-    : (user.primary_training_name || '');
+    ? user.recommended_training : '';
   const comp = Array.isArray(user.complementary_names) ? user.complementary_names : [];
   if (!primary && comp.length === 0) return <span className="text-xs text-slate-300">-</span>;
   return (
@@ -260,19 +315,15 @@ export default function UserListPage() {
 
   function applyLookup(result) {
     if (!result || !result.found) {
-      return {
-        recommended_training: '', complementary_names: [],
-        tlg_primary: '', tlg_addon: [],
-        na_training: false, na_tlg: false,
-      };
+      return { recommended_training: '', complementary_names: [], tlg_primary: '', tlg_addon: [], na_training: false, na_tlg: false };
     }
     return {
       recommended_training: result.na_training ? 'N/A' : (result.primary_training_name || ''),
-      complementary_names: result.na_training ? [] : (Array.isArray(result.complementary_names) ? result.complementary_names : []),
-      tlg_primary: result.na_tlg ? 'N/A' : (result.tlg_primary || ''),
-      tlg_addon: result.na_tlg ? [] : (Array.isArray(result.tlg_addon) ? result.tlg_addon : []),
-      na_training: !!result.na_training,
-      na_tlg: !!result.na_tlg,
+      complementary_names:  result.na_training ? [] : (Array.isArray(result.complementary_names) ? result.complementary_names : []),
+      tlg_primary:          result.na_tlg ? 'N/A' : (result.tlg_primary || ''),
+      tlg_addon:            result.na_tlg ? [] : (Array.isArray(result.tlg_addon) ? result.tlg_addon : []),
+      na_training:          !!result.na_training,
+      na_tlg:               !!result.na_tlg,
     };
   }
 
@@ -326,20 +377,13 @@ export default function UserListPage() {
 
   const clearAllMutation = useMutation({
     mutationFn: () => client.delete(`/projects/${projectId}/users`),
-    onSuccess: () => {
-      qc.setQueryData(['users', projectId], []);
-      setImportStats(null);
-    },
+    onSuccess: () => { qc.setQueryData(['users', projectId], []); setImportStats(null); },
     onError: err => reportSaveError(err),
   });
 
   const importMutation = useMutation({
     mutationFn: data => client.post(`/projects/${projectId}/users/import-json`, { users: data }),
-    onSuccess: res => {
-      qc.invalidateQueries(['users', projectId]);
-      setImportError('');
-      setImportStats(res.data);
-    },
+    onSuccess: res => { qc.invalidateQueries(['users', projectId]); setImportError(''); setImportStats(res.data); },
     onError: err => setImportError(err?.response?.data?.error || err.message || 'Import failed'),
   });
 
@@ -366,11 +410,8 @@ export default function UserListPage() {
   }
 
   function hasNewRowData(snap) {
-    return [
-      snap.sesa_id, snap.first_name, snap.last_name,
-      snap.mail, snap.manager_mail, snap.function,
-      snap.role, snap.description, snap.comments,
-    ].some(v => v && String(v).trim());
+    return ['sesa_id', 'first_name', 'last_name', 'mail', 'manager_mail', 'function', 'role', 'description', 'comments']
+      .some(k => snap[k] && String(snap[k]).trim());
   }
 
   function commitAndCloseNewRow() {
@@ -397,8 +438,7 @@ export default function UserListPage() {
     clearTimeout(blurTimerNew.current);
     newRowHasFocus.current = false;
     blurTimerNew.current = setTimeout(() => {
-      if (newRowHasFocus.current) return;
-      commitAndCloseNewRow();
+      if (!newRowHasFocus.current) commitAndCloseNewRow();
     }, 200);
   }
 
@@ -426,11 +466,9 @@ export default function UserListPage() {
   }
 
   async function handleNewSelect(field, value) {
-    let snap = setNewField(field, value);
-    if (field === 'function' || field === 'role') {
-      if (!snap.function || !snap.role) return;
-      const result = await lookup(snap);
-      const lookupData = applyLookup(result);
+    const snap = setNewField(field, value);
+    if ((field === 'function' || field === 'role') && snap.function && snap.role) {
+      const lookupData = applyLookup(await lookup(snap));
       const merged = { ...newRowRef.current, ...lookupData };
       newRowRef.current = merged;
       setNewRow({ ...merged });
@@ -438,12 +476,11 @@ export default function UserListPage() {
   }
 
   async function handleNewBool(field, value) {
-    const snapBefore = { ...newRowRef.current, [field]: value };
-    newRowRef.current = snapBefore;
-    setNewRow({ ...snapBefore });
-    if (snapBefore.function && snapBefore.role) {
-      const result = await lookup(snapBefore);
-      const lookupData = applyLookup(result);
+    const snap = { ...newRowRef.current, [field]: value };
+    newRowRef.current = snap;
+    setNewRow({ ...snap });
+    if (snap.function && snap.role) {
+      const lookupData = applyLookup(await lookup(snap));
       const merged = { ...newRowRef.current, ...lookupData };
       newRowRef.current = merged;
       setNewRow({ ...merged });
@@ -454,7 +491,7 @@ export default function UserListPage() {
     if (!editModeRef.current) return;
     if (editingRowIdRef.current === user.id) return;
     if (editingRowIdRef.current !== null) {
-      const prevId    = editingRowIdRef.current;
+      const prevId = editingRowIdRef.current;
       const prevDraft = { ...editRowDraftRef.current };
       editingRowIdRef.current = null;
       doSaveEditRow(prevId, prevDraft);
@@ -475,12 +512,10 @@ export default function UserListPage() {
     const fnOrRoleChanged = draft.function !== original.function || draft.role !== original.role;
     const infoKeyChanged = infoKeys.some(k => !!draft[k] !== !!original[k]);
     if (fnOrRoleChanged || infoKeyChanged) {
-      const result = await lookup(draft);
-      const lookupData = applyLookup(result);
+      const lookupData = applyLookup(await lookup(draft));
       finalDraft = { ...finalDraft, ...lookupData };
     }
-    const payload = sanitizePayload(finalDraft, infoKeys);
-    updateMutation.mutate({ id: userId, payload });
+    updateMutation.mutate({ id: userId, payload: sanitizePayload(finalDraft, infoKeys) });
   }
 
   function saveEditRow(userId, draft) {
@@ -507,9 +542,8 @@ export default function UserListPage() {
     clearTimeout(blurTimerEdit.current);
     editRowHasFocus.current = false;
     blurTimerEdit.current = setTimeout(() => {
-      if (editRowHasFocus.current) return;
-      if (editingRowIdRef.current !== userId) return;
-      saveEditRow(userId, editRowDraftRef.current);
+      if (!editRowHasFocus.current && editingRowIdRef.current === userId)
+        saveEditRow(userId, editRowDraftRef.current);
     }, 200);
   }
 
@@ -540,10 +574,8 @@ export default function UserListPage() {
     if (field === 'function') snap.role = '';
     editRowDraftRef.current = snap;
     setEditRowDraft({ ...snap });
-    if (field === 'function' || field === 'role') {
-      if (!snap.function || !snap.role) return;
-      const result = await lookup(snap);
-      const lookupData = applyLookup(result);
+    if ((field === 'function' || field === 'role') && snap.function && snap.role) {
+      const lookupData = applyLookup(await lookup(snap));
       const merged = { ...editRowDraftRef.current, ...lookupData };
       editRowDraftRef.current = merged;
       setEditRowDraft({ ...merged });
@@ -551,12 +583,11 @@ export default function UserListPage() {
   }
 
   async function handleDraftBool(field, value) {
-    const snapBefore = { ...editRowDraftRef.current, [field]: value };
-    editRowDraftRef.current = snapBefore;
-    setEditRowDraft({ ...snapBefore });
-    if (snapBefore.function && snapBefore.role) {
-      const result = await lookup(snapBefore);
-      const lookupData = applyLookup(result);
+    const snap = { ...editRowDraftRef.current, [field]: value };
+    editRowDraftRef.current = snap;
+    setEditRowDraft({ ...snap });
+    if (snap.function && snap.role) {
+      const lookupData = applyLookup(await lookup(snap));
       const merged = { ...editRowDraftRef.current, ...lookupData };
       editRowDraftRef.current = merged;
       setEditRowDraft({ ...merged });
@@ -576,24 +607,23 @@ export default function UserListPage() {
   }
 
   function handleExport() {
-    const data = users.map(u => ({
-      'SESA ID': u.sesa_id,
-      'First Name': u.first_name,
-      'Last Name': u.last_name,
-      'Mail': u.mail,
-      'Manager Mail': u.manager_mail,
-      'Function': u.function,
-      'Role': u.role,
-      'Description': u.description,
-      ...Object.fromEntries(infoKeys.map(k => [k, u[k] ? 'Yes' : 'No'])),
-      'Training Primary': (u.na_training ? 'N/A' : u.recommended_training) || '',
-      'Training Complementary': Array.isArray(u.complementary_names) ? u.complementary_names.join(', ') : '',
-      'TLG Primary': u.na_tlg ? 'N/A' : (u.tlg_primary || u.tlg_group || ''),
-      'TLG Addon': Array.isArray(u.tlg_addon) ? u.tlg_addon.join(', ') : '',
-      'Status': u.status,
-      'Last Contact': u.last_contact || '',
-      'Comments': u.comments,
-    }));
+    const data = users.map(u => {
+      const row = {};
+      for (const col of COLUMNS) {
+        if (!col.excelHeader) continue;
+        if (col.key === '_training') {
+          row[col.excelHeader] = (u.na_training ? 'N/A' : u.recommended_training) || '';
+        } else if (col.key === '_tlg') {
+          row[col.excelHeader] = u.na_tlg ? 'N/A' : (u.tlg_primary || u.tlg_group || '');
+        } else {
+          row[col.excelHeader] = u[col.key] ?? '';
+        }
+      }
+      for (const k of infoKeys) row[k] = u[k] ? 'Yes' : 'No';
+      row['Training Complementary'] = Array.isArray(u.complementary_names) ? u.complementary_names.join(', ') : '';
+      row['TLG Addon'] = Array.isArray(u.tlg_addon) ? u.tlg_addon.join(', ') : '';
+      return row;
+    });
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Users');
@@ -611,13 +641,19 @@ export default function UserListPage() {
     if (!filter) return users;
     const q = filter.toLowerCase();
     return users.filter(u =>
-      ['sesa_id', 'first_name', 'last_name', 'mail', 'manager_mail', 'function', 'role', 'description', 'status', 'comments', 'last_contact']
-        .some(k => String(u[k] ?? '').toLowerCase().includes(q))
+      COLUMNS
+        .filter(c => c.key !== '_training' && c.key !== '_tlg' && c.key !== '_actions')
+        .some(c => String(u[c.key] ?? '').toLowerCase().includes(q))
     );
   }, [users, filter]);
 
-  const inputCls = 'border rounded px-1 py-0.5 text-xs w-full bg-white focus:ring-1 focus:ring-blue-400 outline-none';
+  // Derive table widths from COLUMNS -- no separate array to maintain.
+  const minW = COLUMNS.reduce((acc, c) => acc + c.width, 0) + infoKeys.length * 44;
+  const colCount = COLUMNS.length - 1 + infoKeys.length; // -1: _training and _tlg each count as 1 but no extra
+
+  const inputCls  = 'border rounded px-1 py-0.5 text-xs w-full bg-white focus:ring-1 focus:ring-blue-400 outline-none';
   const selectCls = 'border rounded px-1 py-0.5 text-xs w-full bg-white focus:ring-1 focus:ring-blue-400 outline-none';
+  const thBase    = 'px-2 py-2 text-left text-[10px] font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
 
   function renderNewRow() {
     if (!newRow) return null;
@@ -662,12 +698,8 @@ export default function UserListPage() {
         <td className="px-2 py-1"><input className={inputCls} value={newRow.description} placeholder="Description" onChange={e => setNewField('description', e.target.value)} /></td>
         {infoKeys.map(k => (
           <td key={k} className="py-1 text-center" style={{ width: 44, minWidth: 44, padding: '4px 0' }}>
-            <input
-              type="checkbox"
-              checked={!!newRow[k]}
-              onChange={e => handleNewBool(k, e.target.checked)}
-              className="w-3.5 h-3.5 rounded accent-blue-600 cursor-pointer block mx-auto"
-            />
+            <input type="checkbox" checked={!!newRow[k]} onChange={e => handleNewBool(k, e.target.checked)}
+              className="w-3.5 h-3.5 rounded accent-blue-600 cursor-pointer block mx-auto" />
           </td>
         ))}
         <td className="px-2 py-1"><TrainingCell user={newRow} /></td>
@@ -707,7 +739,9 @@ export default function UserListPage() {
     return (
       <tr
         key={user.id}
-        className={`border-b transition-colors ${isEditing ? 'bg-amber-50/50 ring-1 ring-inset ring-amber-300' : `${STATUS_BG[rowStatus]} ${editMode ? STATUS_HOVER[rowStatus] + ' cursor-pointer' : ''}`}`}
+        className={`border-b transition-colors ${isEditing
+          ? 'bg-amber-50/50 ring-1 ring-inset ring-amber-300'
+          : `${STATUS_BG[rowStatus]} ${editMode ? STATUS_HOVER[rowStatus] + ' cursor-pointer' : ''}`}`}
         onBlur={isEditing ? e => handleEditRowBlur(e, user.id) : undefined}
         onFocus={isEditing ? handleEditRowFocus : undefined}
         onKeyDown={isEditing ? e => handleEditRowKeyDown(e, user.id) : undefined}
@@ -725,7 +759,9 @@ export default function UserListPage() {
               {matrixFunctions.map(f => <option key={f} value={f}>{f}</option>)}
             </select>
           ) : (
-            <span className="text-xs text-slate-700 truncate block" title={user.function || ''}>{user.function || <span className="text-slate-300">-</span>}</span>
+            <span className="text-xs text-slate-700 truncate block" title={user.function || ''}>
+              {user.function || <span className="text-slate-300">-</span>}
+            </span>
           )}
         </td>
         <td className="px-2 py-1.5 overflow-hidden">
@@ -735,19 +771,17 @@ export default function UserListPage() {
               {roles.map(r => <option key={r} value={r}>{r}</option>)}
             </select>
           ) : (
-            <span className="text-xs text-slate-700 truncate block" title={user.role || ''}>{user.role || <span className="text-slate-300">-</span>}</span>
+            <span className="text-xs text-slate-700 truncate block" title={user.role || ''}>
+              {user.role || <span className="text-slate-300">-</span>}
+            </span>
           )}
         </td>
         <td className="px-2 py-1.5 overflow-hidden">{cellInput('description', 'Description')}</td>
         {infoKeys.map(k => (
           <td key={k} className="py-1.5 text-center" style={{ width: 44, minWidth: 44, padding: '6px 0' }}>
-            <input
-              type="checkbox"
-              checked={!!draft[k]}
-              disabled={!isEditing}
+            <input type="checkbox" checked={!!draft[k]} disabled={!isEditing}
               onChange={e => isEditing && handleDraftBool(k, e.target.checked)}
-              className={`w-3.5 h-3.5 rounded accent-blue-600 block mx-auto ${isEditing ? 'cursor-pointer' : 'cursor-default'}`}
-            />
+              className={`w-3.5 h-3.5 rounded accent-blue-600 block mx-auto ${isEditing ? 'cursor-pointer' : 'cursor-default'}`} />
           </td>
         ))}
         <td className="px-2 py-1.5"><TrainingCell user={draft} /></td>
@@ -758,7 +792,9 @@ export default function UserListPage() {
               {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
             </select>
           ) : (
-            <span className={`text-[10px] font-semibold rounded-full px-2 py-0.5 ${user.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-500'}`}>{user.status || '-'}</span>
+            <span className={`text-[10px] font-semibold rounded-full px-2 py-0.5 ${
+              user.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-500'
+            }`}>{user.status || '-'}</span>
           )}
         </td>
         <td className="px-2 py-1.5 overflow-hidden">
@@ -781,11 +817,6 @@ export default function UserListPage() {
       </tr>
     );
   }
-
-  const thBase = 'px-2 py-2 text-left text-[10px] font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap';
-  const colCount = 15 + infoKeys.length;
-  const fixedColWidths = [90, 100, 100, 160, 160, 140, 140, 180, 220, 140, 90, 100, 180, 32];
-  const minW = fixedColWidths.reduce((a, b) => a + b, 0) + infoKeys.length * 44;
 
   return (
     <div className="flex flex-col h-full">
@@ -854,61 +885,39 @@ export default function UserListPage() {
       <div className="overflow-y-auto overflow-x-auto rounded-xl border bg-white flex-1">
         <table className="text-sm border-collapse" style={{ tableLayout: 'fixed', minWidth: minW }}>
           <colgroup>
-            <col style={{ width: 90 }} />
-            <col style={{ width: 100 }} />
-            <col style={{ width: 100 }} />
-            <col style={{ width: 160 }} />
-            <col style={{ width: 160 }} />
-            <col style={{ width: 140 }} />
-            <col style={{ width: 140 }} />
-            <col style={{ width: 180 }} />
+            {COLUMNS.map(c => <col key={c.key} style={{ width: c.width }} />)}
             {infoKeys.map(k => <col key={k} style={{ width: 44 }} />)}
-            <col style={{ width: 220 }} />
-            <col style={{ width: 140 }} />
-            <col style={{ width: 90 }} />
-            <col style={{ width: 100 }} />
-            <col style={{ width: 180 }} />
-            <col style={{ width: 32 }} />
           </colgroup>
           <thead className="sticky top-0 z-10 bg-slate-50 border-b">
             <tr>
-              <th className={thBase}>SESA ID</th>
-              <th className={thBase}>First Name</th>
-              <th className={thBase}>Last Name</th>
-              <th className={thBase}>Mail</th>
-              <th className={thBase}>Manager Mail</th>
-              <th className={thBase}>Function</th>
-              <th className={thBase}>Role</th>
-              <th className={thBase}>Description</th>
+              {COLUMNS.slice(0, 8).map(c => <th key={c.key} className={thBase}>{c.label}</th>)}
               {infoKeys.map(k => (
-                <th
-                  key={k}
-                  title={k}
+                <th key={k} title={k}
                   style={{ width: 44, minWidth: 44, padding: '4px 0', textAlign: 'center', verticalAlign: 'bottom' }}
                   className="bg-slate-50"
                 >
                   <span style={{
-                    writingMode: 'vertical-rl',
-                    transform: 'rotate(180deg)',
-                    display: 'inline-block',
-                    maxHeight: 90,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    fontSize: 9,
-                    fontWeight: 600,
-                    color: '#64748b',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.05em',
+                    writingMode: 'vertical-rl', transform: 'rotate(180deg)',
+                    display: 'inline-block', maxHeight: 90, overflow: 'hidden',
+                    textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    fontSize: 9, fontWeight: 600, color: '#64748b',
+                    textTransform: 'uppercase', letterSpacing: '0.05em',
                   }}>{k}</span>
                 </th>
               ))}
-              <th className={thBase}>Primary Training <span className="text-blue-400 normal-case font-normal">(auto)</span></th>
-              <th className={thBase}>TLG <span className="text-blue-400 normal-case font-normal">(auto)</span></th>
-              <th className={thBase}>Status</th>
-              <th className={thBase}>Last Contact</th>
-              <th className={thBase}>Comments</th>
-              <th style={{ width: 32 }} />
+              <th className={thBase}>
+                {COLUMNS.find(c => c.key === '_training').label}
+                <span className="text-blue-400 normal-case font-normal ml-1">(auto)</span>
+              </th>
+              <th className={thBase}>
+                {COLUMNS.find(c => c.key === '_tlg').label}
+                <span className="text-blue-400 normal-case font-normal ml-1">(auto)</span>
+              </th>
+              {COLUMNS.slice(COLUMNS.findIndex(c => c.key === 'status')).map(c => (
+                <th key={c.key} className={thBase} style={c.key === '_actions' ? { width: 32 } : undefined}>
+                  {c.label}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -918,7 +927,9 @@ export default function UserListPage() {
             )}
             {!isLoading && filtered.length === 0 && !newRow && (
               <tr><td colSpan={colCount} className="px-3 py-12 text-center text-slate-400 text-sm">
-                {users.length === 0 ? 'No users yet. Enable Edit mode then click Add user, or import an Excel file.' : 'No users match the search.'}
+                {users.length === 0
+                  ? 'No users yet. Enable Edit mode then click Add user, or import an Excel file.'
+                  : 'No users match the search.'}
               </td></tr>
             )}
             {filtered.map(user => renderRow(user))}
