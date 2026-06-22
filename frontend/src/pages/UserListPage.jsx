@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
@@ -6,33 +6,34 @@ import client from '../api/client';
 
 // ---------------------------------------------------------------------------
 // Column definitions -- single source of truth for table layout + Excel I/O
-// Each entry: { key, label, width, excelHeader }
-// excelHeader is what the Excel import expects (exact match, case-insensitive).
 // ---------------------------------------------------------------------------
 const COLUMNS = [
-  { key: 'sesa_id',              label: 'SESA ID',        width: 90,  excelHeader: 'SESA ID' },
-  { key: 'first_name',           label: 'First Name',     width: 100, excelHeader: 'First Name' },
-  { key: 'last_name',            label: 'Last Name',      width: 100, excelHeader: 'Last Name' },
-  { key: 'mail',                 label: 'Mail',           width: 160, excelHeader: 'Mail' },
-  { key: 'manager_mail',         label: 'Manager Mail',   width: 160, excelHeader: 'Manager Mail' },
-  { key: 'function',             label: 'Function',       width: 140, excelHeader: 'Function' },
-  { key: 'role',                 label: 'Role',           width: 140, excelHeader: 'Role' },
-  { key: 'description',          label: 'Description',    width: 180, excelHeader: 'Description' },
-  // infoKey columns are injected dynamically between description and training
-  { key: '_training',            label: 'Primary Training', width: 220, excelHeader: 'PDM Windchill' },
-  { key: '_tlg',                 label: 'TLG',            width: 140, excelHeader: 'TLG' },
-  { key: 'status',               label: 'Status',         width: 90,  excelHeader: 'Status' },
-  { key: 'last_contact',         label: 'Last Contact',   width: 100, excelHeader: 'Last Contact' },
-  { key: 'comments',             label: 'Comments',       width: 180, excelHeader: 'Comments' },
-  { key: '_actions',             label: '',               width: 32,  excelHeader: null },
+  { key: 'sesa_id',      label: 'SESA ID',          width: 90,  excelHeader: 'SESA ID' },
+  { key: 'first_name',   label: 'First Name',        width: 100, excelHeader: 'First Name' },
+  { key: 'last_name',    label: 'Last Name',         width: 100, excelHeader: 'Last Name' },
+  { key: 'mail',         label: 'Mail',              width: 160, excelHeader: 'Mail' },
+  { key: 'manager_mail', label: 'Manager Mail',      width: 160, excelHeader: 'Manager Mail' },
+  { key: 'function',     label: 'Function',          width: 140, excelHeader: 'Function' },
+  { key: 'role',         label: 'Role',              width: 140, excelHeader: 'Role' },
+  { key: 'description',  label: 'Description',       width: 180, excelHeader: 'Description' },
+  // infoKey columns injected dynamically here (28px each)
+  { key: '_training',    label: 'Primary Training',  width: 220, excelHeader: 'PDM Windchill' },
+  { key: '_tlg',         label: 'TLG',               width: 140, excelHeader: 'TLG' },
+  { key: 'status',       label: 'Status',            width: 90,  excelHeader: 'Status' },
+  { key: 'last_contact', label: 'Last Contact',      width: 100, excelHeader: 'Last Contact' },
+  { key: 'comments',     label: 'Comments',          width: 180, excelHeader: 'Comments' },
+  { key: '_actions',     label: '',                  width: 32,  excelHeader: null },
 ];
+
+// Width of each additional-info checkbox column.
+const INFO_COL_W = 28;
 
 const STATUS_OPTIONS = ['active', 'inactive'];
 
 // Keys that must never be sent to the backend as top-level payload fields.
 const INTERNAL_KEYS = new Set([
   'id', 'created_at', 'updated_at', 'additional_info',
-  'na_training', 'na_tlg', 'tlg_primary', 'primary_training_name',
+  'na_training', 'na_tlg', 'tlg_primary',
 ]);
 
 const STATUS_BG    = { inactive: 'bg-slate-100', active: '' };
@@ -51,8 +52,6 @@ function emptyNewRow(infoKeys) {
   return base;
 }
 
-// Build the payload sent to the backend.
-// Strips internal/computed keys, validates emails, packs infoKeys into additional_info.
 function sanitizePayload(row, infoKeys) {
   const EMAIL_FIELDS = new Set(['mail', 'manager_mail']);
   const payload = {};
@@ -87,14 +86,12 @@ function normalizeYesNo(val) {
   return false;
 }
 
-// Build a case-insensitive header-to-column-index map from an Excel header row.
 function buildHeaderMap(headers) {
   const map = {};
   headers.forEach((h, i) => { map[String(h).trim().toLowerCase()] = i; });
   return map;
 }
 
-// Look up a column index by its exact excelHeader value (case-insensitive).
 function colIdx(headerMap, excelHeader) {
   return headerMap[excelHeader.toLowerCase()] ?? -1;
 }
@@ -104,7 +101,6 @@ function parseExcelUsers(buffer, infoKeys) {
   const ws = wb.Sheets[wb.SheetNames[0]];
   const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
-  // Find the header row by looking for the SESA ID column header.
   const sesaColDef = COLUMNS.find(c => c.key === 'sesa_id');
   let headerRowIdx = -1;
   for (let i = 0; i < raw.length; i++) {
@@ -117,7 +113,6 @@ function parseExcelUsers(buffer, infoKeys) {
 
   const headerMap = buildHeaderMap(raw[headerRowIdx]);
 
-  // Helper: read a cell value as trimmed string or null.
   function cell(row, excelHeader) {
     const idx = colIdx(headerMap, excelHeader);
     return idx >= 0 ? String(row[idx] ?? '').trim() : '';
@@ -126,7 +121,7 @@ function parseExcelUsers(buffer, infoKeys) {
   const users = [];
   for (let i = headerRowIdx + 1; i < raw.length; i++) {
     const row = raw[i];
-    const sesaId = cell(row, COLUMNS.find(c => c.key === 'sesa_id').excelHeader);
+    const sesaId = cell(row, sesaColDef.excelHeader);
     if (!sesaId) continue;
 
     const entry = {
@@ -241,6 +236,7 @@ export default function UserListPage() {
 
   const [newRow, setNewRow] = useState(null);
   const newRowRef = useRef(null);
+  const newRowElRef = useRef(null);
   const newRowPending = useRef(false);
   const newRowId = useRef(null);
   const newRowSaved = useRef(false);
@@ -250,6 +246,7 @@ export default function UserListPage() {
   const editingRowIdRef = useRef(null);
   const [editRowDraft, setEditRowDraft] = useState({});
   const editRowDraftRef = useRef({});
+  const editRowElRef = useRef(null);
   const [editRowSaving, setEditRowSaving] = useState(false);
 
   const blurTimerEdit = useRef(null);
@@ -298,6 +295,34 @@ export default function UserListPage() {
     }
     return [...roles].sort();
   }, [validFnRolePairs]);
+
+  // Outside-click save: pointerdown fires before blur and works even on
+  // non-focusable click targets (e.g. blank table area).
+  useEffect(() => {
+    function onPointerDown(e) {
+      const target = e.target;
+
+      if (newRowRef.current && newRowElRef.current && !newRowElRef.current.contains(target)) {
+        if (hasNewRowData(newRowRef.current) && !newRowPending.current) {
+          commitAndCloseNewRow();
+        } else {
+          discardNewRow();
+        }
+      }
+
+      if (
+        editingRowIdRef.current !== null &&
+        editRowElRef.current &&
+        !editRowElRef.current.contains(target)
+      ) {
+        saveEditRow(editingRowIdRef.current, editRowDraftRef.current);
+      }
+    }
+
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [infoKeys, users]);
 
   async function lookup(snap) {
     if (!snap.function || !snap.role) return null;
@@ -433,13 +458,9 @@ export default function UserListPage() {
   }
 
   function handleNewRowBlur(e) {
-    if (e.relatedTarget === null) return;
     if (e.currentTarget.contains(e.relatedTarget)) return;
     clearTimeout(blurTimerNew.current);
     newRowHasFocus.current = false;
-    blurTimerNew.current = setTimeout(() => {
-      if (!newRowHasFocus.current) commitAndCloseNewRow();
-    }, 200);
   }
 
   function handleNewRowFocus() {
@@ -536,15 +557,10 @@ export default function UserListPage() {
     setEditRowSaving(false);
   }
 
-  function handleEditRowBlur(e, userId) {
-    if (e.relatedTarget === null) return;
+  function handleEditRowBlur(e) {
     if (e.currentTarget.contains(e.relatedTarget)) return;
     clearTimeout(blurTimerEdit.current);
     editRowHasFocus.current = false;
-    blurTimerEdit.current = setTimeout(() => {
-      if (!editRowHasFocus.current && editingRowIdRef.current === userId)
-        saveEditRow(userId, editRowDraftRef.current);
-    }, 200);
   }
 
   function handleEditRowFocus() {
@@ -647,9 +663,8 @@ export default function UserListPage() {
     );
   }, [users, filter]);
 
-  // Derive table widths from COLUMNS -- no separate array to maintain.
-  const minW = COLUMNS.reduce((acc, c) => acc + c.width, 0) + infoKeys.length * 44;
-  const colCount = COLUMNS.length - 1 + infoKeys.length; // -1: _training and _tlg each count as 1 but no extra
+  const minW = COLUMNS.reduce((acc, c) => acc + c.width, 0) + infoKeys.length * INFO_COL_W;
+  const colCount = COLUMNS.length - 1 + infoKeys.length;
 
   const inputCls  = 'border rounded px-1 py-0.5 text-xs w-full bg-white focus:ring-1 focus:ring-blue-400 outline-none';
   const selectCls = 'border rounded px-1 py-0.5 text-xs w-full bg-white focus:ring-1 focus:ring-blue-400 outline-none';
@@ -660,6 +675,7 @@ export default function UserListPage() {
     const roles = rolesForFn(newRow.function);
     return (
       <tr
+        ref={newRowElRef}
         className="border-b bg-blue-50/40"
         onBlur={handleNewRowBlur}
         onFocus={handleNewRowFocus}
@@ -697,9 +713,13 @@ export default function UserListPage() {
         </td>
         <td className="px-2 py-1"><input className={inputCls} value={newRow.description} placeholder="Description" onChange={e => setNewField('description', e.target.value)} /></td>
         {infoKeys.map(k => (
-          <td key={k} className="py-1 text-center" style={{ width: 44, minWidth: 44, padding: '4px 0' }}>
-            <input type="checkbox" checked={!!newRow[k]} onChange={e => handleNewBool(k, e.target.checked)}
-              className="w-3.5 h-3.5 rounded accent-blue-600 cursor-pointer block mx-auto" />
+          <td key={k} className="text-center" style={{ width: INFO_COL_W, minWidth: INFO_COL_W, padding: '3px 0' }}>
+            <input
+              type="checkbox"
+              checked={!!newRow[k]}
+              onChange={e => handleNewBool(k, e.target.checked)}
+              className="w-3 h-3 rounded accent-blue-600 cursor-pointer block mx-auto"
+            />
           </td>
         ))}
         <td className="px-2 py-1"><TrainingCell user={newRow} /></td>
@@ -739,10 +759,11 @@ export default function UserListPage() {
     return (
       <tr
         key={user.id}
+        ref={isEditing ? editRowElRef : null}
         className={`border-b transition-colors ${isEditing
           ? 'bg-amber-50/50 ring-1 ring-inset ring-amber-300'
           : `${STATUS_BG[rowStatus]} ${editMode ? STATUS_HOVER[rowStatus] + ' cursor-pointer' : ''}`}`}
-        onBlur={isEditing ? e => handleEditRowBlur(e, user.id) : undefined}
+        onBlur={isEditing ? handleEditRowBlur : undefined}
         onFocus={isEditing ? handleEditRowFocus : undefined}
         onKeyDown={isEditing ? e => handleEditRowKeyDown(e, user.id) : undefined}
         onClick={!isEditing && editMode ? () => startEditRow(user) : undefined}
@@ -778,10 +799,14 @@ export default function UserListPage() {
         </td>
         <td className="px-2 py-1.5 overflow-hidden">{cellInput('description', 'Description')}</td>
         {infoKeys.map(k => (
-          <td key={k} className="py-1.5 text-center" style={{ width: 44, minWidth: 44, padding: '6px 0' }}>
-            <input type="checkbox" checked={!!draft[k]} disabled={!isEditing}
+          <td key={k} className="text-center" style={{ width: INFO_COL_W, minWidth: INFO_COL_W, padding: '4px 0' }}>
+            <input
+              type="checkbox"
+              checked={!!draft[k]}
+              disabled={!isEditing}
               onChange={e => isEditing && handleDraftBool(k, e.target.checked)}
-              className={`w-3.5 h-3.5 rounded accent-blue-600 block mx-auto ${isEditing ? 'cursor-pointer' : 'cursor-default'}`} />
+              className={`w-3 h-3 rounded accent-blue-600 block mx-auto ${isEditing ? 'cursor-pointer' : 'cursor-default'}`}
+            />
           </td>
         ))}
         <td className="px-2 py-1.5"><TrainingCell user={draft} /></td>
@@ -886,22 +911,27 @@ export default function UserListPage() {
         <table className="text-sm border-collapse" style={{ tableLayout: 'fixed', minWidth: minW }}>
           <colgroup>
             {COLUMNS.map(c => <col key={c.key} style={{ width: c.width }} />)}
-            {infoKeys.map(k => <col key={k} style={{ width: 44 }} />)}
+            {infoKeys.map(k => <col key={k} style={{ width: INFO_COL_W }} />)}
           </colgroup>
           <thead className="sticky top-0 z-10 bg-slate-50 border-b">
             <tr>
               {COLUMNS.slice(0, 8).map(c => <th key={c.key} className={thBase}>{c.label}</th>)}
               {infoKeys.map(k => (
-                <th key={k} title={k}
-                  style={{ width: 44, minWidth: 44, padding: '4px 0', textAlign: 'center', verticalAlign: 'bottom' }}
+                <th
+                  key={k}
+                  title={k}
+                  style={{
+                    width: INFO_COL_W, minWidth: INFO_COL_W,
+                    padding: '2px 0', textAlign: 'center', verticalAlign: 'bottom',
+                  }}
                   className="bg-slate-50"
                 >
                   <span style={{
                     writingMode: 'vertical-rl', transform: 'rotate(180deg)',
-                    display: 'inline-block', maxHeight: 90, overflow: 'hidden',
+                    display: 'inline-block', maxHeight: 72, overflow: 'hidden',
                     textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    fontSize: 9, fontWeight: 600, color: '#64748b',
-                    textTransform: 'uppercase', letterSpacing: '0.05em',
+                    fontSize: 8, fontWeight: 600, color: '#64748b',
+                    textTransform: 'uppercase', letterSpacing: '0.02em',
                   }}>{k}</span>
                 </th>
               ))}
