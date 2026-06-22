@@ -4,6 +4,14 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../context/AuthContext';
 import client from '../api/client';
 
+// Strip time component so date inputs and display always show YYYY-MM-DD.
+function toDateOnly(val) {
+  if (!val) return '';
+  const s = String(val);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  return s.split('T')[0];
+}
+
 function Toast({ message, onDismiss }) {
   useEffect(() => {
     const t = setTimeout(onDismiss, 4000);
@@ -27,7 +35,6 @@ export default function DashboardPage() {
   const [form, setForm] = useState({ project_name: '', plant_name: '', application_name: '', go_live_date: '' });
   const [toast, setToast] = useState(location.state?.flash || null);
 
-  // Clear the flash from history state so a refresh does not replay it
   useEffect(() => {
     if (location.state?.flash) {
       window.history.replaceState({}, '');
@@ -100,7 +107,7 @@ export default function DashboardPage() {
                 </span>
               </div>
               {p.go_live_date && (
-                <p className="text-xs text-slate-400 mt-2">Go-live: {new Date(p.go_live_date).toLocaleDateString()}</p>
+                <p className="text-xs text-slate-400 mt-2">Go-live: {toDateOnly(p.go_live_date)}</p>
               )}
             </div>
           ))}
@@ -111,11 +118,19 @@ export default function DashboardPage() {
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md">
             <h3 className="font-semibold text-slate-800 mb-4">New project</h3>
-            <form onSubmit={e => { e.preventDefault(); createProject.mutate(form); }} className="space-y-3">
+            <form onSubmit={e => { e.preventDefault(); createProject.mutate({ ...form, go_live_date: form.go_live_date || null }); }} className="space-y-3">
               <input className="w-full border rounded-lg px-3 py-2 text-sm" placeholder="Project name *" value={form.project_name} onChange={e => setForm(f => ({ ...f, project_name: e.target.value }))} required />
               <input className="w-full border rounded-lg px-3 py-2 text-sm" placeholder="Plant name" value={form.plant_name} onChange={e => setForm(f => ({ ...f, plant_name: e.target.value }))} />
               <input className="w-full border rounded-lg px-3 py-2 text-sm" placeholder="Application name" value={form.application_name} onChange={e => setForm(f => ({ ...f, application_name: e.target.value }))} />
-              <input className="w-full border rounded-lg px-3 py-2 text-sm" type="date" value={form.go_live_date} onChange={e => setForm(f => ({ ...f, go_live_date: e.target.value }))} />
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Go-live date</label>
+                <input
+                  className="w-full border rounded-lg px-3 py-2 text-sm"
+                  type="date"
+                  value={form.go_live_date}
+                  onChange={e => setForm(f => ({ ...f, go_live_date: e.target.value }))}
+                />
+              </div>
               <div className="flex gap-2 pt-2">
                 <button type="submit" className="flex-1 bg-blue-600 text-white rounded-lg py-2 text-sm font-medium hover:bg-blue-700">Create</button>
                 <button type="button" onClick={() => setShowCreate(false)} className="flex-1 border rounded-lg py-2 text-sm text-slate-600 hover:bg-slate-50">Cancel</button>

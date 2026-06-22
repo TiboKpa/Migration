@@ -25,15 +25,10 @@ const COLUMNS = [
   { key: '_actions',     label: '',                  width: 32,  excelHeader: null },
 ];
 
-// Indices that split COLUMNS around the dynamic info-key injection point.
-// COLUMNS[0..FIXED_BEFORE-1] come before info-key cols in the DOM.
-// COLUMNS[FIXED_BEFORE..] come after.
-const FIXED_BEFORE = 8; // sesa_id..description
-
+const FIXED_BEFORE = 8;
 const COLS_BEFORE = COLUMNS.slice(0, FIXED_BEFORE);
-const COLS_AFTER  = COLUMNS.slice(FIXED_BEFORE); // _training.._actions
+const COLS_AFTER  = COLUMNS.slice(FIXED_BEFORE);
 
-// The exact set of fixed field keys the backend accepts at the top level.
 const FIXED_PAYLOAD_KEYS = new Set([
   'sesa_id', 'first_name', 'last_name', 'mail', 'manager_mail',
   'function', 'role', 'description',
@@ -43,13 +38,22 @@ const FIXED_PAYLOAD_KEYS = new Set([
   'additional_info',
 ]);
 
-// Width of each additional-info column -- matches RoleMatrixPage COL.info.
 const INFO_COL_W = 32;
 
 const STATUS_OPTIONS = ['active', 'inactive'];
 
 const STATUS_BG    = { inactive: 'bg-slate-100', active: '' };
 const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slate-50/50' };
+
+// Strip any time/timezone component so <input type="date"> gets a clean YYYY-MM-DD value.
+function toDateOnly(val) {
+  if (!val) return '';
+  const s = String(val);
+  // Already plain date string
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  // ISO timestamp -- take the date part only
+  return s.split('T')[0];
+}
 
 function emptyNewRow(infoKeys) {
   const base = {
@@ -73,7 +77,9 @@ function sanitizePayload(row, infoKeys) {
     if (k === 'tlg_group') continue;
     if (k === 'recommended_training') continue;
     const v = row[k];
-    if (EMAIL_FIELDS.has(k)) {
+    if (k === 'last_contact') {
+      payload[k] = v ? toDateOnly(v) : null;
+    } else if (EMAIL_FIELDS.has(k)) {
       payload[k] = (v && /^[^@]+@[^@]+\.[^@]+$/.test(String(v).trim())) ? String(v).trim() : null;
     } else if (Array.isArray(v)) {
       payload[k] = v;
@@ -156,7 +162,7 @@ function parseExcelUsers(buffer, infoKeys) {
       tlg_group:            cell(row, COLUMNS.find(c => c.key === '_tlg').excelHeader) || null,
       tlg_addon:            [],
       status:               cell(row, COLUMNS.find(c => c.key === 'status').excelHeader) || 'active',
-      last_contact:         cell(row, COLUMNS.find(c => c.key === 'last_contact').excelHeader) || null,
+      last_contact:         toDateOnly(cell(row, COLUMNS.find(c => c.key === 'last_contact').excelHeader)) || null,
       comments:             cell(row, COLUMNS.find(c => c.key === 'comments').excelHeader) || null,
       additional_info:      {},
     };
@@ -195,6 +201,8 @@ function normalizeUser(u) {
     tlg_primary: u.tlg_primary || (u.tlg_group !== 'N/A' ? u.tlg_group : '') || '',
     na_training: naTraining,
     na_tlg: naTlg,
+    // Always normalise last_contact to plain date so <input type="date"> renders correctly.
+    last_contact: toDateOnly(u.last_contact),
   };
 }
 
@@ -756,7 +764,14 @@ export default function UserListPage() {
             {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
           </select>
         </td>
-        <td className="px-3 py-2"><input type="date" className={inputCls} value={newRow.last_contact || ''} onChange={e => setNewField('last_contact', e.target.value || '')} /></td>
+        <td className="px-3 py-2">
+          <input
+            type="date"
+            className={inputCls}
+            value={newRow.last_contact || ''}
+            onChange={e => setNewField('last_contact', e.target.value || '')}
+          />
+        </td>
         <td className="px-3 py-2"><input className={inputCls} value={newRow.comments} placeholder="Comments" onChange={e => setNewField('comments', e.target.value)} /></td>
         <td className="px-3 py-2">
           <button onMouseDown={e => { e.preventDefault(); discardNewRow(); }} className="text-[10px] text-slate-400 hover:text-red-500" title="Discard">&times;</button>
@@ -856,9 +871,16 @@ export default function UserListPage() {
         </td>
         <td className="px-3 py-2 overflow-hidden">
           {isEditing ? (
-            <input type="date" className={inputCls} value={draft.last_contact || ''} onChange={e => setDraftField('last_contact', e.target.value || '')} />
+            <input
+              type="date"
+              className={inputCls}
+              value={toDateOnly(draft.last_contact)}
+              onChange={e => setDraftField('last_contact', e.target.value || '')}
+            />
           ) : (
-            <span className="text-xs text-slate-600">{user.last_contact || <span className="text-slate-300">-</span>}</span>
+            <span className="text-xs text-slate-600">
+              {toDateOnly(user.last_contact) || <span className="text-slate-300">-</span>}
+            </span>
           )}
         </td>
         <td className="px-3 py-2 overflow-hidden">{cellInput('comments', 'Comments')}</td>
@@ -941,12 +963,6 @@ export default function UserListPage() {
 
       <div className="overflow-y-auto overflow-x-auto rounded-xl border bg-white flex-1">
         <table className="text-sm border-collapse" style={{ tableLayout: 'fixed', minWidth: minW }}>
-          {/*
-            colgroup MUST mirror the exact column order rendered in thead/tbody:
-            COLS_BEFORE (8 fixed) -> infoKey cols -> COLS_AFTER (_training.._actions)
-            Mismatching the order causes the browser to apply widths to the wrong
-            columns and ignore the 32px constraint on info-key cols.
-          */}
           <colgroup>
             {COLS_BEFORE.map(c => <col key={c.key} style={{ width: c.width }} />)}
             {infoKeys.map(k => <col key={k} style={{ width: INFO_COL_W, minWidth: INFO_COL_W, maxWidth: INFO_COL_W }} />)}

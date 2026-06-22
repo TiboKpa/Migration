@@ -3,6 +3,14 @@ import { useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import client from '../api/client';
 
+// Strip time component so date inputs always show YYYY-MM-DD.
+function toDateOnly(val) {
+  if (!val) return '';
+  const s = String(val);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  return s.split('T')[0];
+}
+
 export default function SettingsPage() {
   const { projectId } = useParams();
   const qc = useQueryClient();
@@ -19,7 +27,7 @@ export default function SettingsPage() {
       project_name: project.project_name || '',
       plant_name: project.plant_name || '',
       application_name: project.application_name || '',
-      go_live_date: project.go_live_date ? project.go_live_date.split('T')[0] : '',
+      go_live_date: toDateOnly(project.go_live_date),
       status: project.status || 'draft',
       notes: project.notes || ''
     });
@@ -48,7 +56,12 @@ export default function SettingsPage() {
         ))}
         <div>
           <label className="text-xs text-slate-500 block mb-1">Go-live date</label>
-          <input type="date" className="w-full border rounded-lg px-3 py-2 text-sm" value={form.go_live_date || ''} onChange={e => setForm(f => ({ ...f, go_live_date: e.target.value }))} />
+          <input
+            type="date"
+            className="w-full border rounded-lg px-3 py-2 text-sm"
+            value={form.go_live_date || ''}
+            onChange={e => setForm(f => ({ ...f, go_live_date: e.target.value }))}
+          />
         </div>
         <div>
           <label className="text-xs text-slate-500 block mb-1">Status</label>
