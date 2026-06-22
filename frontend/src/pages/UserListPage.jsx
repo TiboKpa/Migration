@@ -25,23 +25,22 @@ const STATUS_BG    = { inactive: 'bg-slate-100', active: '' };
 const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slate-50/50' };
 
 // ---------------------------------------------------------------------------
-// Sanitize payload -- backend rejects empty-string emails
+// Email / payload sanitizer
 // ---------------------------------------------------------------------------
 function sanitizePayload(row, infoKeys) {
   const EMAIL_FIELDS = ['mail', 'manager_mail'];
+  const SKIP = ['complementary_names', 'tlg_addon', 'na_training', 'na_tlg', 'tlg_primary'];
   const payload = {};
-  const SKIP = ['complementary_names', 'tlg_addon', 'na_training', 'na_tlg'];
   for (const [k, v] of Object.entries(row)) {
     if (SKIP.includes(k)) continue;
     if (EMAIL_FIELDS.includes(k)) {
-      payload[k] = v && /^[^@]+@[^@]+\.[^@]+$/.test(v.trim()) ? v.trim() : null;
+      payload[k] = v && /^[^@]+@[^@]+\.[^@]+$/.test(String(v).trim()) ? String(v).trim() : null;
     } else if (typeof v === 'string') {
       payload[k] = v.trim() || null;
     } else {
       payload[k] = v;
     }
   }
-  // Flatten lookup results into the legacy single-field columns
   payload.recommended_training = row.recommended_training || null;
   payload.tlg_group = row.tlg_primary || null;
   for (const k of infoKeys) payload[k] = !!row[k];
@@ -68,7 +67,7 @@ function parseExcelUsers(buffer, infoKeys) {
   }
   if (headerRowIdx === -1) throw new Error('Header row with "SESA ID" not found');
   const headers = raw[headerRowIdx].map(c => String(c).trim());
-  const col = (kw) => headers.findIndex(h => h.toLowerCase().includes(kw.toLowerCase()));
+  const col = kw => headers.findIndex(h => h.toLowerCase().includes(kw.toLowerCase()));
   const users = [];
   for (let i = headerRowIdx + 1; i < raw.length; i++) {
     const row = raw[i];
@@ -120,12 +119,11 @@ function ToggleSwitch({ checked, onChange, label }) {
 }
 
 // ---------------------------------------------------------------------------
-// Training cell -- matches RoleMatrixPage style
+// Training cell
 // ---------------------------------------------------------------------------
 function TrainingCell({ user }) {
-  if (user.na_training) {
+  if (user.na_training)
     return <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>;
-  }
   const primary = user.recommended_training || user.primary_training_name || '';
   const comp = Array.isArray(user.complementary_names) ? user.complementary_names : [];
   if (!primary && comp.length === 0) return <span className="text-xs text-slate-300">-</span>;
@@ -140,12 +138,11 @@ function TrainingCell({ user }) {
 }
 
 // ---------------------------------------------------------------------------
-// TLG cell -- matches RoleMatrixPage style
+// TLG cell
 // ---------------------------------------------------------------------------
 function TlgCell({ user }) {
-  if (user.na_tlg) {
+  if (user.na_tlg)
     return <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>;
-  }
   const primary = user.tlg_primary || user.tlg_group || '';
   const addon = Array.isArray(user.tlg_addon) ? user.tlg_addon : [];
   if (!primary && addon.length === 0) return <span className="text-xs text-slate-300">-</span>;
@@ -169,18 +166,23 @@ export default function UserListPage() {
 
   const [editMode,    setEditMode]    = useState(false);
   const [filter,      setFilter]      = useState('');
-  const [editingCell, setEditingCell] = useState(null);
-  const [editValue,   setEditValue]   = useState('');
   const [importError, setImportError] = useState('');
   const [importStats, setImportStats] = useState(null);
-  const [newRow,      setNewRow]      = useState(null);
-  const [savingNew,   setSavingNew]   = useState(false);
 
-  // Stable ref holding latest newRow for the debounce closure
-  const newRowRef  = useRef(null);
-  const saveTimer  = useRef(null);
-  const savedOnce  = useRef(false); // true once we sent the first POST for this row
-  const pendingId  = useRef(null);  // id returned after first save, used for subsequent PUTs
+  // New row state
+  const [newRow,    setNewRow]    = useState(null);
+  const newRowRef   = useRef(null);
+  const newRowSaved = useRef(false); // has this row been POSTed at least once
+  const newRowId    = useRef(null);  // id from first POST
+  const [newRowSaving, setNewRowSaving] = useState(false);
+
+  // Editing existing row
+  // editingRowId: id of the row currently being edited (null = none)
+  // editRowDraft: local copy of the row fields being edited
+  const [editingRowId,  setEditingRowId]  = useState(null);
+  const [editRowDraft,  setEditRowDraft]  = useState({});
+  const editRowDraftRef = useRef({});
+  const [editRowSaving, setEditRowSaving] = useState(false);
 
   // ------------------------------------------------------------------
   // Queries
@@ -203,7 +205,7 @@ export default function UserListPage() {
   const infoKeys = useMemo(() => dimensions?.info_keys ?? [], [dimensions]);
 
   // ------------------------------------------------------------------
-  // Valid function / role
+  // Valid function / role pairs
   // ------------------------------------------------------------------
   const validFnRolePairs = useMemo(() => {
     const set = new Set();
@@ -219,7 +221,7 @@ export default function UserListPage() {
     return [...fns].sort();
   }, [validFnRolePairs]);
 
-  const rolesForFn = useCallback((fn) => {
+  const rolesForFn = useCallback(fn => {
     const roles = new Set();
     for (const key of validFnRolePairs) {
       const [f, r] = key.split('||');
@@ -237,9 +239,7 @@ export default function UserListPage() {
     for (const k of infoKeys) additional_info[k] = !!snap[k];
     try {
       const res = await client.post(`/projects/${projectId}/role-matrix/lookup`, {
-        function: snap.function,
-        role: snap.role,
-        additional_info,
+        function: snap.function, role: snap.role, additional_info,
       });
       return res.data;
     } catch { return null; }
@@ -264,45 +264,33 @@ export default function UserListPage() {
   // ------------------------------------------------------------------
   const createMutation = useMutation({
     mutationFn: payload => client.post(`/projects/${projectId}/users`, payload),
-    onSuccess: (res) => {
-      pendingId.current = res.data.id;
-      savedOnce.current = true;
-      setSavingNew(false);
+    onSuccess: res => {
+      newRowId.current   = res.data.id;
+      newRowSaved.current = true;
+      setNewRowSaving(false);
       qc.setQueryData(['users', projectId], old =>
         Array.isArray(old) ? [...old, res.data] : [res.data]
       );
-      // Open a fresh row immediately
-      setNewRow(emptyNewRow(infoKeys));
-      newRowRef.current = emptyNewRow(infoKeys);
-      savedOnce.current = false;
-      pendingId.current = null;
     },
-    onError: (err) => {
-      setSavingNew(false);
+    onError: err => {
+      setNewRowSaving(false);
       console.error('[create user]', err?.response?.data || err.message);
     },
   });
 
-  const patchNewRowMutation = useMutation({
-    mutationFn: ({ id, payload }) => client.put(`/projects/${projectId}/users/${id}`, payload),
-    onSuccess: (res) => {
-      setSavingNew(false);
-      qc.setQueryData(['users', projectId], old =>
-        Array.isArray(old) ? old.map(u => u.id === res.data.id ? res.data : u) : old
-      );
-    },
-    onError: (err) => {
-      setSavingNew(false);
-      console.error('[patch user]', err?.response?.data || err.message);
-    },
-  });
-
   const updateMutation = useMutation({
-    mutationFn: ({ id, fields }) => client.put(`/projects/${projectId}/users/${id}`, fields),
-    onSuccess: (res) => {
+    mutationFn: ({ id, payload }) => client.put(`/projects/${projectId}/users/${id}`, payload),
+    onSuccess: res => {
+      setNewRowSaving(false);
+      setEditRowSaving(false);
       qc.setQueryData(['users', projectId], old =>
         Array.isArray(old) ? old.map(u => u.id === res.data.id ? res.data : u) : old
       );
+    },
+    onError: err => {
+      setNewRowSaving(false);
+      setEditRowSaving(false);
+      console.error('[update user]', err?.response?.data || err.message);
     },
   });
 
@@ -313,15 +301,12 @@ export default function UserListPage() {
 
   const clearAllMutation = useMutation({
     mutationFn: () => client.delete(`/projects/${projectId}/users`),
-    onSuccess: () => {
-      qc.setQueryData(['users', projectId], []);
-      setImportStats(null);
-    },
+    onSuccess: () => { qc.setQueryData(['users', projectId], []); setImportStats(null); },
   });
 
   const importMutation = useMutation({
     mutationFn: data => client.post(`/projects/${projectId}/users/import-json`, { users: data }),
-    onSuccess: (res) => {
+    onSuccess: res => {
       qc.invalidateQueries(['users', projectId]);
       setImportError('');
       setImportStats(res.data);
@@ -330,147 +315,158 @@ export default function UserListPage() {
   });
 
   // ------------------------------------------------------------------
-  // Core autosave -- fires 600ms after last change to newRow
-  // First change -> POST; subsequent changes -> PUT on the returned id
-  // ------------------------------------------------------------------
-  function scheduleAutosave(snap) {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      const current = newRowRef.current;
-      if (!current) return;
-      // Check that at least one field is non-empty / non-default
-      const hasAnyData = [
-        current.sesa_id, current.first_name, current.last_name,
-        current.mail, current.manager_mail, current.function,
-        current.role, current.description, current.comments,
-      ].some(v => v && v.trim());
-      if (!hasAnyData) return;
-
-      setSavingNew(true);
-      const payload = sanitizePayload(current, infoKeys);
-
-      if (!savedOnce.current) {
-        createMutation.mutate(payload);
-      } else if (pendingId.current) {
-        patchNewRowMutation.mutate({ id: pendingId.current, payload });
-      }
-    }, 600);
-  }
-
-  // ------------------------------------------------------------------
-  // New row field handlers
+  // NEW ROW -- save triggered by row blur only
   // ------------------------------------------------------------------
   function openNewRow() {
     const fresh = emptyNewRow(infoKeys);
     setNewRow(fresh);
-    newRowRef.current = fresh;
-    savedOnce.current = false;
-    pendingId.current = null;
-    setSavingNew(false);
-    if (saveTimer.current) clearTimeout(saveTimer.current);
+    newRowRef.current  = fresh;
+    newRowSaved.current = false;
+    newRowId.current   = null;
+    setNewRowSaving(false);
   }
 
   function discardNewRow() {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
     setNewRow(null);
-    newRowRef.current = null;
-    savedOnce.current = false;
-    pendingId.current = null;
-    setSavingNew(false);
+    newRowRef.current   = null;
+    newRowSaved.current = false;
+    newRowId.current    = null;
+    setNewRowSaving(false);
   }
 
-  function setField(field, value) {
-    setNewRow(prev => {
-      if (!prev) return prev;
-      const next = { ...prev, [field]: value };
-      if (field === 'function') next.role = '';
-      newRowRef.current = next;
-      return next;
-    });
-  }
-
-  // Text input: update state + schedule debounced save
-  function handleText(field, value) {
-    setField(field, value);
-    // Build the updated snapshot immediately for the closure
-    const snap = { ...newRowRef.current, [field]: value };
-    if (field === 'function') snap.role = '';
-    newRowRef.current = snap;
-    scheduleAutosave(snap);
-  }
-
-  // Select / date: update state, run lookup, then save immediately
-  async function handleSelect(field, value) {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    let snap = { ...newRowRef.current, [field]: value };
-    if (field === 'function') snap.role = '';
-    newRowRef.current = snap;
-    setNewRow({ ...snap });
-
-    if (snap.function && snap.role) {
-      const result = await lookup(snap);
-      const lookupData = applyLookup(result);
-      snap = { ...snap, ...lookupData };
-      newRowRef.current = snap;
-      setNewRow({ ...snap });
-    }
+  // Called when focus leaves the new row entirely (onBlur on <tr>)
+  async function commitNewRow(e) {
+    // relatedTarget is where focus is going -- if still inside the row, skip
+    if (e.currentTarget.contains(e.relatedTarget)) return;
+    const snap = newRowRef.current;
+    if (!snap) return;
 
     const hasAnyData = [
       snap.sesa_id, snap.first_name, snap.last_name,
       snap.mail, snap.manager_mail, snap.function,
       snap.role, snap.description, snap.comments,
-    ].some(v => v && v.trim());
+    ].some(v => v && String(v).trim());
     if (!hasAnyData) return;
 
-    setSavingNew(true);
+    setNewRowSaving(true);
     const payload = sanitizePayload(snap, infoKeys);
-    if (!savedOnce.current) {
+
+    if (!newRowSaved.current) {
       createMutation.mutate(payload);
-    } else if (pendingId.current) {
-      patchNewRowMutation.mutate({ id: pendingId.current, payload });
+      // Open fresh row after a short delay so the user can immediately continue
+      setTimeout(() => {
+        const fresh = emptyNewRow(infoKeys);
+        setNewRow(fresh);
+        newRowRef.current   = fresh;
+        newRowSaved.current = false;
+        newRowId.current    = null;
+      }, 50);
+    } else if (newRowId.current) {
+      updateMutation.mutate({ id: newRowId.current, payload });
     }
   }
 
-  // Checkbox: same as select
-  async function handleBool(field, value) {
-    await handleSelect(field, value);
+  async function handleNewRowLookup(snap) {
+    if (!snap.function || !snap.role) return snap;
+    const result = await lookup(snap);
+    const lookupData = applyLookup(result);
+    const merged = { ...snap, ...lookupData };
+    newRowRef.current = merged;
+    setNewRow({ ...merged });
+    return merged;
+  }
+
+  function setNewField(field, value) {
+    const next = { ...newRowRef.current, [field]: value };
+    if (field === 'function') next.role = '';
+    newRowRef.current = next;
+    setNewRow({ ...next });
+    return next;
+  }
+
+  async function handleNewSelect(field, value) {
+    let snap = setNewField(field, value);
+    if (field === 'function' || field === 'role') {
+      snap = await handleNewRowLookup(snap);
+    }
+  }
+
+  async function handleNewBool(field, value) {
+    let snap = setNewField(field, value);
+    snap = await handleNewRowLookup(snap);
   }
 
   // ------------------------------------------------------------------
-  // Inline edit (existing rows)
+  // EXISTING ROW EDITING
+  // Row enters edit mode on first click inside it.
+  // All cells become inputs. Tab moves through them.
+  // Save fires when focus leaves the row (onBlur on <tr>).
   // ------------------------------------------------------------------
-  function startEdit(userId, field, currentValue) {
+  function startEditRow(user) {
     if (!editMode) return;
-    setEditingCell(`${userId}-${field}`);
-    setEditValue(currentValue ?? '');
+    if (editingRowId === user.id) return; // already editing
+    // If another row was being edited, save it first
+    if (editingRowId !== null) {
+      saveEditRow(editingRowId, editRowDraftRef.current);
+    }
+    const draft = { ...user };
+    setEditingRowId(user.id);
+    setEditRowDraft(draft);
+    editRowDraftRef.current = draft;
   }
 
-  function cancelEdit() { setEditingCell(null); }
-
-  async function commitEdit(user, field) {
-    setEditingCell(null);
-    const value = editValue === '' ? null : editValue;
-    const fields = { [field]: value };
-    if (field === 'function') fields.role = null;
-    if (['function', 'role'].includes(field)) {
-      const merged = { ...user, ...fields };
-      const result = await lookup(merged);
-      Object.assign(fields, applyLookup(result));
+  async function saveEditRow(userId, draft) {
+    setEditRowSaving(true);
+    setEditingRowId(null);
+    // Run lookup if function or role changed
+    const original = users.find(u => u.id === userId) || {};
+    let finalDraft = { ...draft };
+    if (draft.function !== original.function || draft.role !== original.role) {
+      const result = await lookup(draft);
+      Object.assign(finalDraft, applyLookup(result));
     }
-    // Sanitize email fields
-    if (field === 'mail' || field === 'manager_mail') {
-      fields[field] = value && /^[^@]+@[^@]+\.[^@]+$/.test(String(value).trim()) ? String(value).trim() : null;
-    }
-    updateMutation.mutate({ id: user.id, fields });
+    const payload = sanitizePayload(finalDraft, infoKeys);
+    updateMutation.mutate({ id: userId, payload });
   }
 
-  async function toggleBool(user, field) {
-    if (!editMode) return;
-    const value = !user[field];
-    const merged = { ...user, [field]: value };
-    const result = await lookup(merged);
-    const fields = { [field]: value, ...applyLookup(result) };
-    updateMutation.mutate({ id: user.id, fields });
+  function handleEditRowBlur(e, userId) {
+    // Only save when focus leaves the row entirely
+    if (e.currentTarget.contains(e.relatedTarget)) return;
+    if (editingRowId !== userId) return;
+    saveEditRow(userId, editRowDraftRef.current);
+  }
+
+  function setDraftField(field, value) {
+    const next = { ...editRowDraftRef.current, [field]: value };
+    if (field === 'function') next.role = '';
+    editRowDraftRef.current = next;
+    setEditRowDraft({ ...next });
+  }
+
+  async function handleDraftSelect(field, value) {
+    setDraftField(field, value);
+    // Immediate lookup when function or role changes
+    if (field === 'function' || field === 'role') {
+      const snap = { ...editRowDraftRef.current, [field]: value };
+      if (field === 'function') snap.role = '';
+      editRowDraftRef.current = snap;
+      const result = await lookup(snap);
+      const lookupData = applyLookup(result);
+      const merged = { ...snap, ...lookupData };
+      editRowDraftRef.current = merged;
+      setEditRowDraft({ ...merged });
+    }
+  }
+
+  async function handleDraftBool(field, value) {
+    const snap = { ...editRowDraftRef.current, [field]: value };
+    editRowDraftRef.current = snap;
+    setEditRowDraft({ ...snap });
+    const result = await lookup(snap);
+    const lookupData = applyLookup(result);
+    const merged = { ...snap, ...lookupData };
+    editRowDraftRef.current = merged;
+    setEditRowDraft({ ...merged });
   }
 
   // ------------------------------------------------------------------
@@ -519,8 +515,7 @@ export default function UserListPage() {
       clearAllMutation.mutate();
   }
 
-  // Cleanup timer on unmount
-  useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
+  useEffect(() => () => {}, []);
 
   // ------------------------------------------------------------------
   // Filter
@@ -535,233 +530,223 @@ export default function UserListPage() {
   }, [users, filter]);
 
   // ------------------------------------------------------------------
-  // Cell renderer (existing rows)
+  // Shared input style
   // ------------------------------------------------------------------
-  function renderCell(user, field, opts = {}) {
-    const cellId = `${user.id}-${field}`;
-    const isEditing = editMode && editingCell === cellId;
-    const raw = user[field];
-
-    if (opts.readonly) {
-      if (field === 'training_display') return <TrainingCell user={user} />;
-      if (field === 'tlg_display')      return <TlgCell user={user} />;
-      return <span className="text-xs text-slate-400 italic truncate block">{String(raw ?? '') || <span className="text-slate-200">-</span>}</span>;
-    }
-
-    if (opts.select === 'status') {
-      const isActive = raw === 'active';
-      if (!editMode) {
-        return (
-          <span className={`text-[10px] font-semibold rounded-full px-2 py-0.5 ${
-            isActive ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-500'
-          }`}>{raw || '-'}</span>
-        );
-      }
-      if (isEditing) {
-        return (
-          <select autoFocus className="border rounded px-1 py-0.5 text-xs w-full"
-            value={editValue} onChange={e => setEditValue(e.target.value)}
-            onBlur={() => commitEdit(user, field)}>
-            {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
-          </select>
-        );
-      }
-      return (
-        <span onClick={() => startEdit(user.id, field, raw)}
-          className={`text-[10px] font-semibold rounded-full px-2 py-0.5 cursor-pointer ${
-            isActive ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-500'
-          }`}>{raw || '-'}</span>
-      );
-    }
-
-    if (opts.select === 'function') {
-      if (!editMode) return <span className="text-xs text-slate-700 truncate block" title={raw || ''}>{raw || <span className="text-slate-300">-</span>}</span>;
-      if (isEditing) {
-        return (
-          <select autoFocus className="border rounded px-1 py-0.5 text-xs w-full"
-            value={editValue} onChange={e => setEditValue(e.target.value)}
-            onBlur={() => commitEdit(user, field)}>
-            <option value="">-</option>
-            {matrixFunctions.map(f => <option key={f} value={f}>{f}</option>)}
-          </select>
-        );
-      }
-      return (
-        <span onClick={() => startEdit(user.id, field, raw ?? '')}
-          className="text-xs text-slate-700 truncate block cursor-pointer hover:bg-blue-50 rounded px-1 py-0.5"
-          title={raw || ''}>
-          {raw || <span className="text-slate-300">-</span>}
-        </span>
-      );
-    }
-
-    if (opts.select === 'role') {
-      if (!editMode) return <span className="text-xs text-slate-700 truncate block" title={raw || ''}>{raw || <span className="text-slate-300">-</span>}</span>;
-      if (isEditing) {
-        return (
-          <select autoFocus className="border rounded px-1 py-0.5 text-xs w-full"
-            value={editValue} onChange={e => setEditValue(e.target.value)}
-            onBlur={() => commitEdit(user, field)}>
-            <option value="">-</option>
-            {rolesForFn(user.function).map(r => <option key={r} value={r}>{r}</option>)}
-          </select>
-        );
-      }
-      return (
-        <span onClick={() => startEdit(user.id, field, raw ?? '')}
-          className="text-xs text-slate-700 truncate block cursor-pointer hover:bg-blue-50 rounded px-1 py-0.5"
-          title={raw || ''}>
-          {raw || <span className="text-slate-300">-</span>}
-        </span>
-      );
-    }
-
-    if (opts.date) {
-      if (!editMode) return <span className="text-xs text-slate-600 block">{raw || <span className="text-slate-300">-</span>}</span>;
-      if (isEditing) {
-        return (
-          <input type="date" autoFocus className="border rounded px-1 py-0.5 text-xs w-full"
-            value={editValue} onChange={e => setEditValue(e.target.value)}
-            onBlur={() => commitEdit(user, field)}
-            onKeyDown={e => { if (e.key === 'Enter') commitEdit(user, field); if (e.key === 'Escape') cancelEdit(); }} />
-        );
-      }
-      return (
-        <span onClick={() => startEdit(user.id, field, raw || '')}
-          className="text-xs text-slate-600 block cursor-pointer hover:bg-blue-50 rounded px-1 py-0.5">
-          {raw || <span className="text-slate-300">-</span>}
-        </span>
-      );
-    }
-
-    if (!editMode) return <span className="text-xs text-slate-700 truncate block" title={String(raw ?? '')}>{raw || <span className="text-slate-300">-</span>}</span>;
-    if (isEditing) {
-      return (
-        <input autoFocus className="border rounded px-1 py-0.5 text-xs w-full min-w-0"
-          value={editValue} onChange={e => setEditValue(e.target.value)}
-          onBlur={() => commitEdit(user, field)}
-          onKeyDown={e => { if (e.key === 'Enter') commitEdit(user, field); if (e.key === 'Escape') cancelEdit(); }} />
-      );
-    }
-    return (
-      <span onClick={() => startEdit(user.id, field, raw ?? '')}
-        className="text-xs text-slate-700 truncate block cursor-pointer hover:bg-blue-50 rounded px-1 py-0.5"
-        title={String(raw ?? '')}>
-        {raw || <span className="text-slate-300">-</span>}
-      </span>
-    );
-  }
+  const inputCls = 'border rounded px-1 py-0.5 text-xs w-full bg-white focus:ring-1 focus:ring-blue-400 outline-none';
+  const selectCls = 'border rounded px-1 py-0.5 text-xs w-full bg-white focus:ring-1 focus:ring-blue-400 outline-none';
 
   // ------------------------------------------------------------------
-  // New inline row
+  // New row renderer
   // ------------------------------------------------------------------
   function renderNewRow() {
     if (!newRow) return null;
     const roles = rolesForFn(newRow.function);
     return (
-      <tr className="border-b bg-blue-50/40">
-        {/* SESA ID */}
+      <tr
+        className="border-b bg-blue-50/40"
+        onBlur={commitNewRow}
+      >
         <td className="px-2 py-1">
           <div className="relative">
             <input
-              className="border border-blue-300 rounded px-1 py-0.5 text-xs w-full bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+              className={`${inputCls} border-blue-300`}
               value={newRow.sesa_id}
               placeholder="SESA ID"
-              onChange={e => handleText('sesa_id', e.target.value)}
+              onChange={e => setNewField('sesa_id', e.target.value)}
             />
-            {savingNew && (
-              <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[9px] text-blue-400 font-medium">saving...</span>
+            {newRowSaving && (
+              <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[9px] text-blue-400">saving...</span>
             )}
           </div>
         </td>
-        {/* First Name */}
         <td className="px-2 py-1">
-          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white"
-            value={newRow.first_name} placeholder="First name"
-            onChange={e => handleText('first_name', e.target.value)} />
+          <input className={inputCls} value={newRow.first_name} placeholder="First name"
+            onChange={e => setNewField('first_name', e.target.value)} />
         </td>
-        {/* Last Name */}
         <td className="px-2 py-1">
-          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white"
-            value={newRow.last_name} placeholder="Last name"
-            onChange={e => handleText('last_name', e.target.value)} />
+          <input className={inputCls} value={newRow.last_name} placeholder="Last name"
+            onChange={e => setNewField('last_name', e.target.value)} />
         </td>
-        {/* Mail */}
         <td className="px-2 py-1">
-          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white"
-            value={newRow.mail} placeholder="mail@example.com"
-            onChange={e => handleText('mail', e.target.value)} />
+          <input className={inputCls} value={newRow.mail} placeholder="mail@..."
+            onChange={e => setNewField('mail', e.target.value)} />
         </td>
-        {/* Manager Mail */}
         <td className="px-2 py-1">
-          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white"
-            value={newRow.manager_mail} placeholder="manager@example.com"
-            onChange={e => handleText('manager_mail', e.target.value)} />
+          <input className={inputCls} value={newRow.manager_mail} placeholder="manager@..."
+            onChange={e => setNewField('manager_mail', e.target.value)} />
         </td>
-        {/* Function */}
         <td className="px-2 py-1">
-          <select className="border rounded px-1 py-0.5 text-xs w-full bg-white"
-            value={newRow.function}
-            onChange={e => handleSelect('function', e.target.value)}>
+          <select className={selectCls} value={newRow.function}
+            onChange={e => handleNewSelect('function', e.target.value)}>
             <option value="">Select...</option>
             {matrixFunctions.map(f => <option key={f} value={f}>{f}</option>)}
           </select>
         </td>
-        {/* Role */}
         <td className="px-2 py-1">
-          <select className="border rounded px-1 py-0.5 text-xs w-full bg-white"
-            value={newRow.role}
-            onChange={e => handleSelect('role', e.target.value)}
+          <select className={selectCls} value={newRow.role}
+            onChange={e => handleNewSelect('role', e.target.value)}
             disabled={!newRow.function}>
             <option value="">Select...</option>
             {roles.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
         </td>
-        {/* Description */}
         <td className="px-2 py-1">
-          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white"
-            value={newRow.description} placeholder="Description"
-            onChange={e => handleText('description', e.target.value)} />
+          <input className={inputCls} value={newRow.description} placeholder="Description"
+            onChange={e => setNewField('description', e.target.value)} />
         </td>
-        {/* Additional Info checkboxes */}
         {infoKeys.map(k => (
           <td key={k} className="px-2 py-1 text-center">
             <input type="checkbox" checked={!!newRow[k]}
-              onChange={e => handleBool(k, e.target.checked)}
+              onChange={e => handleNewBool(k, e.target.checked)}
               className="w-3.5 h-3.5 rounded accent-blue-600 cursor-pointer" />
           </td>
         ))}
-        {/* Training (auto) */}
         <td className="px-2 py-1"><TrainingCell user={newRow} /></td>
-        {/* TLG (auto) */}
         <td className="px-2 py-1"><TlgCell user={newRow} /></td>
-        {/* Status */}
         <td className="px-2 py-1">
-          <select className="border rounded px-1 py-0.5 text-xs w-full bg-white"
-            value={newRow.status}
-            onChange={e => handleSelect('status', e.target.value)}>
+          <select className={selectCls} value={newRow.status}
+            onChange={e => setNewField('status', e.target.value)}>
             {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
           </select>
         </td>
-        {/* Last Contact */}
         <td className="px-2 py-1">
-          <input type="date" className="border rounded px-1 py-0.5 text-xs w-full bg-white"
-            value={newRow.last_contact || ''}
-            onChange={e => handleSelect('last_contact', e.target.value || null)} />
+          <input type="date" className={inputCls} value={newRow.last_contact || ''}
+            onChange={e => setNewField('last_contact', e.target.value || '')} />
         </td>
-        {/* Comments */}
         <td className="px-2 py-1">
-          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white"
-            value={newRow.comments} placeholder="Comments"
-            onChange={e => handleText('comments', e.target.value)} />
+          <input className={inputCls} value={newRow.comments} placeholder="Comments"
+            onChange={e => setNewField('comments', e.target.value)} />
         </td>
-        {/* Discard */}
         <td className="px-2 py-1">
-          <button onClick={discardNewRow}
+          <button
+            onMouseDown={e => { e.preventDefault(); discardNewRow(); }}
             className="text-[10px] text-slate-400 hover:text-red-500" title="Discard">
             &times;
           </button>
         </td>
+      </tr>
+    );
+  }
+
+  // ------------------------------------------------------------------
+  // Existing row renderer
+  // ------------------------------------------------------------------
+  function renderRow(user) {
+    const isEditing = editMode && editingRowId === user.id;
+    const draft     = isEditing ? editRowDraft : user;
+    const rowStatus = user.status === 'inactive' ? 'inactive' : 'active';
+    const roles     = rolesForFn(draft.function || '');
+
+    const cellInput = (field, placeholder = '') => (
+      <input
+        className={isEditing ? inputCls : 'text-xs text-slate-700 truncate block w-full bg-transparent outline-none cursor-pointer'}
+        value={draft[field] ?? ''}
+        placeholder={isEditing ? placeholder : undefined}
+        readOnly={!isEditing}
+        onChange={e => isEditing && setDraftField(field, e.target.value)}
+        onClick={() => !isEditing && startEditRow(user)}
+        title={String(draft[field] ?? '')}
+      />
+    );
+
+    return (
+      <tr
+        key={user.id}
+        className={`border-b transition-colors ${
+          isEditing
+            ? 'bg-amber-50/50 ring-1 ring-inset ring-amber-300'
+            : `${STATUS_BG[rowStatus]} ${STATUS_HOVER[rowStatus]}`
+        }`}
+        onBlur={isEditing ? e => handleEditRowBlur(e, user.id) : undefined}
+        onClick={!isEditing ? () => startEditRow(user) : undefined}
+      >
+        {/* SESA ID */}
+        <td className="px-2 py-1.5 overflow-hidden">{cellInput('sesa_id', 'SESA ID')}</td>
+        {/* First Name */}
+        <td className="px-2 py-1.5 overflow-hidden">{cellInput('first_name', 'First name')}</td>
+        {/* Last Name */}
+        <td className="px-2 py-1.5 overflow-hidden">{cellInput('last_name', 'Last name')}</td>
+        {/* Mail */}
+        <td className="px-2 py-1.5 overflow-hidden">{cellInput('mail', 'mail@...')}</td>
+        {/* Manager Mail */}
+        <td className="px-2 py-1.5 overflow-hidden">{cellInput('manager_mail', 'manager@...')}</td>
+        {/* Function */}
+        <td className="px-2 py-1.5 overflow-hidden">
+          {isEditing ? (
+            <select className={selectCls} value={draft.function || ''}
+              onChange={e => handleDraftSelect('function', e.target.value)}>
+              <option value="">-</option>
+              {matrixFunctions.map(f => <option key={f} value={f}>{f}</option>)}
+            </select>
+          ) : (
+            <span className="text-xs text-slate-700 truncate block" title={user.function || ''}>
+              {user.function || <span className="text-slate-300">-</span>}
+            </span>
+          )}
+        </td>
+        {/* Role */}
+        <td className="px-2 py-1.5 overflow-hidden">
+          {isEditing ? (
+            <select className={selectCls} value={draft.role || ''}
+              onChange={e => handleDraftSelect('role', e.target.value)}
+              disabled={!draft.function}>
+              <option value="">-</option>
+              {roles.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          ) : (
+            <span className="text-xs text-slate-700 truncate block" title={user.role || ''}>
+              {user.role || <span className="text-slate-300">-</span>}
+            </span>
+          )}
+        </td>
+        {/* Description */}
+        <td className="px-2 py-1.5 overflow-hidden">{cellInput('description', 'Description')}</td>
+        {/* Additional Info */}
+        {infoKeys.map(k => (
+          <td key={k} className="px-2 py-1.5 text-center">
+            <input type="checkbox" checked={!!draft[k]}
+              disabled={!isEditing}
+              onChange={e => isEditing && handleDraftBool(k, e.target.checked)}
+              className={`w-3.5 h-3.5 rounded accent-blue-600 ${isEditing ? 'cursor-pointer' : 'cursor-default'}`} />
+          </td>
+        ))}
+        {/* Training (readonly, auto) */}
+        <td className="px-2 py-1.5"><TrainingCell user={draft} /></td>
+        {/* TLG (readonly, auto) */}
+        <td className="px-2 py-1.5"><TlgCell user={draft} /></td>
+        {/* Status */}
+        <td className="px-2 py-1.5 overflow-hidden">
+          {isEditing ? (
+            <select className={selectCls} value={draft.status || 'active'}
+              onChange={e => setDraftField('status', e.target.value)}>
+              {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+            </select>
+          ) : (
+            <span className={`text-[10px] font-semibold rounded-full px-2 py-0.5 ${
+              user.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-500'
+            }`}>{user.status || '-'}</span>
+          )}
+        </td>
+        {/* Last Contact */}
+        <td className="px-2 py-1.5 overflow-hidden">
+          {isEditing ? (
+            <input type="date" className={inputCls} value={draft.last_contact || ''}
+              onChange={e => setDraftField('last_contact', e.target.value || '')} />
+          ) : (
+            <span className="text-xs text-slate-600">{user.last_contact || <span className="text-slate-300">-</span>}</span>
+          )}
+        </td>
+        {/* Comments */}
+        <td className="px-2 py-1.5 overflow-hidden">{cellInput('comments', 'Comments')}</td>
+        {/* Delete */}
+        {editMode && (
+          <td className="px-2 py-1.5">
+            <button
+              onMouseDown={e => { e.preventDefault(); deleteMutation.mutate(user.id); }}
+              disabled={deleteMutation.isPending}
+              className="text-slate-300 hover:text-red-500 text-xs disabled:opacity-40">&times;</button>
+          </td>
+        )}
       </tr>
     );
   }
@@ -775,7 +760,6 @@ export default function UserListPage() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
       <div className="flex items-center justify-between mb-4 shrink-0">
         <div>
           <h1 className="text-xl font-bold text-slate-800">User List</h1>
@@ -785,8 +769,7 @@ export default function UserListPage() {
         </div>
         <div className="flex gap-3 items-center flex-wrap justify-end">
           {editMode && (
-            <button
-              onClick={handleClearAll}
+            <button onClick={handleClearAll}
               disabled={clearAllMutation.isPending || users.length === 0}
               className="border border-red-200 text-red-600 px-3 py-1.5 rounded-lg text-sm hover:bg-red-50 disabled:opacity-40">
               {clearAllMutation.isPending ? 'Deleting...' : 'Empty list'}
@@ -796,33 +779,28 @@ export default function UserListPage() {
             checked={editMode}
             onChange={v => {
               setEditMode(v);
-              setEditingCell(null);
-              if (!v) { discardNewRow(); }
+              if (!v) {
+                discardNewRow();
+                if (editingRowId !== null) {
+                  saveEditRow(editingRowId, editRowDraftRef.current);
+                }
+              }
             }}
             label="Edit mode"
           />
           {editMode && (
-            <button
-              onClick={openNewRow}
+            <button onClick={openNewRow}
               className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">
               Add user
             </button>
           )}
-          <input
-            className="border rounded-lg px-3 py-1.5 text-sm"
-            placeholder="Search..."
-            value={filter}
-            onChange={e => setFilter(e.target.value)}
-          />
-          <button
-            onClick={() => fileRef.current.click()}
-            disabled={importMutation.isPending}
+          <input className="border rounded-lg px-3 py-1.5 text-sm" placeholder="Search..."
+            value={filter} onChange={e => setFilter(e.target.value)} />
+          <button onClick={() => fileRef.current.click()} disabled={importMutation.isPending}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
             {importMutation.isPending ? 'Importing...' : 'Import Excel'}
           </button>
-          <button
-            onClick={handleExport}
-            disabled={users.length === 0}
+          <button onClick={handleExport} disabled={users.length === 0}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
             Export Excel
           </button>
@@ -835,7 +813,10 @@ export default function UserListPage() {
         <p className="text-sm text-green-600 mb-2 shrink-0">Import complete: {importStats.imported} users.</p>
       )}
 
-      {/* Table */}
+      {editRowSaving && (
+        <p className="text-xs text-blue-500 mb-1 shrink-0">Saving...</p>
+      )}
+
       <div className="overflow-y-auto overflow-x-auto rounded-xl border bg-white flex-1">
         <table className="text-sm border-collapse" style={{ tableLayout: 'fixed', minWidth: minW }}>
           <colgroup>
@@ -868,14 +849,9 @@ export default function UserListPage() {
               {infoKeys.map(k => (
                 <th key={k} className={`${thBase} align-bottom`} title={k}>
                   <span style={{
-                    writingMode: 'vertical-rl',
-                    transform: 'rotate(180deg)',
-                    display: 'inline-block',
-                    maxHeight: 90,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    fontSize: 9,
+                    writingMode: 'vertical-rl', transform: 'rotate(180deg)',
+                    display: 'inline-block', maxHeight: 90,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 9,
                   }}>{k}</span>
                 </th>
               ))}
@@ -889,59 +865,17 @@ export default function UserListPage() {
           </thead>
           <tbody>
             {editMode && renderNewRow()}
-
             {isLoading && (
-              <tr>
-                <td colSpan={colCount} className="px-3 py-8 text-center text-slate-400 text-sm">Loading...</td>
-              </tr>
+              <tr><td colSpan={colCount} className="px-3 py-8 text-center text-slate-400 text-sm">Loading...</td></tr>
             )}
             {!isLoading && filtered.length === 0 && !newRow && (
-              <tr>
-                <td colSpan={colCount} className="px-3 py-12 text-center text-slate-400 text-sm">
-                  {users.length === 0
-                    ? 'No users yet. Import an Excel file or click Add user in Edit mode.'
-                    : 'No users match the search.'}
-                </td>
-              </tr>
+              <tr><td colSpan={colCount} className="px-3 py-12 text-center text-slate-400 text-sm">
+                {users.length === 0
+                  ? 'No users yet. Import an Excel file or click Add user in Edit mode.'
+                  : 'No users match the search.'}
+              </td></tr>
             )}
-            {filtered.map(user => {
-              const rowStatus = user.status === 'inactive' ? 'inactive' : 'active';
-              return (
-                <tr key={user.id} className={`border-b ${STATUS_BG[rowStatus]} ${STATUS_HOVER[rowStatus]} transition-colors`}>
-                  <td className="px-2 py-1.5 overflow-hidden">{renderCell(user, 'sesa_id')}</td>
-                  <td className="px-2 py-1.5 overflow-hidden">{renderCell(user, 'first_name')}</td>
-                  <td className="px-2 py-1.5 overflow-hidden">{renderCell(user, 'last_name')}</td>
-                  <td className="px-2 py-1.5 overflow-hidden">{renderCell(user, 'mail')}</td>
-                  <td className="px-2 py-1.5 overflow-hidden">{renderCell(user, 'manager_mail')}</td>
-                  <td className="px-2 py-1.5 overflow-hidden">{renderCell(user, 'function', { select: 'function' })}</td>
-                  <td className="px-2 py-1.5 overflow-hidden">{renderCell(user, 'role', { select: 'role' })}</td>
-                  <td className="px-2 py-1.5 overflow-hidden">{renderCell(user, 'description')}</td>
-                  {infoKeys.map(k => (
-                    <td key={k} className="px-2 py-1.5 text-center">
-                      <input type="checkbox" checked={!!user[k]}
-                        onChange={() => toggleBool(user, k)}
-                        disabled={!editMode}
-                        className={`w-3.5 h-3.5 rounded accent-blue-600 ${editMode ? 'cursor-pointer' : 'cursor-default'}`} />
-                    </td>
-                  ))}
-                  <td className="px-2 py-1.5">{renderCell(user, 'training_display', { readonly: true })}</td>
-                  <td className="px-2 py-1.5">{renderCell(user, 'tlg_display', { readonly: true })}</td>
-                  <td className="px-2 py-1.5 overflow-hidden">{renderCell(user, 'status', { select: 'status' })}</td>
-                  <td className="px-2 py-1.5 overflow-hidden">{renderCell(user, 'last_contact', { date: true })}</td>
-                  <td className="px-2 py-1.5 overflow-hidden">{renderCell(user, 'comments')}</td>
-                  {editMode && (
-                    <td className="px-2 py-1.5">
-                      <button
-                        onClick={() => deleteMutation.mutate(user.id)}
-                        disabled={deleteMutation.isPending}
-                        className="text-slate-300 hover:text-red-500 text-xs disabled:opacity-40">
-                        &times;
-                      </button>
-                    </td>
-                  )}
-                </tr>
-              );
-            })}
+            {filtered.map(user => renderRow(user))}
           </tbody>
         </table>
       </div>
