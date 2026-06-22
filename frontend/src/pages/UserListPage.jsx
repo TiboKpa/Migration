@@ -11,7 +11,6 @@ const STATUS_OPTIONS = ['active', 'inactive'];
 
 function emptyNewRow(infoKeys) {
   const base = {
-    _isNew: true, _dirty: false,
     sesa_id: '', first_name: '', last_name: '', mail: '', manager_mail: '',
     function: '', role: '', description: '',
     recommended_training: '', complementary_names: [], tlg_primary: '', tlg_addon: [],
@@ -26,8 +25,29 @@ const STATUS_BG    = { inactive: 'bg-slate-100', active: '' };
 const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slate-50/50' };
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Sanitize payload -- backend rejects empty-string emails
 // ---------------------------------------------------------------------------
+function sanitizePayload(row, infoKeys) {
+  const EMAIL_FIELDS = ['mail', 'manager_mail'];
+  const payload = {};
+  const SKIP = ['complementary_names', 'tlg_addon', 'na_training', 'na_tlg'];
+  for (const [k, v] of Object.entries(row)) {
+    if (SKIP.includes(k)) continue;
+    if (EMAIL_FIELDS.includes(k)) {
+      payload[k] = v && /^[^@]+@[^@]+\.[^@]+$/.test(v.trim()) ? v.trim() : null;
+    } else if (typeof v === 'string') {
+      payload[k] = v.trim() || null;
+    } else {
+      payload[k] = v;
+    }
+  }
+  // Flatten lookup results into the legacy single-field columns
+  payload.recommended_training = row.recommended_training || null;
+  payload.tlg_group = row.tlg_primary || null;
+  for (const k of infoKeys) payload[k] = !!row[k];
+  return payload;
+}
+
 function rowHasTraining(entry) {
   return !entry.na_training && !!entry.primary_training_name;
 }
@@ -58,13 +78,13 @@ function parseExcelUsers(buffer, infoKeys) {
       sesa_id: sesaId,
       first_name: String(row[col('First Name')] || '').trim(),
       last_name: String(row[col('Last Name')] || '').trim(),
-      mail: String(row[col('Mail')] || '').trim(),
-      manager_mail: String(row[col('Manager')] || '').trim(),
+      mail: String(row[col('Mail')] || '').trim() || null,
+      manager_mail: String(row[col('Manager')] || '').trim() || null,
       function: String(row[col('Function')] || '').trim(),
       role: String(row[col('Role')] || '').trim(),
       description: String(row[col('Description')] || '').trim(),
-      recommended_training: String(row[col('PDM Windchill')] || '').trim(),
-      tlg_primary: String(row[col('TLG')] || '').trim(),
+      recommended_training: String(row[col('PDM Windchill')] || '').trim() || null,
+      tlg_group: String(row[col('TLG')] || '').trim() || null,
       status: String(row[col('Status')] || 'active').trim() || 'active',
       last_contact: String(row[col('Last Contact')] || '').trim() || null,
       comments: String(row[col('Comments')] || '').trim(),
@@ -111,11 +131,9 @@ function TrainingCell({ user }) {
   if (!primary && comp.length === 0) return <span className="text-xs text-slate-300">-</span>;
   return (
     <div className="flex flex-wrap gap-1 items-center">
-      {primary && (
-        <span className="inline-flex items-center text-xs text-indigo-700 font-medium">{primary}</span>
-      )}
+      {primary && <span className="text-xs text-indigo-700 font-medium">{primary}</span>}
       {comp.map((c, i) => (
-        <span key={i} className="inline-flex items-center text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{c}</span>
+        <span key={i} className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{c}</span>
       ))}
     </div>
   );
@@ -133,25 +151,12 @@ function TlgCell({ user }) {
   if (!primary && addon.length === 0) return <span className="text-xs text-slate-300">-</span>;
   return (
     <div className="flex flex-wrap gap-1 items-center">
-      {primary && (
-        <span className="text-xs font-medium text-slate-800">{primary}</span>
-      )}
+      {primary && <span className="text-xs font-medium text-slate-800">{primary}</span>}
       {addon.map((a, i) => (
         <span key={i} className="text-[10px] bg-teal-50 text-teal-700 border border-teal-100 rounded px-1.5 py-0.5 whitespace-nowrap">{a}</span>
       ))}
     </div>
   );
-}
-
-// ---------------------------------------------------------------------------
-// useDebounce
-// ---------------------------------------------------------------------------
-function useDebounce(fn, delay) {
-  const timer = useRef(null);
-  return useCallback((...args) => {
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => fn(...args), delay);
-  }, [fn, delay]); // eslint-disable-line
 }
 
 // ---------------------------------------------------------------------------
@@ -168,9 +173,14 @@ export default function UserListPage() {
   const [editValue,   setEditValue]   = useState('');
   const [importError, setImportError] = useState('');
   const [importStats, setImportStats] = useState(null);
-  // newRow: the unsaved inline row, null when not adding
   const [newRow,      setNewRow]      = useState(null);
-  const [isSaving,    setIsSaving]    = useState(false);
+  const [savingNew,   setSavingNew]   = useState(false);
+
+  // Stable ref holding latest newRow for the debounce closure
+  const newRowRef  = useRef(null);
+  const saveTimer  = useRef(null);
+  const savedOnce  = useRef(false); // true once we sent the first POST for this row
+  const pendingId  = useRef(null);  // id returned after first save, used for subsequent PUTs
 
   // ------------------------------------------------------------------
   // Queries
@@ -193,7 +203,7 @@ export default function UserListPage() {
   const infoKeys = useMemo(() => dimensions?.info_keys ?? [], [dimensions]);
 
   // ------------------------------------------------------------------
-  // Valid function / role filtering (no N/A-only pairs)
+  // Valid function / role
   // ------------------------------------------------------------------
   const validFnRolePairs = useMemo(() => {
     const set = new Set();
@@ -221,14 +231,14 @@ export default function UserListPage() {
   // ------------------------------------------------------------------
   // Lookup
   // ------------------------------------------------------------------
-  async function lookup(snapshot) {
-    if (!snapshot.function || !snapshot.role) return null;
+  async function lookup(snap) {
+    if (!snap.function || !snap.role) return null;
     const additional_info = {};
-    for (const k of infoKeys) additional_info[k] = !!snapshot[k];
+    for (const k of infoKeys) additional_info[k] = !!snap[k];
     try {
       const res = await client.post(`/projects/${projectId}/role-matrix/lookup`, {
-        function: snapshot.function,
-        role: snapshot.role,
+        function: snap.function,
+        role: snap.role,
         additional_info,
       });
       return res.data;
@@ -253,14 +263,38 @@ export default function UserListPage() {
   // Mutations
   // ------------------------------------------------------------------
   const createMutation = useMutation({
-    mutationFn: data => client.post(`/projects/${projectId}/users`, data),
-    onSuccess: () => {
-      qc.invalidateQueries(['users', projectId]);
-      // Open a fresh empty row immediately after a successful save
+    mutationFn: payload => client.post(`/projects/${projectId}/users`, payload),
+    onSuccess: (res) => {
+      pendingId.current = res.data.id;
+      savedOnce.current = true;
+      setSavingNew(false);
+      qc.setQueryData(['users', projectId], old =>
+        Array.isArray(old) ? [...old, res.data] : [res.data]
+      );
+      // Open a fresh row immediately
       setNewRow(emptyNewRow(infoKeys));
-      setIsSaving(false);
+      newRowRef.current = emptyNewRow(infoKeys);
+      savedOnce.current = false;
+      pendingId.current = null;
     },
-    onError: () => setIsSaving(false),
+    onError: (err) => {
+      setSavingNew(false);
+      console.error('[create user]', err?.response?.data || err.message);
+    },
+  });
+
+  const patchNewRowMutation = useMutation({
+    mutationFn: ({ id, payload }) => client.put(`/projects/${projectId}/users/${id}`, payload),
+    onSuccess: (res) => {
+      setSavingNew(false);
+      qc.setQueryData(['users', projectId], old =>
+        Array.isArray(old) ? old.map(u => u.id === res.data.id ? res.data : u) : old
+      );
+    },
+    onError: (err) => {
+      setSavingNew(false);
+      console.error('[patch user]', err?.response?.data || err.message);
+    },
   });
 
   const updateMutation = useMutation({
@@ -296,88 +330,110 @@ export default function UserListPage() {
   });
 
   // ------------------------------------------------------------------
-  // New inline row -- autosave
+  // Core autosave -- fires 600ms after last change to newRow
+  // First change -> POST; subsequent changes -> PUT on the returned id
   // ------------------------------------------------------------------
-  // Attempt to save the current newRow. Only fires if sesa_id is present.
-  const attemptSave = useCallback(async (snap) => {
-    if (!snap || !snap.sesa_id.trim() || isSaving) return;
-    setIsSaving(true);
-    const { _isNew, _dirty, ...payload } = snap;
-    createMutation.mutate(payload);
-  }, [isSaving, createMutation]);
+  function scheduleAutosave(snap) {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      const current = newRowRef.current;
+      if (!current) return;
+      // Check that at least one field is non-empty / non-default
+      const hasAnyData = [
+        current.sesa_id, current.first_name, current.last_name,
+        current.mail, current.manager_mail, current.function,
+        current.role, current.description, current.comments,
+      ].some(v => v && v.trim());
+      if (!hasAnyData) return;
 
-  // Debounced autosave for text fields (waits 800ms after last keystroke)
-  const debouncedSave = useDebounce(attemptSave, 800);
+      setSavingNew(true);
+      const payload = sanitizePayload(current, infoKeys);
 
-  function openNewRow() {
-    if (newRow && !newRow.sesa_id.trim()) return; // already have a blank row
-    setNewRow(emptyNewRow(infoKeys));
-    setIsSaving(false);
-  }
-
-  async function handleNewRowField(field, value) {
-    setNewRow(prev => {
-      if (!prev) return prev;
-      const snap = { ...prev, [field]: value, _dirty: true };
-      if (field === 'function') snap.role = '';
-      return snap;
-    });
-  }
-
-  // After state settles, run lookup and optionally autosave
-  const pendingLookup = useRef(null);
-  useEffect(() => {
-    if (!newRow || !newRow._dirty) return;
-    // Cancel any in-flight lookup
-    let cancelled = false;
-    const snap = { ...newRow };
-    (async () => {
-      if (snap.function && snap.role) {
-        const result = await lookup(snap);
-        if (cancelled) return;
-        const lookupData = applyLookup(result);
-        setNewRow(u => u ? { ...u, ...lookupData, _dirty: false } : u);
-        // After lookup resolves, trigger debounced save with merged data
-        const merged = { ...snap, ...lookupData, _dirty: false };
-        if (merged.sesa_id.trim()) debouncedSave(merged);
-      } else {
-        setNewRow(u => u ? { ...u, _dirty: false } : u);
-        if (snap.sesa_id.trim()) debouncedSave({ ...snap, _dirty: false });
+      if (!savedOnce.current) {
+        createMutation.mutate(payload);
+      } else if (pendingId.current) {
+        patchNewRowMutation.mutate({ id: pendingId.current, payload });
       }
-    })();
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [newRow?._dirty, newRow?.function, newRow?.role]);
-
-  async function handleNewRowSelect(field, value) {
-    // Selects save immediately after lookup
-    let snap = { ...newRow, [field]: value, _dirty: false };
-    if (field === 'function') snap.role = '';
-    setNewRow(snap);
-    if (snap.function && snap.role) {
-      const result = await lookup(snap);
-      const lookupData = applyLookup(result);
-      snap = { ...snap, ...lookupData };
-      setNewRow(snap);
-    }
-    if (snap.sesa_id.trim()) attemptSave(snap);
+    }, 600);
   }
 
-  async function handleNewRowBool(field, value) {
-    let snap = { ...newRow, [field]: value, _dirty: false };
-    setNewRow(snap);
-    if (snap.function && snap.role) {
-      const result = await lookup(snap);
-      const lookupData = applyLookup(result);
-      snap = { ...snap, ...lookupData };
-      setNewRow(snap);
-    }
-    if (snap.sesa_id.trim()) attemptSave(snap);
+  // ------------------------------------------------------------------
+  // New row field handlers
+  // ------------------------------------------------------------------
+  function openNewRow() {
+    const fresh = emptyNewRow(infoKeys);
+    setNewRow(fresh);
+    newRowRef.current = fresh;
+    savedOnce.current = false;
+    pendingId.current = null;
+    setSavingNew(false);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
   }
 
   function discardNewRow() {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
     setNewRow(null);
-    setIsSaving(false);
+    newRowRef.current = null;
+    savedOnce.current = false;
+    pendingId.current = null;
+    setSavingNew(false);
+  }
+
+  function setField(field, value) {
+    setNewRow(prev => {
+      if (!prev) return prev;
+      const next = { ...prev, [field]: value };
+      if (field === 'function') next.role = '';
+      newRowRef.current = next;
+      return next;
+    });
+  }
+
+  // Text input: update state + schedule debounced save
+  function handleText(field, value) {
+    setField(field, value);
+    // Build the updated snapshot immediately for the closure
+    const snap = { ...newRowRef.current, [field]: value };
+    if (field === 'function') snap.role = '';
+    newRowRef.current = snap;
+    scheduleAutosave(snap);
+  }
+
+  // Select / date: update state, run lookup, then save immediately
+  async function handleSelect(field, value) {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    let snap = { ...newRowRef.current, [field]: value };
+    if (field === 'function') snap.role = '';
+    newRowRef.current = snap;
+    setNewRow({ ...snap });
+
+    if (snap.function && snap.role) {
+      const result = await lookup(snap);
+      const lookupData = applyLookup(result);
+      snap = { ...snap, ...lookupData };
+      newRowRef.current = snap;
+      setNewRow({ ...snap });
+    }
+
+    const hasAnyData = [
+      snap.sesa_id, snap.first_name, snap.last_name,
+      snap.mail, snap.manager_mail, snap.function,
+      snap.role, snap.description, snap.comments,
+    ].some(v => v && v.trim());
+    if (!hasAnyData) return;
+
+    setSavingNew(true);
+    const payload = sanitizePayload(snap, infoKeys);
+    if (!savedOnce.current) {
+      createMutation.mutate(payload);
+    } else if (pendingId.current) {
+      patchNewRowMutation.mutate({ id: pendingId.current, payload });
+    }
+  }
+
+  // Checkbox: same as select
+  async function handleBool(field, value) {
+    await handleSelect(field, value);
   }
 
   // ------------------------------------------------------------------
@@ -400,6 +456,10 @@ export default function UserListPage() {
       const merged = { ...user, ...fields };
       const result = await lookup(merged);
       Object.assign(fields, applyLookup(result));
+    }
+    // Sanitize email fields
+    if (field === 'mail' || field === 'manager_mail') {
+      fields[field] = value && /^[^@]+@[^@]+\.[^@]+$/.test(String(value).trim()) ? String(value).trim() : null;
     }
     updateMutation.mutate({ id: user.id, fields });
   }
@@ -441,7 +501,7 @@ export default function UserListPage() {
       ...Object.fromEntries(infoKeys.map(k => [k, u[k] ? 'Yes' : 'No'])),
       'Training Primary': u.recommended_training || '',
       'Training Complementary': Array.isArray(u.complementary_names) ? u.complementary_names.join(', ') : '',
-      'TLG Primary': u.tlg_primary || '',
+      'TLG Primary': u.tlg_primary || u.tlg_group || '',
       'TLG Addon': Array.isArray(u.tlg_addon) ? u.tlg_addon.join(', ') : '',
       'Status': u.status,
       'Last Contact': u.last_contact || '',
@@ -458,6 +518,9 @@ export default function UserListPage() {
     if (window.confirm('Delete all users in this project? This cannot be undone.'))
       clearAllMutation.mutate();
   }
+
+  // Cleanup timer on unmount
+  useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
 
   // ------------------------------------------------------------------
   // Filter
@@ -590,65 +653,65 @@ export default function UserListPage() {
   }
 
   // ------------------------------------------------------------------
-  // New inline row renderer
+  // New inline row
   // ------------------------------------------------------------------
   function renderNewRow() {
     if (!newRow) return null;
     const roles = rolesForFn(newRow.function);
-    const saving = isSaving || createMutation.isPending;
-
     return (
       <tr className="border-b bg-blue-50/40">
         {/* SESA ID */}
         <td className="px-2 py-1">
           <div className="relative">
             <input
-              className="border border-blue-300 rounded px-1 py-0.5 text-xs w-full min-w-0 bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+              className="border border-blue-300 rounded px-1 py-0.5 text-xs w-full bg-white focus:ring-1 focus:ring-blue-400 outline-none"
               value={newRow.sesa_id}
               placeholder="SESA ID"
-              onChange={e => handleNewRowField('sesa_id', e.target.value)}
+              onChange={e => handleText('sesa_id', e.target.value)}
             />
-            {saving && (
+            {savingNew && (
               <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[9px] text-blue-400 font-medium">saving...</span>
             )}
           </div>
         </td>
         {/* First Name */}
         <td className="px-2 py-1">
-          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white" value={newRow.first_name}
-            placeholder="First name" onChange={e => handleNewRowField('first_name', e.target.value)} />
+          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white"
+            value={newRow.first_name} placeholder="First name"
+            onChange={e => handleText('first_name', e.target.value)} />
         </td>
         {/* Last Name */}
         <td className="px-2 py-1">
-          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white" value={newRow.last_name}
-            placeholder="Last name" onChange={e => handleNewRowField('last_name', e.target.value)} />
+          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white"
+            value={newRow.last_name} placeholder="Last name"
+            onChange={e => handleText('last_name', e.target.value)} />
         </td>
         {/* Mail */}
         <td className="px-2 py-1">
-          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white" value={newRow.mail}
-            placeholder="Mail" onChange={e => handleNewRowField('mail', e.target.value)} />
+          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white"
+            value={newRow.mail} placeholder="mail@example.com"
+            onChange={e => handleText('mail', e.target.value)} />
         </td>
         {/* Manager Mail */}
         <td className="px-2 py-1">
-          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white" value={newRow.manager_mail}
-            placeholder="Manager mail" onChange={e => handleNewRowField('manager_mail', e.target.value)} />
+          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white"
+            value={newRow.manager_mail} placeholder="manager@example.com"
+            onChange={e => handleText('manager_mail', e.target.value)} />
         </td>
         {/* Function */}
         <td className="px-2 py-1">
-          <select
-            className="border rounded px-1 py-0.5 text-xs w-full bg-white"
+          <select className="border rounded px-1 py-0.5 text-xs w-full bg-white"
             value={newRow.function}
-            onChange={e => handleNewRowSelect('function', e.target.value)}>
+            onChange={e => handleSelect('function', e.target.value)}>
             <option value="">Select...</option>
             {matrixFunctions.map(f => <option key={f} value={f}>{f}</option>)}
           </select>
         </td>
         {/* Role */}
         <td className="px-2 py-1">
-          <select
-            className="border rounded px-1 py-0.5 text-xs w-full bg-white"
+          <select className="border rounded px-1 py-0.5 text-xs w-full bg-white"
             value={newRow.role}
-            onChange={e => handleNewRowSelect('role', e.target.value)}
+            onChange={e => handleSelect('role', e.target.value)}
             disabled={!newRow.function}>
             <option value="">Select...</option>
             {roles.map(r => <option key={r} value={r}>{r}</option>)}
@@ -656,14 +719,15 @@ export default function UserListPage() {
         </td>
         {/* Description */}
         <td className="px-2 py-1">
-          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white" value={newRow.description}
-            placeholder="Description" onChange={e => handleNewRowField('description', e.target.value)} />
+          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white"
+            value={newRow.description} placeholder="Description"
+            onChange={e => handleText('description', e.target.value)} />
         </td>
         {/* Additional Info checkboxes */}
         {infoKeys.map(k => (
           <td key={k} className="px-2 py-1 text-center">
             <input type="checkbox" checked={!!newRow[k]}
-              onChange={e => handleNewRowBool(k, e.target.checked)}
+              onChange={e => handleBool(k, e.target.checked)}
               className="w-3.5 h-3.5 rounded accent-blue-600 cursor-pointer" />
           </td>
         ))}
@@ -675,7 +739,7 @@ export default function UserListPage() {
         <td className="px-2 py-1">
           <select className="border rounded px-1 py-0.5 text-xs w-full bg-white"
             value={newRow.status}
-            onChange={e => handleNewRowSelect('status', e.target.value)}>
+            onChange={e => handleSelect('status', e.target.value)}>
             {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
           </select>
         </td>
@@ -683,17 +747,18 @@ export default function UserListPage() {
         <td className="px-2 py-1">
           <input type="date" className="border rounded px-1 py-0.5 text-xs w-full bg-white"
             value={newRow.last_contact || ''}
-            onChange={e => handleNewRowSelect('last_contact', e.target.value || null)} />
+            onChange={e => handleSelect('last_contact', e.target.value || null)} />
         </td>
         {/* Comments */}
         <td className="px-2 py-1">
-          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white" value={newRow.comments}
-            placeholder="Comments" onChange={e => handleNewRowField('comments', e.target.value)} />
+          <input className="border rounded px-1 py-0.5 text-xs w-full bg-white"
+            value={newRow.comments} placeholder="Comments"
+            onChange={e => handleText('comments', e.target.value)} />
         </td>
         {/* Discard */}
         <td className="px-2 py-1">
           <button onClick={discardNewRow}
-            className="text-[10px] text-slate-400 hover:text-red-500" title="Discard this row">
+            className="text-[10px] text-slate-400 hover:text-red-500" title="Discard">
             &times;
           </button>
         </td>
@@ -715,7 +780,7 @@ export default function UserListPage() {
         <div>
           <h1 className="text-xl font-bold text-slate-800">User List</h1>
           <p className="text-sm text-slate-500">
-            {users.length} user{users.length !== 1 ? 's' : ''} -- Training and TLG auto-filled from Role Matrix
+            {users.length} user{users.length !== 1 ? 's' : ''} -- training and TLG auto-filled from Role Matrix
           </p>
         </div>
         <div className="flex gap-3 items-center flex-wrap justify-end">
@@ -732,7 +797,7 @@ export default function UserListPage() {
             onChange={v => {
               setEditMode(v);
               setEditingCell(null);
-              if (!v) setNewRow(null);
+              if (!v) { discardNewRow(); }
             }}
             label="Edit mode"
           />
@@ -823,7 +888,6 @@ export default function UserListPage() {
             </tr>
           </thead>
           <tbody>
-            {/* New inline row always at the top */}
             {editMode && renderNewRow()}
 
             {isLoading && (
