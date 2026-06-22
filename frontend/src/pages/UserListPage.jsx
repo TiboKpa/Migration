@@ -5,7 +5,7 @@ import * as XLSX from 'xlsx';
 import client from '../api/client';
 
 // ---------------------------------------------------------------------------
-// Column definitions -- single source of truth for table layout + Excel I/O
+// Column definitions
 // ---------------------------------------------------------------------------
 const COLUMNS = [
   { key: 'sesa_id',      label: 'SESA ID',          width: 90,  excelHeader: 'SESA ID' },
@@ -16,7 +16,6 @@ const COLUMNS = [
   { key: 'function',     label: 'Function',          width: 160, excelHeader: 'Function' },
   { key: 'role',         label: 'Role',              width: 160, excelHeader: 'Role' },
   { key: 'description',  label: 'Description',       width: 180, excelHeader: 'Description' },
-  // infoKey columns injected dynamically here (32px each, matching RoleMatrixPage)
   { key: '_training',    label: 'Primary Training',  width: 220, excelHeader: 'PDM Windchill' },
   { key: '_tlg',         label: 'TLG',               width: 140, excelHeader: 'TLG' },
   { key: 'status',       label: 'Status',            width: 90,  excelHeader: 'Status' },
@@ -39,19 +38,17 @@ const FIXED_PAYLOAD_KEYS = new Set([
 ]);
 
 const INFO_COL_W = 32;
-
 const STATUS_OPTIONS = ['active', 'inactive'];
-
 const STATUS_BG    = { inactive: 'bg-slate-100', active: '' };
 const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slate-50/50' };
 
-// Strip any time/timezone component so <input type="date"> gets a clean YYYY-MM-DD value.
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 function toDateOnly(val) {
   if (!val) return '';
   const s = String(val);
-  // Already plain date string
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  // ISO timestamp -- take the date part only
   return s.split('T')[0];
 }
 
@@ -201,11 +198,86 @@ function normalizeUser(u) {
     tlg_primary: u.tlg_primary || (u.tlg_group !== 'N/A' ? u.tlg_group : '') || '',
     na_training: naTraining,
     na_tlg: naTlg,
-    // Always normalise last_contact to plain date so <input type="date"> renders correctly.
     last_contact: toDateOnly(u.last_contact),
   };
 }
 
+// ---------------------------------------------------------------------------
+// Sorting
+// ---------------------------------------------------------------------------
+function SortIcon({ dir }) {
+  const top    = dir === 'asc'  ? '#3b82f6' : '#cbd5e1';
+  const bottom = dir === 'desc' ? '#3b82f6' : '#cbd5e1';
+  return (
+    <svg width="10" height="12" viewBox="0 0 10 12" fill="none" className="inline-block shrink-0">
+      <path d="M5 1L2 4h6L5 1Z" fill={top} />
+      <path d="M5 11L8 8H2l3 3Z" fill={bottom} />
+    </svg>
+  );
+}
+
+function SortTh({ label, colKey, sortState, onSort, className, children, vertical }) {
+  const dir = sortState.col === colKey ? sortState.dir : null;
+  if (vertical) {
+    return (
+      <th
+        title={label}
+        className="px-0 pb-2 pt-3 text-center align-bottom overflow-hidden cursor-pointer select-none"
+        onClick={() => onSort(colKey)}
+      >
+        <span style={{
+          writingMode: 'vertical-rl',
+          transform: 'rotate(180deg)',
+          display: 'inline-block',
+          maxHeight: 120,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          fontSize: 10,
+          fontWeight: 600,
+          color: dir ? '#3b82f6' : '#94a3b8',
+          letterSpacing: '0.04em',
+          textTransform: 'uppercase',
+        }}>
+          {label}
+        </span>
+        <span className="block mt-0.5"><SortIcon dir={dir} /></span>
+      </th>
+    );
+  }
+  return (
+    <th className={`${className} cursor-pointer select-none`} onClick={() => onSort(colKey)}>
+      <span className="inline-flex items-center gap-1">
+        <span className={dir ? 'text-blue-600' : ''}>{children || label}</span>
+        <SortIcon dir={dir} />
+      </span>
+    </th>
+  );
+}
+
+function sortUsers(rows, sortState) {
+  const { col, dir } = sortState;
+  if (!col) return rows;
+  const mul = dir === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    let va = '', vb = '';
+    if (col === '_training') {
+      va = a.na_training ? 'N/A' : (a.recommended_training || '');
+      vb = b.na_training ? 'N/A' : (b.recommended_training || '');
+    } else if (col === '_tlg') {
+      va = a.na_tlg ? 'N/A' : (a.tlg_primary || a.tlg_group || '');
+      vb = b.na_tlg ? 'N/A' : (b.tlg_primary || b.tlg_group || '');
+    } else {
+      va = String(a[col] ?? '');
+      vb = String(b[col] ?? '');
+    }
+    return mul * va.localeCompare(vb);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Components
+// ---------------------------------------------------------------------------
 function ToggleSwitch({ checked, onChange, label }) {
   return (
     <label className="inline-flex items-center gap-2 cursor-pointer select-none">
@@ -259,6 +331,9 @@ function TlgCell({ user }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
 export default function UserListPage() {
   const { projectId } = useParams();
   const qc = useQueryClient();
@@ -270,6 +345,7 @@ export default function UserListPage() {
   const [importError, setImportError] = useState('');
   const [importStats, setImportStats] = useState(null);
   const [saveError, setSaveError] = useState('');
+  const [sortState, setSortState] = useState({ col: null, dir: 'asc' });
 
   const [newRow, setNewRow] = useState(null);
   const newRowRef = useRef(null);
@@ -310,10 +386,16 @@ export default function UserListPage() {
   });
   const infoKeys = useMemo(() => dimensions?.info_keys ?? [], [dimensions]);
 
+  // Build the set of valid (non-N/A) function/role pairs from the matrix.
+  // A pair is excluded when both na_training and na_tlg are true.
   const validFnRolePairs = useMemo(() => {
     const set = new Set();
     for (const e of matrixEntries) {
-      if (rowIsInMatrix(e)) set.add(`${e.function}||${e.role}`);
+      if (!rowIsInMatrix(e)) continue;
+      const isFullNa = (e.na_training === true || e.recommended_training === 'N/A' || e.tlg_group === 'N/A')
+        && (e.na_tlg === true || e.tlg_group === 'N/A')
+        && (e.na_training === true || e.recommended_training === 'N/A');
+      if (!isFullNa) set.add(`${e.function}||${e.role}`);
     }
     return set;
   }, [matrixEntries]);
@@ -688,15 +770,25 @@ export default function UserListPage() {
     }
   }
 
+  function handleSort(col) {
+    setSortState(prev => ({
+      col,
+      dir: prev.col === col && prev.dir === 'asc' ? 'desc' : 'asc',
+    }));
+  }
+
   const filtered = useMemo(() => {
-    if (!filter) return users;
-    const q = filter.toLowerCase();
-    return users.filter(u =>
-      COLUMNS
-        .filter(c => c.key !== '_training' && c.key !== '_tlg' && c.key !== '_actions')
-        .some(c => String(u[c.key] ?? '').toLowerCase().includes(q))
-    );
-  }, [users, filter]);
+    let rows = users;
+    if (filter) {
+      const q = filter.toLowerCase();
+      rows = rows.filter(u =>
+        COLUMNS
+          .filter(c => c.key !== '_training' && c.key !== '_tlg' && c.key !== '_actions')
+          .some(c => String(u[c.key] ?? '').toLowerCase().includes(q))
+      );
+    }
+    return sortUsers(rows, sortState);
+  }, [users, filter, sortState]);
 
   const minW = COLUMNS.reduce((acc, c) => acc + c.width, 0) + infoKeys.length * INFO_COL_W;
   const colCount = COLUMNS.length - 1 + infoKeys.length;
@@ -970,43 +1062,36 @@ export default function UserListPage() {
           </colgroup>
           <thead className="sticky top-0 z-10 bg-slate-50 border-b">
             <tr>
-              {COLS_BEFORE.map(c => <th key={c.key} className={thBase}>{c.label}</th>)}
-              {infoKeys.map(k => (
-                <th
-                  key={k}
-                  title={k}
-                  className="px-0 pb-2 pt-3 text-center align-bottom overflow-hidden bg-slate-50"
-                  style={{ width: INFO_COL_W, minWidth: INFO_COL_W, maxWidth: INFO_COL_W }}
-                >
-                  <span style={{
-                    writingMode: 'vertical-rl',
-                    transform: 'rotate(180deg)',
-                    display: 'inline-block',
-                    maxHeight: 120,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    fontSize: 10,
-                    fontWeight: 600,
-                    color: '#94a3b8',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.04em',
-                  }}>{k}</span>
-                </th>
+              {COLS_BEFORE.map(c => (
+                <SortTh key={c.key} label={c.label} colKey={c.key} sortState={sortState} onSort={handleSort} className={thBase} />
               ))}
-              <th className={thBase}>
+              {infoKeys.map(k => (
+                <SortTh key={k} label={k} colKey={k} sortState={sortState} onSort={handleSort} vertical />
+              ))}
+              <SortTh
+                label={COLS_AFTER.find(c => c.key === '_training').label}
+                colKey="_training"
+                sortState={sortState}
+                onSort={handleSort}
+                className={thBase}
+              >
                 {COLS_AFTER.find(c => c.key === '_training').label}
                 <span className="text-blue-400 normal-case font-normal ml-1">(auto)</span>
-              </th>
-              <th className={thBase}>
+              </SortTh>
+              <SortTh
+                label={COLS_AFTER.find(c => c.key === '_tlg').label}
+                colKey="_tlg"
+                sortState={sortState}
+                onSort={handleSort}
+                className={thBase}
+              >
                 {COLS_AFTER.find(c => c.key === '_tlg').label}
                 <span className="text-blue-400 normal-case font-normal ml-1">(auto)</span>
-              </th>
-              {COLS_AFTER.filter(c => c.key !== '_training' && c.key !== '_tlg').map(c => (
-                <th key={c.key} className={thBase} style={c.key === '_actions' ? { width: 32 } : undefined}>
-                  {c.label}
-                </th>
+              </SortTh>
+              {COLS_AFTER.filter(c => c.key !== '_training' && c.key !== '_tlg' && c.key !== '_actions').map(c => (
+                <SortTh key={c.key} label={c.label} colKey={c.key} sortState={sortState} onSort={handleSort} className={thBase} />
               ))}
+              <th className="px-2 py-2" style={{ width: 32 }} />
             </tr>
           </thead>
           <tbody>
