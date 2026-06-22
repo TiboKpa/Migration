@@ -288,11 +288,11 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
 
   return (
     <div className="flex flex-col border rounded-xl bg-white overflow-hidden" style={{ minHeight: 0 }}>
-      <div className="px-3 pt-3 pb-2 border-b bg-slate-50 shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide shrink-0">{title}</p>
+      <div className="px-2.5 pt-2 pb-1.5 border-b bg-slate-50 shrink-0">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide shrink-0">{title}</p>
           <input
-            className="border rounded-lg px-2 py-1 text-xs flex-1 min-w-0"
+            className="border rounded-md px-1.5 py-0.5 text-[11px] flex-1 min-w-0"
             placeholder="Search..."
             value={search}
             onChange={e => setSearch(e.target.value)}
@@ -310,14 +310,14 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
       </div>
       <div className="overflow-y-auto flex-1">
         {displayed.length === 0 && (
-          <p className="text-xs text-slate-400 text-center py-4">No {title.toLowerCase()} yet</p>
+          <p className="text-[11px] text-slate-400 text-center py-3">No {title.toLowerCase()} yet</p>
         )}
         {displayed.map(v => (
           <div key={v}
             className={`flex items-center border-b last:border-0 ${
               isSelected(v) ? 'bg-indigo-50' : 'hover:bg-slate-50'
             }`}>
-            <label className="flex items-center gap-2 px-3 py-2 cursor-pointer flex-1 min-w-0">
+            <label className="flex items-center gap-1.5 px-2.5 py-1.5 cursor-pointer flex-1 min-w-0">
               <input
                 type={multi ? 'checkbox' : 'radio'}
                 checked={isSelected(v)}
@@ -325,13 +325,13 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
                 onClick={!multi ? () => { if (isSelected(v)) onChange(null); } : undefined}
                 className={multi ? 'rounded accent-teal-600' : ''}
               />
-              <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">{badge}</span>
-              <span className="text-xs text-slate-700 truncate">{v}</span>
+              <span className="text-[9px] font-semibold uppercase text-slate-400 w-7 shrink-0">{badge}</span>
+              <span className="text-[11px] text-slate-700 truncate">{v}</span>
             </label>
             {editMode && (
               <button
                 onClick={e => { e.stopPropagation(); onRemove(v); }}
-                className="pr-3 pl-1 py-2 text-slate-300 hover:text-red-400 shrink-0 leading-none"
+                className="pr-2.5 pl-1 py-1.5 text-slate-300 hover:text-red-400 shrink-0 leading-none"
                 title={`Remove ${v}`}
               >
                 &times;
@@ -341,10 +341,10 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
         ))}
       </div>
       {editMode && (
-        <div className="px-3 py-2 border-t bg-slate-50 shrink-0">
+        <div className="px-2.5 py-1.5 border-t bg-slate-50 shrink-0">
           <button
             onClick={onAddNew}
-            className="w-full border border-dashed border-slate-300 rounded-lg py-1.5 text-xs text-slate-500 hover:border-blue-400 hover:text-blue-600"
+            className="w-full border border-dashed border-slate-300 rounded-lg py-1 text-[11px] text-slate-500 hover:border-blue-400 hover:text-blue-600"
           >
             + Add new
           </button>
@@ -874,6 +874,12 @@ export default function RoleMatrixPage() {
 
   const thBase = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide overflow-hidden text-ellipsis whitespace-nowrap';
 
+  // Compute a minimum table width so the Fill button is always reachable
+  const minTableWidth =
+    COL.function + COL.role +
+    safeDimensions.info_keys.length * COL.info +
+    COL.primary + 180 + COL.tlgGroup + COL.tlgAddon + COL.action;
+
   return (
     <div className="flex flex-col h-full">
       {modalEntry !== null && (
@@ -933,8 +939,8 @@ export default function RoleMatrixPage() {
       )}
       {isDimPending && <p className="text-xs text-blue-500 mb-2">Updating matrix...</p>}
 
-      {/* 3-panel selector */}
-      <div className="grid grid-cols-3 gap-4 mb-4 shrink-0" style={{ height: '16rem' }}>
+      {/* 3-panel selector -- ~30% shorter than before (11rem vs 16rem) */}
+      <div className="grid grid-cols-3 gap-3 mb-4 shrink-0" style={{ height: '11rem' }}>
         <SelectorPanel title="Function" badge="FNC" items={safeDimensions.functions}
           selected={selectedFn} multi={false} onChange={v => { setSelectedFn(v); setStatusFilter(null); }}
           onAddNew={() => setAddModalType('function')}
@@ -960,8 +966,12 @@ export default function RoleMatrixPage() {
         totalShown={filteredEntries.length}
       />
 
-      <div className="overflow-y-auto overflow-x-hidden rounded-xl border bg-white flex-1">
-        <table className="w-full text-sm border-collapse" style={{ tableLayout: 'fixed' }}>
+      {/* Table -- overflow-x-auto enables horizontal scroll on narrow viewports */}
+      <div className="overflow-y-auto overflow-x-auto rounded-xl border bg-white flex-1">
+        <table
+          className="w-full text-sm border-collapse"
+          style={{ tableLayout: 'fixed', minWidth: minTableWidth }}
+        >
           <colgroup>
             <col style={{ width: COL.function }} />
             <col style={{ width: COL.role }} />
