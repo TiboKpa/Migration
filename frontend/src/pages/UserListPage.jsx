@@ -25,16 +25,22 @@ const COLUMNS = [
   { key: '_actions',     label: '',                  width: 32,  excelHeader: null },
 ];
 
+// The exact set of fixed field keys the backend accepts at the top level.
+// Derived from COLUMNS (minus virtual _-prefixed keys) plus the array fields
+// that do not have their own column.
+const FIXED_PAYLOAD_KEYS = new Set([
+  'sesa_id', 'first_name', 'last_name', 'mail', 'manager_mail',
+  'function', 'role', 'description',
+  'recommended_training', 'complementary_names',
+  'tlg_group', 'tlg_addon',
+  'status', 'last_contact', 'comments',
+  'additional_info',
+]);
+
 // Width of each additional-info checkbox column.
 const INFO_COL_W = 28;
 
 const STATUS_OPTIONS = ['active', 'inactive'];
-
-// Keys that must never be sent to the backend as top-level payload fields.
-const INTERNAL_KEYS = new Set([
-  'id', 'created_at', 'updated_at', 'additional_info',
-  'na_training', 'na_tlg', 'tlg_primary',
-]);
 
 const STATUS_BG    = { inactive: 'bg-slate-100', active: '' };
 const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slate-50/50' };
@@ -52,12 +58,19 @@ function emptyNewRow(infoKeys) {
   return base;
 }
 
+// Build only the payload the backend accepts.
+// Whitelist approach: only FIXED_PAYLOAD_KEYS pass through.
+// infoKeys are packed into additional_info and never sent as flat fields.
+// Any other key (legacy DB columns, computed UI state) is silently dropped.
 function sanitizePayload(row, infoKeys) {
   const EMAIL_FIELDS = new Set(['mail', 'manager_mail']);
   const payload = {};
-  for (const [k, v] of Object.entries(row)) {
-    if (INTERNAL_KEYS.has(k)) continue;
-    if (infoKeys.includes(k)) continue;
+
+  for (const k of FIXED_PAYLOAD_KEYS) {
+    if (k === 'additional_info') continue; // built separately below
+    if (k === 'tlg_group') continue;       // built separately below
+    if (k === 'recommended_training') continue; // built separately below
+    const v = row[k];
     if (EMAIL_FIELDS.has(k)) {
       payload[k] = (v && /^[^@]+@[^@]+\.[^@]+$/.test(String(v).trim())) ? String(v).trim() : null;
     } else if (Array.isArray(v)) {
@@ -68,11 +81,16 @@ function sanitizePayload(row, infoKeys) {
       payload[k] = v ?? null;
     }
   }
+
+  // Fields derived from UI state flags.
   payload.recommended_training = row.na_training ? 'N/A' : (row.recommended_training || null);
   payload.tlg_group = row.na_tlg ? 'N/A' : (row.tlg_primary || null);
+
+  // Pack all role-matrix info keys into additional_info -- never as flat fields.
   const additional_info = {};
   for (const k of infoKeys) additional_info[k] = !!row[k];
   payload.additional_info = additional_info;
+
   return payload;
 }
 
@@ -153,12 +171,27 @@ function parseExcelUsers(buffer, infoKeys) {
   return users;
 }
 
+// Normalize a raw user row from the backend into the shape the UI expects.
+// Spreads additional_info keys onto the top level for checkbox rendering.
+// Does NOT propagate any other unknown columns.
 function normalizeUser(u) {
   const naTraining = u.recommended_training === 'N/A';
   const naTlg = u.tlg_group === 'N/A' || u.tlg_primary === 'N/A';
   const info = (u.additional_info && typeof u.additional_info === 'object') ? u.additional_info : {};
+
+  // Only keep known fixed fields from the raw row to avoid stale DB columns leaking in.
+  const fixed = {};
+  for (const k of FIXED_PAYLOAD_KEYS) {
+    if (k === 'additional_info') continue;
+    fixed[k] = u[k];
+  }
+
   return {
-    ...u,
+    id:         u.id,
+    project_id: u.project_id,
+    created_at: u.created_at,
+    updated_at: u.updated_at,
+    ...fixed,
     ...info,
     additional_info: info,
     complementary_names: Array.isArray(u.complementary_names) ? u.complementary_names : [],
@@ -296,8 +329,6 @@ export default function UserListPage() {
     return [...roles].sort();
   }, [validFnRolePairs]);
 
-  // Outside-click save: pointerdown fires before blur and works even on
-  // non-focusable click targets (e.g. blank table area).
   useEffect(() => {
     function onPointerDown(e) {
       const target = e.target;
