@@ -6,7 +6,7 @@ const authenticate = require('../middleware/auth');
 const requireMember = require('../middleware/requireMember');
 const router = express.Router();
 
-// ── Rate limiters ─────────────────────────────────────────────────────────────
+// ── Rate limiter ───────────────────────────────────────────────────────────────
 
 const previewLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -16,7 +16,7 @@ const previewLimiter = rateLimit({
   message: { error: 'Too many requests, please slow down' },
 });
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
 function formatDuration(totalMinutes) {
   if (!totalMinutes || totalMinutes === 0) return '0h';
@@ -102,7 +102,6 @@ function buildDynamicRoadmap(currentWave, totalWaves) {
   const cols = [];
   const labels = [];
   const statuses = [];
-
   for (let i = 1; i <= totalWaves; i++) {
     const dotColor = i === currentWave ? '#009E4D' : i < currentWave ? '#148A4C' : '#777777';
     cols.push(`<td width="${dotW}%" align="center" valign="middle"><p style="margin:0;font-size:22px;line-height:22px;color:${dotColor};">&#9679;</p></td>`);
@@ -114,7 +113,6 @@ function buildDynamicRoadmap(currentWave, totalWaves) {
     statuses.push(`<td align="center" style="padding-top:1px;"><p style="font-size:12px;font-weight:bold;color:${stCol};">${stTxt}</p></td>`);
     if (i < totalWaves) statuses.push('<td>&nbsp;</td>');
   }
-
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="table-layout:fixed;">
   <tr>${cols.join('')}</tr>
   <tr>${labels.join('')}</tr>
@@ -144,47 +142,23 @@ function renderTemplate(html, replacements) {
     acc.replace(new RegExp(`\\{${k}\\}`, 'g'), v ?? ''), html);
 }
 
-// ── GET roles preview ─────────────────────────────────────────────────────────
-
-router.get('/:projectId/generate/roles', authenticate, requireMember(), previewLimiter, async (req, res) => {
-  try {
-    const rows = await pool.query(
-      `SELECT role, COUNT(*) AS user_count
-       FROM project_users
-       WHERE project_id=$1 AND role IS NOT NULL AND role <> ''
-       GROUP BY role ORDER BY role`,
-      [req.params.projectId]
-    );
-    res.json(rows.rows);
-  } catch (err) {
-    console.error('[GET generate/roles]', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// ── Core generation logic (shared by preview and bulk) ────────────────────────
-// role_parts: Map<roleName, { total_parts, parts_to_generate }>
-// Returns { results, warnings, championsStr }
+// ── Core generation (shared by bulk and preview) ───────────────────────────────
+// roleParts: Map<roleName, { total_parts, parts_to_generate }>
 
 async function runGeneration(projectId, roleParts, appName, plantName, goLive, templateHtml) {
   const goLiveFormatted = formatDateWithSuffix(goLive);
 
-  const infoKeysRes = await pool.query(
+  const infoKeys = (await pool.query(
     `SELECT value FROM role_matrix_dimensions WHERE project_id=$1 AND type='info_key' ORDER BY value`,
     [projectId]
-  );
-  const infoKeys = infoKeysRes.rows.map(r => r.value);
+  )).rows.map(r => r.value);
 
-  const matrixRes = await pool.query(
-    'SELECT * FROM role_matrix WHERE project_id=$1',
-    [projectId]
+  const matrixByConcatenate = new Map(
+    (await pool.query('SELECT * FROM role_matrix WHERE project_id=$1', [projectId]))
+      .rows.map(r => [r.concatenate, r])
   );
-  const matrixByConcatenate = new Map(matrixRes.rows.map(r => [r.concatenate, r]));
 
-  const playlists = (await pool.query(
-    'SELECT * FROM playlists WHERE project_id=$1',
-    [projectId]
-  )).rows;
+  const playlists = (await pool.query('SELECT * FROM playlists WHERE project_id=$1', [projectId])).rows;
 
   const playlistItems = playlists.length === 0 ? [] : (await pool.query(
     `SELECT pi.*,
@@ -220,24 +194,18 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
         modules.push({ title: item.module_title, link: item.module_link || '', duration_min: item.duration_min || 0 });
       }
     }
-    const total_min = modules.reduce((s, m) => s + m.duration_min, 0);
-    playlistByTitle.set(pl.title.toLowerCase().trim(), { link: pl.link || '', total_min, modules });
+    playlistByTitle.set(pl.title.toLowerCase().trim(), {
+      link: pl.link || '',
+      total_min: modules.reduce((s, m) => s + m.duration_min, 0),
+      modules,
+    });
   }
 
-  function resolvePlaylist(title) {
-    if (!title) return null;
-    return playlistByTitle.get(title.toLowerCase().trim()) || null;
-  }
-
-  const usersRes = await pool.query(
-    'SELECT * FROM project_users WHERE project_id=$1',
-    [projectId]
-  );
-
+  const allUsers = (await pool.query('SELECT * FROM project_users WHERE project_id=$1', [projectId])).rows;
   const champions = [];
   const roleMap = new Map();
 
-  for (const u of usersRes.rows) {
+  for (const u of allUsers) {
     const info = parseAdditionalInfo(u.additional_info);
     if (info.champion === true) {
       const name  = [u.first_name, u.last_name].filter(Boolean).join(' ');
@@ -247,9 +215,7 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
     }
     const role = (u.role || '').split('+')[0].trim();
     if (!role || !u.mail) continue;
-    if (!roleMap.has(role)) {
-      roleMap.set(role, { emails: [], managers: [], fn: u.function || '', infoSnapshots: [] });
-    }
+    if (!roleMap.has(role)) roleMap.set(role, { emails: [], managers: [], fn: u.function || '', infoSnapshots: [] });
     const entry = roleMap.get(role);
     entry.emails.push(u.mail);
     if (u.manager_mail) entry.managers.push(u.manager_mail);
@@ -259,47 +225,35 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
     if (!entry.infoSnapshots.includes(snap)) entry.infoSnapshots.push(snap);
   }
 
-  const championsStr = champions.length
-    ? champions.join(', ')
-    : 'No champion assigned for this plant.';
-
+  const championsStr = champions.length ? champions.join(', ') : 'No champion assigned for this plant.';
   const results  = [];
   const warnings = [];
 
   for (const [roleName, group] of roleMap) {
-    // If specific role_parts were requested and this role is not in the map, skip it.
     if (roleParts && !roleParts.has(roleName)) continue;
-
-    const config = roleParts ? roleParts.get(roleName) : { total_parts: 4, parts_to_generate: [1,2,3,4] };
-    const { total_parts, parts_to_generate } = config;
+    const { total_parts, parts_to_generate } = roleParts
+      ? roleParts.get(roleName)
+      : { total_parts: 4, parts_to_generate: [1,2,3,4] };
 
     const primaryTitles       = new Set();
     const complementaryTitles = new Set();
 
     for (const snap of group.infoSnapshots) {
       const filteredInfo = JSON.parse(snap);
-      const concatenate  = buildConcatenate(group.fn, roleName, filteredInfo);
-      const matrixRow    = matrixByConcatenate.get(concatenate);
+      const matrixRow = matrixByConcatenate.get(buildConcatenate(group.fn, roleName, filteredInfo));
       if (!matrixRow || matrixRow.na_training) continue;
       if (matrixRow.recommended_training) primaryTitles.add(matrixRow.recommended_training.trim());
-      let additionalTrainings = matrixRow.additional_trainings;
-      if (typeof additionalTrainings === 'string') {
-        try { additionalTrainings = JSON.parse(additionalTrainings); } catch { additionalTrainings = []; }
-      }
-      if (Array.isArray(additionalTrainings)) {
-        for (const t of additionalTrainings) {
-          if (t && typeof t === 'string') complementaryTitles.add(t.trim());
-        }
-      }
+      let add = matrixRow.additional_trainings;
+      if (typeof add === 'string') { try { add = JSON.parse(add); } catch { add = []; } }
+      if (Array.isArray(add)) add.forEach(t => t && typeof t === 'string' && complementaryTitles.add(t.trim()));
     }
 
     let primaryPlaylist = null;
     let resolvedPrimaryTitle = null;
     for (const title of primaryTitles) {
-      const pl = resolvePlaylist(title);
+      const pl = playlistByTitle.get(title.toLowerCase().trim());
       if (pl) { primaryPlaylist = pl; resolvedPrimaryTitle = title; break; }
     }
-
     if (!primaryPlaylist) {
       warnings.push(`No training matrix playlist found for role "${roleName}" (looked for: ${[...primaryTitles].join(', ') || 'none'})`);
       continue;
@@ -312,71 +266,55 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
     const complementaryItems = [];
     for (const title of complementaryTitles) {
       if (title.toLowerCase().trim() === resolvedPrimaryTitle.toLowerCase().trim()) continue;
-      const pl = resolvePlaylist(title);
-      complementaryItems.push(pl
-        ? { title: pl.title || title, link: pl.link }
-        : { title, link: '' }
-      );
+      const pl = playlistByTitle.get(title.toLowerCase().trim());
+      complementaryItems.push(pl ? { title: pl.title || title, link: pl.link } : { title, link: '' });
     }
 
-    const complementaryHtml = complementaryItems
-      .map(c => buildComplementaryHtml(c.title, c.link))
-      .join('');
-
+    const complementaryHtml = complementaryItems.map(c => buildComplementaryHtml(c.title, c.link)).join('');
     const waves = partitionModules(primaryPlaylist.modules, total_parts);
 
     for (let wi = 0; wi < waves.length; wi++) {
       const waveNum = wi + 1;
       if (!parts_to_generate.includes(waveNum)) continue;
-
       const waveModules = waves[wi];
       const pastModules = waves.slice(0, wi).flat();
       const waveMin     = waveModules.reduce((s, m) => s + m.duration_min, 0);
-
-      const pastHtml = pastModules.map(m => buildModuleHtml(m, '&#8226;', '#a0a0a0', false)).join('');
-      const newHtml  = waveModules.map(m => buildModuleHtml(m, '&#x1F195;', '#222222', true)).join('')
+      const pastHtml    = pastModules.map(m => buildModuleHtml(m, '&#8226;', '#a0a0a0', false)).join('');
+      const newHtml     = waveModules.map(m => buildModuleHtml(m, '&#x1F195;', '#222222', true)).join('')
         || '<tr><td style="font-size:15px;line-height:24px;color:#a0a0a0;font-style:italic;">Training modules overview</td></tr>';
 
       const roadmap = buildDynamicRoadmap(waveNum, total_parts);
-      let body = ROADMAP_RE.test(templateHtml)
-        ? templateHtml.replace(ROADMAP_RE, roadmap)
-        : templateHtml;
+      let body = ROADMAP_RE.test(templateHtml) ? templateHtml.replace(ROADMAP_RE, roadmap) : templateHtml;
 
       if (complementaryHtml) {
         const btnRe = /(Click to open the full e-learning playlist<\/a>\s*<\/td>\s*<\/tr>\s*<\/table>\s*<\/td>\s*<\/tr>)/is;
         const container = `<tr><td style="padding:15px 36px 0 36px;"><div style="border-left:4px solid #009E4D;padding:5px 0 5px 15px;">${complementaryHtml}</div></td></tr>`;
-        body = btnRe.test(body)
-          ? body.replace(btnRe, `$1${container}`)
-          : body;
+        body = btnRe.test(body) ? body.replace(btnRe, `$1${container}`) : body;
       }
 
       body = renderTemplate(body, {
-        PLANT_NAME:         plantName,
-        APP_NAME:           appName,
-        GO_LIVE_DATE:       goLiveFormatted,
-        USER_ROLE:          roleName,
-        TOTAL_HOURS:        formatDuration(primaryPlaylist.total_min),
-        WAVE_HOURS:         formatDuration(waveMin),
-        WAVE_NUMBER:        String(waveNum),
-        PAST_MODULES_LIST:  pastHtml,
-        NEW_MODULES_LIST:   newHtml,
+        PLANT_NAME: plantName, APP_NAME: appName, GO_LIVE_DATE: goLiveFormatted,
+        USER_ROLE: roleName,
+        TOTAL_HOURS: formatDuration(primaryPlaylist.total_min),
+        WAVE_HOURS: formatDuration(waveMin),
+        WAVE_NUMBER: String(waveNum),
+        PAST_MODULES_LIST: pastHtml,
+        NEW_MODULES_LIST: newHtml,
         MAIN_PLAYLIST_LINK: primaryPlaylist.link || '#',
-        SUPPORT_CHAMPIONS:  championsStr,
+        SUPPORT_CHAMPIONS: championsStr,
         W1_DOT_COLOR: '', W2_DOT_COLOR: '', W3_DOT_COLOR: '', W4_DOT_COLOR: '',
         W1_TEXT_COLOR: '', W2_TEXT_COLOR: '', W3_TEXT_COLOR: '', W4_TEXT_COLOR: '',
         W1_TEXT: '', W2_TEXT: '', W3_TEXT: '', W4_TEXT: '',
       });
 
       results.push({
-        role:         roleName,
-        wave:         waveNum,
-        total_parts,
-        subject:      `Action Required: ${appName} Training - Part ${waveNum}/${total_parts} - ${roleName}`,
-        to:           group.emails,
-        cc:           [...new Set(group.managers)],
-        html:         body,
-        total_hours:  formatDuration(primaryPlaylist.total_min),
-        wave_hours:   formatDuration(waveMin),
+        role: roleName, wave: waveNum, total_parts,
+        subject: `Action Required: ${appName} Training - Part ${waveNum}/${total_parts} - ${roleName}`,
+        to: group.emails,
+        cc: [...new Set(group.managers)],
+        html: body,
+        total_hours: formatDuration(primaryPlaylist.total_min),
+        wave_hours: formatDuration(waveMin),
         module_count: waveModules.length,
       });
     }
@@ -385,8 +323,7 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
   return { results, warnings, championsStr };
 }
 
-// ── GET roles with suggested part counts ──────────────────────────────────────
-// Returns each role with: user_count, suggested_parts (derived from total playlist duration).
+// ── GET /roles ─────────────────────────────────────────────────────────────────
 
 router.get('/:projectId/generate/roles', authenticate, requireMember(), previewLimiter, async (req, res) => {
   try {
@@ -404,13 +341,13 @@ router.get('/:projectId/generate/roles', authenticate, requireMember(), previewL
   }
 });
 
-// ── POST bulk generation -- adds communications to an existing campaign ────────
-// Body:
-//   campaign_id:  number (required) -- the campaign to attach communications to
-//   role_configs: [{ role, total_parts, parts_to_generate }]  -- per-role settings
+// ── POST /bulk ─────────────────────────────────────────────────────────────────
+// Adds communications to an existing campaign.
+// Body: { campaign_id, template_id, role_configs: [{ role, total_parts, parts_to_generate }] }
 
 const bulkSchema = z.object({
-  campaign_id: z.number().int().positive(),
+  campaign_id:  z.number().int().positive(),
+  template_id:  z.number().int().positive(),
   role_configs: z.array(z.object({
     role:              z.string().min(1),
     total_parts:       z.number().int().min(1).max(6),
@@ -421,7 +358,7 @@ const bulkSchema = z.object({
 router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewLimiter, async (req, res) => {
   const parsed = bulkSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
-  const { campaign_id, role_configs } = parsed.data;
+  const { campaign_id, template_id, role_configs } = parsed.data;
 
   try {
     const project = (await pool.query(
@@ -432,7 +369,6 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
     )).rows[0];
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    // Verify the campaign belongs to this project.
     const campaign = (await pool.query(
       'SELECT * FROM campaigns WHERE id=$1 AND project_id=$2',
       [campaign_id, req.params.projectId]
@@ -440,17 +376,15 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
     if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
 
     const template = (await pool.query(
-      'SELECT * FROM templates WHERE project_id=$1 AND is_default=true',
-      [req.params.projectId]
+      'SELECT * FROM templates WHERE id=$1 AND project_id=$2',
+      [template_id, req.params.projectId]
     )).rows[0];
-    if (!template) return res.status(400).json({ error: 'No active template' });
+    if (!template) return res.status(404).json({ error: 'Template not found' });
 
-    // Project-level defaults -- never overridden from client.
     const appName   = project.application_name || '';
     const plantName = project.plant_name       || '';
     const goLive    = project.go_live_date      || '';
 
-    // Build per-role config map.
     const roleParts = new Map(role_configs.map(rc => [
       rc.role,
       { total_parts: rc.total_parts, parts_to_generate: rc.parts_to_generate },
@@ -460,27 +394,16 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
       req.params.projectId, roleParts, appName, plantName, goLive, template.html_content
     );
 
-    // Persist each generated communication into campaign_communications.
-    // Table must exist: id, campaign_id, role, wave, total_parts, subject, to_list, cc_list, html_body, created_at
     for (const r of results) {
       await pool.query(
         `INSERT INTO campaign_communications
            (campaign_id, role, wave, total_parts, subject, to_list, cc_list, html_body)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [
-          campaign_id,
-          r.role,
-          r.wave,
-          r.total_parts,
-          r.subject,
-          JSON.stringify(r.to),
-          JSON.stringify(r.cc),
-          r.html,
-        ]
+        [campaign_id, r.role, r.wave, r.total_parts, r.subject,
+         JSON.stringify(r.to), JSON.stringify(r.cc), r.html]
       );
     }
 
-    // Update campaign counters.
     await pool.query(
       `UPDATE campaigns
        SET user_count = (SELECT COUNT(DISTINCT mail) FROM project_users WHERE project_id=$1 AND mail IS NOT NULL),
@@ -496,19 +419,21 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
   }
 });
 
-// ── POST preview -- single role preview, no persistence ───────────────────────
-// Body: { role, total_parts, parts_to_generate }
+// ── POST /preview ──────────────────────────────────────────────────────────────
+// Renders a single role preview with a given template. No persistence.
+// Body: { role, total_parts, parts_to_generate, template_id }
 
 const previewSchema = z.object({
   role:              z.string().min(1),
   total_parts:       z.number().int().min(1).max(6),
   parts_to_generate: z.array(z.number().int().min(1).max(6)).min(1),
+  template_id:       z.number().int().positive(),
 });
 
 router.post('/:projectId/generate/preview', authenticate, requireMember(), previewLimiter, async (req, res) => {
   const parsed = previewSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
-  const { role, total_parts, parts_to_generate } = parsed.data;
+  const { role, total_parts, parts_to_generate, template_id } = parsed.data;
 
   try {
     const project = (await pool.query(
@@ -520,19 +445,19 @@ router.post('/:projectId/generate/preview', authenticate, requireMember(), previ
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
     const template = (await pool.query(
-      'SELECT * FROM templates WHERE project_id=$1 AND is_default=true',
-      [req.params.projectId]
+      'SELECT * FROM templates WHERE id=$1 AND project_id=$2',
+      [template_id, req.params.projectId]
     )).rows[0];
-    if (!template) return res.status(400).json({ error: 'No active template' });
-
-    const appName   = project.application_name || '';
-    const plantName = project.plant_name       || '';
-    const goLive    = project.go_live_date      || '';
+    if (!template) return res.status(404).json({ error: 'Template not found' });
 
     const roleParts = new Map([[role, { total_parts, parts_to_generate }]]);
 
     const { results, warnings } = await runGeneration(
-      req.params.projectId, roleParts, appName, plantName, goLive, template.html_content
+      req.params.projectId, roleParts,
+      project.application_name || '',
+      project.plant_name       || '',
+      project.go_live_date     || '',
+      template.html_content
     );
 
     res.json({ results, warnings });
