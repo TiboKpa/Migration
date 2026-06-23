@@ -180,6 +180,29 @@ The matrix table has a defined minimum width. On narrow viewports a horizontal s
 
 ---
 
+## User List
+
+The User List page (`/projects/:id/users`) manages the people in scope for the migration.
+
+### Excel Import
+
+The importer locates the header row by scanning for the `SESA ID` column label, so leading metadata rows in the spreadsheet are skipped automatically. Parsing rules:
+
+- **Empty SESA cell signals end of data.** The parser stops at the first empty SESA cell rather than scanning blank rows to the end of the sheet. Place your data contiguously with no gaps.
+- **Excel date serials are converted automatically.** `Last contact` cells stored as Excel integer date serials (e.g. `46174`) are converted to `YYYY-MM-DD` format. ISO strings are also accepted.
+- **Template hint rows are ignored.** If the row immediately after the header repeats the column label (a common template pattern), it is skipped.
+- **Training (auto) and TLG (auto) columns are not read from the file.** They are always re-derived from the Role Matrix after import.
+
+### Auto-sync after load
+
+Every time the user list is loaded, the app automatically re-queries the Role Matrix for every user that has a Function and Role assigned, and updates their Training and TLG values if the matrix has changed since the last save. A `Syncing training & TLG...` indicator appears in the header subtitle while this is running. Users without a Function/Role are not affected.
+
+### Edit mode
+
+Enable **Edit mode** with the toggle to add, modify, or delete users. Changes are saved automatically when you click away from a row or press Enter. Selecting a Function/Role in a row immediately triggers a matrix lookup and fills Training and TLG.
+
+---
+
 ## API Overview
 
 All endpoints require a `Bearer <token>` JWT in the `Authorization` header, except `POST /api/auth/login` and `POST /api/auth/register`.
@@ -196,6 +219,14 @@ Project sub-resource endpoints additionally verify that the authenticated user i
 | Templates | `/api/projects/:id/templates` |
 | Generation | `/api/projects/:id/generate` |
 | Campaigns | `/api/projects/:id/campaigns` |
+
+### Notable endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/projects/:id/users/import-json` | Bulk-import users parsed client-side from Excel |
+| DELETE | `/api/projects/:id/users` | Delete all users in a project |
+| POST | `/api/projects/:id/role-matrix/lookup` | Resolve Training and TLG for a given Function/Role/Additional Info combination |
 
 ### Rate Limiting
 

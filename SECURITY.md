@@ -19,6 +19,7 @@ This document describes the security model of the Migration application, the con
 - Write operations (POST, PUT, DELETE) on sub-resources are further restricted to members with the `owner` or `editor` role.
 - The destructive `DELETE /api/projects/:id/role-matrix` is restricted to `owner` only.
 - `DELETE /api/projects/:id` archives the project and returns `403 Forbidden` if the caller is not the project owner. It does not return a success response when the operation is not authorised.
+- `DELETE /api/projects/:id/users` (empty the user list) is restricted to `owner` and `editor` roles only.
 
 ## Input Validation
 
@@ -26,6 +27,7 @@ This document describes the security model of the Migration application, the con
 - Each field has explicit type, format, and maximum-length constraints.
 - Bulk import endpoints are capped: 5000 users per import, 10000 role-matrix entries per import.
 - File uploads (templates) are limited to **2 MB** and restricted to HTML files only (by MIME type and extension).
+- The user list Excel importer runs entirely client-side. Only the parsed JSON payload is sent to the backend; the raw file never leaves the browser.
 
 ## Transport and Headers
 
@@ -43,6 +45,7 @@ This document describes the security model of the Migration application, the con
 - Auth endpoints are additionally limited to **20 requests per 15-minute window** per IP.
 - The preview generation endpoint (`POST /api/projects/:projectId/generate/preview`) has a dedicated limit of **30 requests per minute** per IP, reflecting its higher database and rendering cost.
 - All limiters use `express-rate-limit` and return standard `RateLimit-*` headers.
+- The auto-sync pass on the User List page fires one `POST /role-matrix/lookup` and one `PUT /users/:id` per changed user. On large imports this can generate a burst of requests within the global rate limit window. The 5000-user import cap limits the theoretical maximum burst to 10000 requests per sync pass.
 
 ## Secret Management
 
@@ -57,7 +60,8 @@ This document describes the security model of the Migration application, the con
 
 ## Dependencies
 
-- Excel parsing uses **exceljs**, an actively maintained library. The previously used `xlsx` (SheetJS Community Edition) was removed due to known prototype pollution and ReDoS vulnerabilities (CVE-2023-30533).
+- Backend Excel parsing uses **exceljs**, an actively maintained library. The previously used `xlsx` (SheetJS Community Edition) was removed from the backend due to known prototype pollution and ReDoS vulnerabilities (CVE-2023-30533).
+- The frontend uses **xlsx** (SheetJS) for client-side Excel import and export on the User List and Training Matrix pages. The parsed data is validated and sanitized before being sent to the backend. No raw file content is forwarded to the server.
 - Dependencies should be audited regularly with `npm audit` and kept up to date.
 
 ## Database
@@ -90,6 +94,7 @@ Before going live, verify every item below.
 - [ ] Add a short-lived access token / refresh token pair to replace the 8-hour JWT if stricter session control is needed
 - [ ] Place a WAF (Web Application Firewall) in front of the backend for additional rate limiting and payload inspection
 - [ ] Document and test the disaster recovery procedure for the PostgreSQL volume
+- [ ] Monitor the auto-sync burst on the User List page and tune the global rate limit if large imports are frequent
 
 ---
 
@@ -103,6 +108,8 @@ Before going live, verify every item below.
 | morgan logs to stdout only | No persistent audit trail by default | Ship container logs to a log management service |
 | No pagination on list endpoints | Large datasets return full result sets | Add `LIMIT`/`OFFSET` or cursor-based pagination |
 | HTML templates not sanitized server-side | Uploaded templates are rendered as-is | Sanitize `html_content` with a server-side library (e.g. `sanitize-html`) on upload |
+| Frontend xlsx dependency | SheetJS CVE-2023-30533 applies to frontend Excel parsing | Validate and sanitize all parsed data before sending to backend; consider migrating to a safer client-side parser |
+| Auto-sync sends one API call per user | Large user lists generate a burst of requests on page load | The 5000-user import cap bounds the burst; monitor rate limit headers |
 
 ---
 
