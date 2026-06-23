@@ -48,9 +48,16 @@ function parseJson(raw, fallback) {
   try { return JSON.parse(raw); } catch { return fallback; }
 }
 
-function buildConcatenate(fn, role, additionalInfo, infoKeys) {
-  const parts = infoKeys.sort().map(k => `${k}:${additionalInfo[k] ? 'Yes' : 'No'}`);
+function buildConcatenate(fn, role, filteredInfo, infoKeys) {
+  const parts = infoKeys.slice().sort().map(k => `${k}:${filteredInfo[k] ? 'Yes' : 'No'}`);
   return `${fn}||${role}||${parts.join('|')}`;
+}
+
+// Fingerprint = primaryPlaylistId + sorted complementary playlist ids.
+// Users with same primary but different complementary sets get separate groups.
+function buildGroupKey(primaryId, complementaryIds) {
+  const sorted = [...complementaryIds].sort((a, b) => a - b);
+  return `${primaryId}|${sorted.join(',')}`;
 }
 
 function partitionModules(modules, k) {
@@ -61,15 +68,15 @@ function partitionModules(modules, k) {
     modules.forEach((m, i) => waves[i].push(m));
     return waves;
   }
-  const total = modules.reduce((s, m) => s + m.duration_min, 0);
+  const total  = modules.reduce((s, m) => s + m.duration_min, 0);
   const target = total / k;
-  const memo = new Map();
+  const memo   = new Map();
   function solve(idx, wavesLeft) {
     const key = `${idx}:${wavesLeft}`;
     if (memo.has(key)) return memo.get(key);
     if (wavesLeft === 1) {
       const slice = modules.slice(idx);
-      const cost = (slice.reduce((s, m) => s + m.duration_min, 0) - target) ** 2;
+      const cost  = (slice.reduce((s, m) => s + m.duration_min, 0) - target) ** 2;
       return [cost, [slice]];
     }
     let bestCost = Infinity, bestParts = null, current = 0;
@@ -133,32 +140,27 @@ function renderTemplate(html, replacements) {
 
 // ── Core generation ────────────────────────────────────────────────────────────
 //
-// Groups users by their resolved primary playlist (via role_matrix recommended_training_id).
-// Each distinct playlist becomes one communication series (set of waves).
-// role_filter: optional Set<string> of role names to include (for preview).
-// parts_override: optional Map<playlistId, { total_parts, parts_to_generate }>
-//   when null, defaults from the roleParts map are used (keyed by role for compat).
+// Grouping unit: (primary playlist id) + (sorted complementary playlist ids).
+// Users sharing the same primary training AND the same set of additional trainings
+// are merged into one recipient group and receive identical emails.
+// Users with the same primary training but different additional trainings
+// get separate groups and separate emails.
 //
-// roleParts: Map<role, { total_parts, parts_to_generate }> -- used when provided
-//   to filter which roles to generate AND set wave counts.
+// roleParts: Map<role, { total_parts, parts_to_generate }>
 
 async function runGeneration(projectId, roleParts, appName, plantName, goLive, templateHtml) {
   const goLiveFormatted = formatDateWithSuffix(goLive);
 
-  // info keys for this project (define which additional_info fields matter)
   const infoKeys = (await pool.query(
     `SELECT value FROM role_matrix_dimensions WHERE project_id=$1 AND type='info_key' ORDER BY value`,
     [projectId]
   )).rows.map(r => r.value);
 
-  // load full role matrix
-  const matrixRows = (await pool.query(
-    'SELECT * FROM role_matrix WHERE project_id=$1',
-    [projectId]
-  )).rows;
-  const matrixByConcatenate = new Map(matrixRows.map(r => [r.concatenate, r]));
+  const matrixByConcatenate = new Map(
+    (await pool.query('SELECT * FROM role_matrix WHERE project_id=$1', [projectId]))
+      .rows.map(r => [r.concatenate, r])
+  );
 
-  // load playlists and their modules
   const playlists = (await pool.query(
     'SELECT * FROM playlists WHERE project_id=$1', [projectId]
   )).rows;
@@ -188,7 +190,6 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
     [curriculumIds]
   )).rows;
 
-  // build resolved module list per playlist id
   const modulesByPlaylistId = new Map();
   for (const pl of playlists) {
     const items = playlistItems.filter(i => i.playlist_id === pl.id);
@@ -205,7 +206,6 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
     modulesByPlaylistId.set(pl.id, modules);
   }
 
-  // load users
   const allUsers = (await pool.query(
     'SELECT * FROM project_users WHERE project_id=$1', [projectId]
   )).rows;
@@ -213,16 +213,16 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
   const champions = [];
   const warnings  = [];
 
-  // playlistGroup: Map<playlistId, {
-  //   playlist, roles: Set<string>, emails: string[], managers: string[],
-  //   complementaryIds: Set<number>, total_parts, parts_to_generate
+  // groups: Map<groupKey, {
+  //   primaryPlaylist, complementaryIds: number[],
+  //   roles: Set<string>, emails: string[], managers: string[],
+  //   total_parts, parts_to_generate
   // }>
-  const playlistGroups = new Map();
+  const groups = new Map();
 
   for (const u of allUsers) {
     const info = parseJson(u.additional_info, {});
 
-    // champions are collected separately
     if (info.champion === true) {
       const name  = [u.first_name, u.last_name].filter(Boolean).join(' ');
       const email = u.mail || '';
@@ -233,11 +233,8 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
     const role = (u.role || '').split('+')[0].trim();
     const fn   = (u.function || '').trim();
     if (!role || !u.mail) continue;
-
-    // filter by roleParts if provided
     if (roleParts && !roleParts.has(role)) continue;
 
-    // build filteredInfo using project infoKeys only
     const filteredInfo = {};
     for (const k of infoKeys) filteredInfo[k] = !!info[k];
 
@@ -245,49 +242,50 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
     const matrixRow   = matrixByConcatenate.get(concatenate);
 
     if (!matrixRow) {
-      warnings.push(`No role matrix row found for function="${fn}" role="${role}" (key: ${concatenate})`);
+      warnings.push(`No role matrix row for function="${fn}" role="${role}" (key: ${concatenate})`);
       continue;
     }
-    if (matrixRow.na_training) continue; // user explicitly marked as no training needed
+    if (matrixRow.na_training) continue;
 
-    const playlistId = matrixRow.recommended_training_id;
-    if (!playlistId) {
-      warnings.push(`No primary training assigned in role matrix for function="${fn}" role="${role}"`);
+    const primaryId = matrixRow.recommended_training_id;
+    if (!primaryId) {
+      warnings.push(`No primary training set in role matrix for function="${fn}" role="${role}"`);
       continue;
     }
-    if (!playlistById.has(playlistId)) {
-      warnings.push(`Primary training playlist id=${playlistId} not found for role="${role}"`);
+    if (!playlistById.has(primaryId)) {
+      warnings.push(`Primary training playlist id=${primaryId} not found (role="${role}")`);
       continue;
     }
 
-    // determine wave config: from roleParts (keyed by role) or default 4 parts
+    // resolve complementary playlist ids from matrix row
+    const compRaw  = parseJson(matrixRow.complementary_items, []);
+    const compIds  = compRaw
+      .map(item => (typeof item === 'object' ? (item.playlist_id || item.id) : item))
+      .filter(id => id && playlistById.has(id))
+      .sort((a, b) => a - b);
+
+    const groupKey = buildGroupKey(primaryId, compIds);
+
     const { total_parts, parts_to_generate } = roleParts
       ? roleParts.get(role)
       : { total_parts: 4, parts_to_generate: [1, 2, 3, 4] };
 
-    // merge user into the playlist group
-    if (!playlistGroups.has(playlistId)) {
-      playlistGroups.set(playlistId, {
-        playlist:         playlistById.get(playlistId),
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, {
+        primaryPlaylist:  playlistById.get(primaryId),
+        complementaryIds: compIds,
         roles:            new Set(),
         emails:           [],
         managers:         [],
-        complementaryIds: new Set(),
         total_parts,
         parts_to_generate,
       });
     }
-    const group = playlistGroups.get(playlistId);
+
+    const group = groups.get(groupKey);
     group.roles.add(role);
     group.emails.push(u.mail);
     if (u.manager_mail) group.managers.push(u.manager_mail);
-
-    // collect complementary playlist ids from the matrix row
-    const compItems = parseJson(matrixRow.complementary_items, []);
-    for (const item of compItems) {
-      const cid = typeof item === 'object' ? (item.playlist_id || item.id) : item;
-      if (cid && playlistById.has(cid)) group.complementaryIds.add(cid);
-    }
   }
 
   const championsStr = champions.length
@@ -296,34 +294,33 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
 
   const results = [];
 
-  for (const [playlistId, group] of playlistGroups) {
-    const modules = modulesByPlaylistId.get(playlistId) || [];
+  for (const [, group] of groups) {
+    const modules = modulesByPlaylistId.get(group.primaryPlaylist.id) || [];
     if (modules.length === 0) {
-      warnings.push(`Playlist "${group.playlist.title}" has no modules`);
+      warnings.push(`Playlist "${group.primaryPlaylist.title}" has no modules`);
       continue;
     }
 
     const { total_parts, parts_to_generate } = group;
     const rolesLabel = [...group.roles].sort().join(', ');
 
-    // build complementary html
-    const complementaryHtml = [...group.complementaryIds]
+    const complementaryHtml = group.complementaryIds
       .map(cid => {
         const pl = playlistById.get(cid);
         return buildComplementaryHtml(pl.title, pl.link || '');
       })
       .join('');
 
-    const waves = partitionModules(modules, total_parts);
+    const waves    = partitionModules(modules, total_parts);
+    const totalMin = modules.reduce((s, m) => s + m.duration_min, 0);
 
     for (let wi = 0; wi < waves.length; wi++) {
-      const waveNum    = wi + 1;
+      const waveNum = wi + 1;
       if (!parts_to_generate.includes(waveNum)) continue;
 
       const waveModules = waves[wi];
       const pastModules = waves.slice(0, wi).flat();
       const waveMin     = waveModules.reduce((s, m) => s + m.duration_min, 0);
-      const totalMin    = modules.reduce((s, m) => s + m.duration_min, 0);
       const pastHtml    = pastModules.map(m => buildModuleHtml(m, '&#8226;', '#a0a0a0', false)).join('');
       const newHtml     = waveModules.map(m => buildModuleHtml(m, '&#x1F195;', '#222222', true)).join('')
         || '<tr><td style="font-size:15px;line-height:24px;color:#a0a0a0;font-style:italic;">Training modules overview</td></tr>';
@@ -334,35 +331,35 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
         : templateHtml;
 
       if (complementaryHtml) {
-        const btnRe = /(Click to open the full e-learning playlist<\/a>\s*<\/td>\s*<\/tr>\s*<\/table>\s*<\/td>\s*<\/tr>)/is;
+        const btnRe    = /(Click to open the full e-learning playlist<\/a>\s*<\/td>\s*<\/tr>\s*<\/table>\s*<\/td>\s*<\/tr>)/is;
         const container = `<tr><td style="padding:15px 36px 0 36px;"><div style="border-left:4px solid #009E4D;padding:5px 0 5px 15px;">${complementaryHtml}</div></td></tr>`;
         if (btnRe.test(body)) body = body.replace(btnRe, `$1${container}`);
       }
 
       body = renderTemplate(body, {
-        PLANT_NAME:        plantName,
-        APP_NAME:          appName,
-        GO_LIVE_DATE:      goLiveFormatted,
-        USER_ROLE:         rolesLabel,
-        TOTAL_HOURS:       formatDuration(totalMin),
-        WAVE_HOURS:        formatDuration(waveMin),
-        WAVE_NUMBER:       String(waveNum),
-        PAST_MODULES_LIST: pastHtml,
-        NEW_MODULES_LIST:  newHtml,
-        MAIN_PLAYLIST_LINK: group.playlist.link || '#',
-        SUPPORT_CHAMPIONS: championsStr,
+        PLANT_NAME:         plantName,
+        APP_NAME:           appName,
+        GO_LIVE_DATE:       goLiveFormatted,
+        USER_ROLE:          rolesLabel,
+        TOTAL_HOURS:        formatDuration(totalMin),
+        WAVE_HOURS:         formatDuration(waveMin),
+        WAVE_NUMBER:        String(waveNum),
+        PAST_MODULES_LIST:  pastHtml,
+        NEW_MODULES_LIST:   newHtml,
+        MAIN_PLAYLIST_LINK: group.primaryPlaylist.link || '#',
+        SUPPORT_CHAMPIONS:  championsStr,
         W1_DOT_COLOR: '', W2_DOT_COLOR: '', W3_DOT_COLOR: '', W4_DOT_COLOR: '',
         W1_TEXT_COLOR: '', W2_TEXT_COLOR: '', W3_TEXT_COLOR: '', W4_TEXT_COLOR: '',
         W1_TEXT: '', W2_TEXT: '', W3_TEXT: '', W4_TEXT: '',
       });
 
       results.push({
-        playlist_id:   playlistId,
-        playlist_name: group.playlist.title,
+        playlist_id:   group.primaryPlaylist.id,
+        playlist_name: group.primaryPlaylist.title,
         roles:         [...group.roles].sort(),
         wave:          waveNum,
         total_parts,
-        subject:       `Action Required: ${appName} Training - Part ${waveNum}/${total_parts} - ${group.playlist.title}`,
+        subject:       `Action Required: ${appName} Training - Part ${waveNum}/${total_parts} - ${group.primaryPlaylist.title}`,
         to:            [...new Set(group.emails)],
         cc:            [...new Set(group.managers)],
         html:          body,
@@ -395,7 +392,6 @@ router.get('/:projectId/generate/roles', authenticate, requireMember(), genLimit
 });
 
 // ── POST /bulk ─────────────────────────────────────────────────────────────────
-// Body: { campaign_id, template_id, role_configs }
 
 const bulkSchema = z.object({
   campaign_id:  z.number().int().positive(),
@@ -450,9 +446,7 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), genLimit
         `INSERT INTO campaign_communications
            (campaign_id, role, wave, total_parts, subject, to_list, cc_list, html_body)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [campaign_id,
-         r.playlist_name,   // store playlist name as the label
-         r.wave, r.total_parts, r.subject,
+        [campaign_id, r.playlist_name, r.wave, r.total_parts, r.subject,
          JSON.stringify(r.to), JSON.stringify(r.cc), r.html]
       );
     }
@@ -477,7 +471,6 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), genLimit
 });
 
 // ── POST /preview ──────────────────────────────────────────────────────────────
-// Body: { role, total_parts, parts_to_generate, template_id }
 
 const previewSchema = z.object({
   role:              z.string().min(1),
