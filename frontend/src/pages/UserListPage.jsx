@@ -135,6 +135,42 @@ function colIdx(headerMap, excelHeader) {
 }
 
 // ---------------------------------------------------------------------------
+// Excel export helpers
+// ---------------------------------------------------------------------------
+
+// Build the Training cell value:
+//   N/A                       -> "N/A"
+//   primary only              -> "Primary Training"
+//   primary + complementary   -> "Primary Training + <Comp 1> + <Comp 2>"
+//   complementary only        -> "<Comp 1> + <Comp 2>"
+function buildTrainingExportValue(u) {
+  if (u.na_training) return 'N/A';
+  const primary = (u.recommended_training && u.recommended_training !== 'N/A')
+    ? u.recommended_training.trim() : '';
+  const comp = Array.isArray(u.complementary_names)
+    ? u.complementary_names.map(c => `<${String(c).trim()}>`).filter(Boolean)
+    : [];
+  const parts = primary ? [primary, ...comp] : comp;
+  return parts.join(' + ');
+}
+
+// Build the TLG cell value:
+//   N/A               -> "N/A"
+//   primary only      -> "Primary TLG"
+//   primary + addons  -> "Primary TLG + <Addon 1> + <Addon 2>"
+function buildTlgExportValue(u) {
+  if (u.na_tlg) return 'N/A';
+  const primary = (u.tlg_primary && u.tlg_primary !== 'N/A')
+    ? u.tlg_primary.trim()
+    : ((u.tlg_group && u.tlg_group !== 'N/A') ? u.tlg_group.trim() : '');
+  const addons = Array.isArray(u.tlg_addon)
+    ? u.tlg_addon.map(a => `<${String(a).trim()}>`).filter(Boolean)
+    : [];
+  const parts = primary ? [primary, ...addons] : addons;
+  return parts.join(' + ');
+}
+
+// ---------------------------------------------------------------------------
 // Excel parse
 // ---------------------------------------------------------------------------
 function parseExcelUsers(buffer, infoKeys) {
@@ -404,9 +440,6 @@ export default function UserListPage() {
   const [sortState, setSortState] = useState({ col: null, dir: 'asc' });
   const [syncing, setSyncing] = useState(false);
 
-  // Tracks whether the initial training/TLG sync for the current data set has
-  // already been triggered. Reset whenever the users query data changes identity
-  // so that a fresh import triggers a new sync pass.
   const syncedForData = useRef(null);
 
   const [newRow, setNewRow] = useState(null);
@@ -475,16 +508,10 @@ export default function UserListPage() {
     return [...roles].sort();
   }, [validFnRolePairs]);
 
-  // ---------------------------------------------------------------------------
-  // Auto-sync: after users + infoKeys are loaded, re-derive training & TLG for
-  // every user that has a function/role and persist any changes to the backend.
-  // Runs once per unique rawUsers array reference to avoid looping on updates.
-  // ---------------------------------------------------------------------------
   useEffect(() => {
     if (isLoading) return;
     if (users.length === 0) return;
     if (infoKeys.length === 0) return;
-    // Use rawUsers as the identity key so a fresh import resets the guard.
     if (syncedForData.current === rawUsers) return;
     syncedForData.current = rawUsers;
 
@@ -666,7 +693,6 @@ export default function UserListPage() {
       qc.invalidateQueries(['users', projectId]);
       setImportError('');
       setImportStats(res.data);
-      // Reset sync guard so the next load triggers a fresh sync pass.
       syncedForData.current = null;
     },
     onError: err => setImportError(err?.response?.data?.error || err.message || 'Import failed'),
@@ -888,11 +914,11 @@ export default function UserListPage() {
       for (const col of COLUMNS) {
         if (!col.excelHeader) continue;
         if (col.key === '_training') {
-          row['Training (auto)'] = (u.na_training ? 'N/A' : u.recommended_training) || '';
+          row['Training (auto)'] = buildTrainingExportValue(u);
           continue;
         }
         if (col.key === '_tlg') {
-          row['TLG (auto)'] = u.na_tlg ? 'N/A' : (u.tlg_primary || u.tlg_group || '');
+          row['TLG (auto)'] = buildTlgExportValue(u);
           continue;
         }
         if (col.key === 'windchill_access') {
