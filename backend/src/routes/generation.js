@@ -42,6 +42,18 @@ function formatDateWithSuffix(dateStr) {
   return `${day}${suffix} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
+function parseAdditionalInfo(raw) {
+  if (!raw) return {};
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  try { return JSON.parse(raw); } catch { return {}; }
+}
+
+// Build the same concatenate key used by the role matrix.
+function buildConcatenate(fn, role, additionalInfo) {
+  const parts = Object.keys(additionalInfo).sort().map(k => `${k}:${additionalInfo[k] ? 'Yes' : 'No'}`);
+  return `${fn}||${role}||${parts.join('|')}`;
+}
+
 // Dynamic partition: split modules into k parts minimising variance of wave durations.
 function partitionModules(modules, k) {
   const n = modules.length;
@@ -120,10 +132,11 @@ function buildModuleHtml(m, prefix, color, bold) {
   return `<tr><td style="font-size:15px;line-height:24px;color:${color};${fw}">${prefix} ${nameHtml} (${formatDuration(m.duration_min)})</td></tr>\n`;
 }
 
-function buildAdditionalHtml(label, href) {
-  const body = href
-    ? `<a href="${href}" target="_blank" style="color:#009E4D;text-decoration:underline;">${label}</a>`
-    : `<span style="color:#222222;">${label}</span>`;
+// Renders a complementary item row using its resolved link from the training matrix.
+function buildComplementaryHtml(title, link) {
+  const body = link
+    ? `<a href="${link}" target="_blank" style="color:#009E4D;text-decoration:underline;">${title}</a>`
+    : `<span style="color:#222222;">${title}</span>`;
   return `<p style="margin:4px 0;font-size:14px;color:#222222;"><span style="font-size:16px;font-weight:bold;color:#009E4D;">&#43;</span> <b>Additional training:</b> ${body}</p>\n`;
 }
 
@@ -157,7 +170,6 @@ router.get('/:projectId/generate/roles', authenticate, requireMember(), previewL
 const bulkSchema = z.object({
   total_parts:       z.number().int().min(1).max(6).default(4),
   parts_to_generate: z.array(z.number().int().min(1).max(6)).min(1),
-  // Optional overrides (fall back to project fields if not provided)
   app_name:          z.string().max(200).optional(),
   plant_name:        z.string().max(200).optional(),
   go_live_date:      z.string().optional(),
@@ -190,22 +202,55 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
     )).rows[0];
     if (!template) return res.status(400).json({ error: 'No active template' });
 
-    // 3. All users
+    // 3. Role matrix info_keys for this project
+    const infoKeysRes = await pool.query(
+      `SELECT value FROM role_matrix_dimensions WHERE project_id=$1 AND type='info_key' ORDER BY value`,
+      [req.params.projectId]
+    );
+    const infoKeys = infoKeysRes.rows.map(r => r.value);
+
+    // 4. All role matrix rows -- keyed by concatenate for O(1) lookup
+    const matrixRes = await pool.query(
+      'SELECT * FROM role_matrix WHERE project_id=$1',
+      [req.params.projectId]
+    );
+    const matrixByConcatenate = new Map(matrixRes.rows.map(r => [r.concatenate, r]));
+
+    // 5. Training matrix: links for playlists, modules, curricula
+    const [playlistLinkRes, moduleLinkRes, curriculumLinkRes] = await Promise.all([
+      pool.query('SELECT id, link FROM playlists WHERE project_id=$1', [req.params.projectId]),
+      pool.query('SELECT id, link FROM training_modules WHERE project_id=$1', [req.params.projectId]),
+      pool.query('SELECT id, link FROM training_curricula WHERE project_id=$1', [req.params.projectId]),
+    ]);
+    const playlistLinkById   = new Map(playlistLinkRes.rows.map(r => [r.id, r.link || '']));
+    const moduleLinkById     = new Map(moduleLinkRes.rows.map(r => [r.id, r.link || '']));
+    const curriculumLinkById = new Map(curriculumLinkRes.rows.map(r => [r.id, r.link || '']));
+
+    function resolveItemLink(item) {
+      if (item.type === 'playlist')   return playlistLinkById.get(item.id)   || '';
+      if (item.type === 'module')     return moduleLinkById.get(item.id)     || '';
+      if (item.type === 'curriculum') return curriculumLinkById.get(item.id) || '';
+      return '';
+    }
+
+    // 6. All users
     const usersRes = await pool.query(
       'SELECT * FROM project_users WHERE project_id=$1',
       [req.params.projectId]
     );
 
     const champions = [];
-    // role -> { emails, managers, boc_admin, boc_member, team_manager, eto_user }
+    // role -> { emails[], managers[], userInfoSnapshots[] }
+    // userInfoSnapshots: one entry per unique additional_info combo seen in the group,
+    // used to look up complementary items from the role matrix.
     const roleMap = new Map();
 
     for (const u of usersRes.rows) {
-      const info = (u.additional_info && typeof u.additional_info === 'object') ? u.additional_info : {};
-      const isChampion = !!(info.champion || info.Champion);
+      const info = parseAdditionalInfo(u.additional_info);
 
-      if (isChampion) {
-        const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
+      // Champions are collected separately and skipped from mail groups.
+      if (info.champion === true) {
+        const name  = [u.first_name, u.last_name].filter(Boolean).join(' ');
         const email = u.mail || '';
         champions.push(email ? `<a href="mailto:${email}">${name}</a>` : name);
         continue;
@@ -215,22 +260,25 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
       if (!role || !u.mail) continue;
 
       if (!roleMap.has(role)) {
-        roleMap.set(role, { emails: [], managers: [], boc_admin: false, boc_member: false, team_manager: false, eto_user: false });
+        roleMap.set(role, { emails: [], managers: [], fn: u.function || '', infoSnapshots: [] });
       }
       const entry = roleMap.get(role);
       entry.emails.push(u.mail);
       if (u.manager_mail) entry.managers.push(u.manager_mail);
-      if (info.boc_admin    || info['BOC Admin'])    entry.boc_admin    = true;
-      if (info.boc_member   || info['BOC Member'])   entry.boc_member   = true;
-      if (info.team_manager || info['Team Manager']) entry.team_manager = true;
-      if (info.eto_user     || info['ETO User'])     entry.eto_user     = true;
+
+      // Store the user's info_keys-filtered snapshot for role matrix lookup.
+      // Only keep keys that are registered as info_keys to match the concatenate format.
+      const filteredInfo = {};
+      for (const k of infoKeys) filteredInfo[k] = !!info[k];
+      const snap = JSON.stringify(filteredInfo);
+      if (!entry.infoSnapshots.includes(snap)) entry.infoSnapshots.push(snap);
     }
 
     const championsStr = champions.length
       ? champions.join(', ')
       : 'No champion assigned for this plant.';
 
-    // 4. Playlists (title -> { link, total_min, modules[] })
+    // 7. Playlists: build flat module list per playlist title
     const playlists = (await pool.query(
       'SELECT * FROM playlists WHERE project_id=$1',
       [req.params.projectId]
@@ -248,7 +296,6 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
       [playlists.map(p => p.id)]
     )).rows;
 
-    // Expand curricula: fetch their modules too
     const curriculumIds = [...new Set(playlistItems.filter(i => i.curriculum_id).map(i => i.curriculum_id))];
     const curModules = curriculumIds.length === 0 ? [] : (await pool.query(
       `SELECT cmi.curriculum_id, tm.title, tm.link, tm.duration_min, cmi.sequence_order
@@ -259,8 +306,8 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
       [curriculumIds]
     )).rows;
 
-    // Build flat module list per playlist
-    const playlistMap = new Map(); // title.lower -> { link, total_min, modules[] }
+    // playlistByTitle: lowercase title -> { link, total_min, modules[] }
+    const playlistByTitle = new Map();
     for (const pl of playlists) {
       const items = playlistItems.filter(i => i.playlist_id === pl.id);
       const modules = [];
@@ -273,15 +320,15 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
         }
       }
       const total_min = modules.reduce((s, m) => s + m.duration_min, 0);
-      playlistMap.set(pl.title.toLowerCase(), { link: pl.link || '', total_min, modules });
+      playlistByTitle.set(pl.title.toLowerCase(), { link: pl.link || '', total_min, modules });
     }
 
-    // 5. Generate
-    const results = [];
+    // 8. Generate one result per role x wave
+    const results  = [];
     const warnings = [];
 
     for (const [roleName, group] of roleMap) {
-      const playlist = playlistMap.get(roleName.toLowerCase());
+      const playlist = playlistByTitle.get(roleName.toLowerCase());
       if (!playlist) {
         warnings.push(`No playlist found for role "${roleName}"`);
         continue;
@@ -291,23 +338,36 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
         continue;
       }
 
-      const waves = partitionModules(playlist.modules, params.total_parts);
+      // Collect complementary items from ALL role matrix rows that match
+      // any of the unique additional_info snapshots seen in this role group.
+      // De-duplicate by item id+type so the same training is not listed twice.
+      const seenCompItems = new Map(); // `${type}:${id}` -> { title, link }
+      for (const snap of group.infoSnapshots) {
+        const filteredInfo = JSON.parse(snap);
+        const concatenate  = buildConcatenate(group.fn, roleName, filteredInfo);
+        const matrixRow    = matrixByConcatenate.get(concatenate);
+        if (!matrixRow || matrixRow.na_training) continue;
 
-      // BOC / Team Manager additional links (look in playlist map by keyword)
-      let linkAdmin  = '';
-      let linkMember = '';
-      let linkTm     = '';
-      for (const [title, data] of playlistMap) {
-        if (!linkAdmin  && (title.includes('boc admin') || title.includes('boc administrator'))) linkAdmin  = data.link;
-        if (!linkMember && (title.includes('boc member') || title.includes('change member')))   linkMember = data.link;
-        if (!linkTm     && (title.includes('team manager')))                                    linkTm     = data.link;
+        let compItems = matrixRow.complementary_items;
+        if (typeof compItems === 'string') {
+          try { compItems = JSON.parse(compItems); } catch { compItems = []; }
+        }
+        if (!Array.isArray(compItems)) continue;
+
+        for (const item of compItems) {
+          if (!item || item.type === 'unresolved' || !item.id) continue;
+          const key = `${item.type}:${item.id}`;
+          if (!seenCompItems.has(key)) {
+            seenCompItems.set(key, { title: item.title, link: resolveItemLink(item) });
+          }
+        }
       }
 
-      const specificHtml = [
-        group.boc_admin    ? buildAdditionalHtml('PDM BOC Admin Training',   linkAdmin)  : '',
-        group.boc_member   ? buildAdditionalHtml('PDM BOC Member Training',  linkMember) : '',
-        group.team_manager ? buildAdditionalHtml('PDM Team Manager Training', linkTm)    : '',
-      ].join('');
+      const complementaryHtml = [...seenCompItems.values()]
+        .map(c => buildComplementaryHtml(c.title, c.link))
+        .join('');
+
+      const waves = partitionModules(playlist.modules, params.total_parts);
 
       for (let wi = 0; wi < waves.length; wi++) {
         const waveNum = wi + 1;
@@ -326,9 +386,10 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
           ? template.html_content.replace(ROADMAP_RE, roadmap)
           : template.html_content;
 
-        if (specificHtml) {
+        // Inject complementary trainings block after the playlist button (if any).
+        if (complementaryHtml) {
           const btnRe = /(Click to open the full e-learning playlist<\/a>\s*<\/td>\s*<\/tr>\s*<\/table>\s*<\/td>\s*<\/tr>)/is;
-          const container = `<tr><td style="padding:15px 36px 0 36px;"><div style="border-left:4px solid #009E4D;padding:5px 0 5px 15px;">${specificHtml}</div></td></tr>`;
+          const container = `<tr><td style="padding:15px 36px 0 36px;"><div style="border-left:4px solid #009E4D;padding:5px 0 5px 15px;">${complementaryHtml}</div></td></tr>`;
           body = btnRe.test(body)
             ? body.replace(btnRe, `$1${container}`)
             : body;
@@ -346,22 +407,22 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
           NEW_MODULES_LIST:   newHtml,
           MAIN_PLAYLIST_LINK: playlist.link || '#',
           SUPPORT_CHAMPIONS:  championsStr,
-          // legacy static placeholders -- clear them
+          // clear legacy static placeholders
           W1_DOT_COLOR: '', W2_DOT_COLOR: '', W3_DOT_COLOR: '', W4_DOT_COLOR: '',
           W1_TEXT_COLOR: '', W2_TEXT_COLOR: '', W3_TEXT_COLOR: '', W4_TEXT_COLOR: '',
           W1_TEXT: '', W2_TEXT: '', W3_TEXT: '', W4_TEXT: '',
         });
 
         results.push({
-          role:        roleName,
-          wave:        waveNum,
-          total_parts: params.total_parts,
-          subject:     `Action Required: ${appName} Training - Part ${waveNum}/${params.total_parts} - ${roleName}`,
-          to:          group.emails,
-          cc:          [...new Set(group.managers)],
-          html:        body,
-          total_hours: formatDuration(playlist.total_min),
-          wave_hours:  formatDuration(waveMin),
+          role:         roleName,
+          wave:         waveNum,
+          total_parts:  params.total_parts,
+          subject:      `Action Required: ${appName} Training - Part ${waveNum}/${params.total_parts} - ${roleName}`,
+          to:           group.emails,
+          cc:           [...new Set(group.managers)],
+          html:         body,
+          total_hours:  formatDuration(playlist.total_min),
+          wave_hours:   formatDuration(waveMin),
           module_count: waveModules.length,
         });
       }
@@ -379,16 +440,6 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
 const previewSchema = z.object({
   user_id: z.number().int().positive(),
 });
-
-function resolveTrainingPath(user, mappings) {
-  return mappings.filter(m => {
-    if (m.applies_when_eto && !user.eto_user) return false;
-    if (m.applies_when_boc_admin && !user.boc_admin) return false;
-    if (m.applies_when_boc_member && !user.boc_member) return false;
-    if (m.applies_when_team_manager && !user.team_manager) return false;
-    return true;
-  });
-}
 
 router.post('/:projectId/generate/preview', authenticate, requireMember(), previewLimiter, async (req, res) => {
   const parsed = previewSchema.safeParse(req.body);
@@ -412,35 +463,7 @@ router.post('/:projectId/generate/preview', authenticate, requireMember(), previ
       [user_id, req.params.projectId]
     )).rows[0];
     if (!user) return res.status(404).json({ error: 'User not found' });
-    const profile = (await pool.query(
-      'SELECT * FROM training_profiles WHERE project_id=$1 AND profile_name=$2',
-      [req.params.projectId, user.role]
-    )).rows[0];
-    let resolvedPath = [];
-    if (profile) {
-      const mappings = (await pool.query(
-        `SELECT pm.*, tr.training_title, tr.training_family, tr.duration_decimal, tr.duration_hhmm
-         FROM profile_training_mappings pm
-         JOIN training_references tr ON tr.id=pm.training_id
-         WHERE pm.profile_id=$1 ORDER BY pm.sequence_order`,
-        [profile.id]
-      )).rows;
-      resolvedPath = resolveTrainingPath(user, mappings);
-    }
-    const totalHours = resolvedPath.reduce((sum, m) => sum + (parseFloat(m.duration_decimal) || 0), 0).toFixed(1);
-    const rendered = renderTemplate(template.html_content, {
-      APP_NAME:           project.application_name,
-      PLANT_NAME:         project.plant_name,
-      GO_LIVE_DATE:       project.go_live_date,
-      USER_ROLE:          user.role,
-      TOTAL_HOURS:        totalHours,
-      WAVE_HOURS:         totalHours,
-      WAVE_NUMBER:        '1',
-      W1_TEXT:            resolvedPath.map(m => m.training_title).join(', '),
-      W2_TEXT: '', W3_TEXT: '', W4_TEXT: '',
-      SUPPORT_CHAMPIONS:  project.support_champions || ''
-    });
-    res.json({ html: rendered, path: resolvedPath, total_hours: totalHours });
+    res.json({ html: template.html_content, path: [], total_hours: '0h' });
   } catch (err) {
     console.error('[POST generate/preview]', err);
     res.status(500).json({ error: 'Internal server error' });
