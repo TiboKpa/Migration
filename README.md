@@ -180,6 +180,29 @@ The matrix table has a defined minimum width. On narrow viewports a horizontal s
 
 ---
 
+## User List
+
+The User List page (`/projects/:id/users`) manages the people in scope for the migration.
+
+### Excel Import
+
+The importer locates the header row by scanning for the `SESA ID` column label, so leading metadata rows in the spreadsheet are skipped automatically. Parsing rules:
+
+- **Empty SESA cell signals end of data.** The parser stops at the first empty SESA cell rather than scanning blank rows to the end of the sheet. Place your data contiguously with no gaps.
+- **Excel date serials are converted automatically.** `Last contact` cells stored as Excel integer date serials (e.g. `46174`) are converted to `YYYY-MM-DD` format. ISO strings are also accepted.
+- **Template hint rows are ignored.** If the row immediately after the header repeats the column label (a common template pattern), it is skipped.
+- **Training (auto) and TLG (auto) columns are not read from the file.** They are always re-derived from the Role Matrix after import.
+
+### Auto-sync after load
+
+Every time the user list is loaded, the app automatically re-queries the Role Matrix for every user that has a Function and Role assigned, and updates their Training and TLG values if the matrix has changed since the last save. A `Syncing training & TLG...` indicator appears in the header subtitle while this is running. Users without a Function/Role are not affected.
+
+### Edit mode
+
+Enable **Edit mode** with the toggle to add, modify, or delete users. Changes are saved automatically when you click away from a row or press Enter. Selecting a Function/Role in a row immediately triggers a matrix lookup and fills Training and TLG.
+
+---
+
 ## API Overview
 
 All endpoints require a `Bearer <token>` JWT in the `Authorization` header, except `POST /api/auth/login` and `POST /api/auth/register`.
@@ -197,6 +220,14 @@ Project sub-resource endpoints additionally verify that the authenticated user i
 | Generation | `/api/projects/:id/generate` |
 | Campaigns | `/api/projects/:id/campaigns` |
 
+### Notable endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/projects/:id/users/import-json` | Bulk-import users parsed client-side from Excel |
+| DELETE | `/api/projects/:id/users` | Delete all users in a project |
+| POST | `/api/projects/:id/role-matrix/lookup` | Resolve Training and TLG for a given Function/Role/Additional Info combination |
+
 ### Rate Limiting
 
 - All routes are subject to a **global limit of 300 requests per 15-minute window** per IP.
@@ -213,6 +244,49 @@ The app uses JWT-based authentication.
 - Tokens are signed with `JWT_SECRET` and expire after **8 hours**.
 - The token payload contains only the user ID. Email and name are fetched from the database on each request.
 - On first run, check `backend/db/init.sql` for any seed account and change its credentials immediately.
+
+---
+
+## Dependencies
+
+### Backend (`backend/package.json`)
+
+| Package | Version | License | Purpose |
+|---|---|---|---|
+| `express` | ^4.19.2 | MIT | HTTP server and routing |
+| `bcryptjs` | ^2.4.3 | MIT | Password hashing (cost factor 12) |
+| `cors` | ^2.8.5 | MIT | CORS header management |
+| `dotenv` | ^16.4.5 | BSD-2-Clause | Environment variable loading |
+| `exceljs` | ^4.4.0 | MIT | Server-side Excel parsing for bulk imports |
+| `express-rate-limit` | ^7.3.1 | MIT | Rate limiting middleware |
+| `helmet` | ^7.1.0 | MIT | Security headers (CSP, HSTS, etc.) |
+| `jsonwebtoken` | ^9.0.2 | MIT | JWT signing and verification |
+| `morgan` | ^1.10.0 | MIT | HTTP request logging |
+| `multer` | ^1.4.5-lts.1 | MIT | Multipart file upload handling |
+| `pg` | ^8.12.0 | MIT | PostgreSQL client |
+| `zod` | ^3.23.8 | MIT | Request body validation schemas |
+| `nodemon` *(dev)* | ^3.1.4 | MIT | Auto-restart during development |
+
+All backend dependencies are MIT or BSD-2-Clause. Both licences are permissive and permit commercial use with no restrictions beyond retaining copyright notices.
+
+### Frontend (`frontend/package.json`)
+
+| Package | Version | License | Purpose |
+|---|---|---|---|
+| `react` | ^18.3.1 | MIT | UI rendering |
+| `react-dom` | ^18.3.1 | MIT | DOM renderer for React |
+| `react-router-dom` | ^6.24.1 | MIT | Client-side routing |
+| `axios` | ^1.7.2 | MIT | HTTP client |
+| `@tanstack/react-query` | ^5.51.1 | MIT | Server state management and caching |
+| `react-hook-form` | ^7.52.1 | MIT | Form state and validation |
+| `xlsx` | ^0.18.5 | Apache-2.0* | Client-side Excel import and export |
+| `vite` *(dev)* | ^5.3.4 | MIT | Build tool and dev server |
+| `@vitejs/plugin-react` *(dev)* | ^4.3.1 | MIT | React fast-refresh plugin for Vite |
+| `tailwindcss` *(dev)* | ^3.4.6 | MIT | Utility-first CSS framework |
+| `autoprefixer` *(dev)* | ^10.4.19 | MIT | CSS vendor prefix automation |
+| `postcss` *(dev)* | ^8.4.39 | MIT | CSS transform pipeline |
+
+**`xlsx` licence note:** version `0.18.5` is published under Apache-2.0 and is safe for commercial use. Versions `0.19.0` and above use a proprietary licence that requires a paid commercial licence. The version is pinned intentionally -- do not upgrade without either purchasing a SheetJS Pro licence or replacing the library. See [SECURITY.md](SECURITY.md) for the associated CVE note.
 
 ---
 

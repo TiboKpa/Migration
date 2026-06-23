@@ -55,8 +55,12 @@ async function migrate() {
         manager_mail TEXT,
         description TEXT,
         recommended_training TEXT,
-        status TEXT DEFAULT 'pending',
+        status TEXT DEFAULT 'active',
         comments TEXT,
+        last_contact DATE,
+        additional_info JSONB NOT NULL DEFAULT '{}',
+        complementary_names JSONB NOT NULL DEFAULT '[]',
+        tlg_addon JSONB NOT NULL DEFAULT '[]',
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE(project_id, sesa_id)
@@ -324,7 +328,6 @@ async function migrate() {
             ADD CONSTRAINT role_matrix_project_concatenate_key UNIQUE (project_id, concatenate);
         END IF;
 
-        -- N/A flags added for TLG and Training
         IF NOT EXISTS (
           SELECT 1 FROM information_schema.columns
           WHERE table_name='role_matrix' AND column_name='na_tlg'
@@ -337,6 +340,36 @@ async function migrate() {
           WHERE table_name='role_matrix' AND column_name='na_training'
         ) THEN
           ALTER TABLE role_matrix ADD COLUMN na_training BOOLEAN NOT NULL DEFAULT false;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='project_users' AND column_name='last_contact'
+        ) THEN
+          ALTER TABLE project_users ADD COLUMN last_contact DATE;
+        END IF;
+
+        -- Migration 008: complementary_names and tlg_addon arrays on project_users
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='project_users' AND column_name='complementary_names'
+        ) THEN
+          ALTER TABLE project_users ADD COLUMN complementary_names JSONB NOT NULL DEFAULT '[]';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='project_users' AND column_name='tlg_addon'
+        ) THEN
+          ALTER TABLE project_users ADD COLUMN tlg_addon JSONB NOT NULL DEFAULT '[]';
+        END IF;
+
+        -- Migration 009: additional_info JSONB for dynamic infoKeys on project_users
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='project_users' AND column_name='additional_info'
+        ) THEN
+          ALTER TABLE project_users ADD COLUMN additional_info JSONB NOT NULL DEFAULT '{}';
         END IF;
 
       END$$;
