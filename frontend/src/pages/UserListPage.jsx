@@ -48,8 +48,6 @@ const STATUS_HOVER = { inactive: 'hover:bg-slate-200/60', active: 'hover:bg-slat
 // Helpers
 // ---------------------------------------------------------------------------
 
-// Convert an Excel date serial (integer number of days since 1900-01-01,
-// with Excel's incorrect leap-year bug accounted for) to YYYY-MM-DD.
 function excelSerialToDate(serial) {
   const n = Number(serial);
   if (!n || isNaN(n) || n < 1) return '';
@@ -141,14 +139,14 @@ function colIdx(headerMap, excelHeader) {
 // Build the Training cell value:
 //   N/A                       -> "N/A"
 //   primary only              -> "Primary Training"
-//   primary + complementary   -> "Primary Training + <Comp 1> + <Comp 2>"
-//   complementary only        -> "<Comp 1> + <Comp 2>"
+//   primary + complementary   -> "Primary Training + Comp 1 + Comp 2 + ... + Comp n"
+//   complementary only        -> "Comp 1 + Comp 2 + ... + Comp n"
 function buildTrainingExportValue(u) {
   if (u.na_training) return 'N/A';
   const primary = (u.recommended_training && u.recommended_training !== 'N/A')
     ? u.recommended_training.trim() : '';
   const comp = Array.isArray(u.complementary_names)
-    ? u.complementary_names.map(c => `<${String(c).trim()}>`).filter(Boolean)
+    ? u.complementary_names.map(c => String(c).trim()).filter(Boolean)
     : [];
   const parts = primary ? [primary, ...comp] : comp;
   return parts.join(' + ');
@@ -157,14 +155,14 @@ function buildTrainingExportValue(u) {
 // Build the TLG cell value:
 //   N/A               -> "N/A"
 //   primary only      -> "Primary TLG"
-//   primary + addons  -> "Primary TLG + <Addon 1> + <Addon 2>"
+//   primary + addons  -> "Primary TLG + Addon 1 + Addon 2 + ... + Addon n"
 function buildTlgExportValue(u) {
   if (u.na_tlg) return 'N/A';
   const primary = (u.tlg_primary && u.tlg_primary !== 'N/A')
     ? u.tlg_primary.trim()
     : ((u.tlg_group && u.tlg_group !== 'N/A') ? u.tlg_group.trim() : '');
   const addons = Array.isArray(u.tlg_addon)
-    ? u.tlg_addon.map(a => `<${String(a).trim()}>`).filter(Boolean)
+    ? u.tlg_addon.map(a => String(a).trim()).filter(Boolean)
     : [];
   const parts = primary ? [primary, ...addons] : addons;
   return parts.join(' + ');
