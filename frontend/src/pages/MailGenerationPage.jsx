@@ -19,22 +19,63 @@ function Badge({ children, color = 'slate' }) {
   );
 }
 
-function PreviewModal({ item, onClose }) {
-  if (!item) return null;
+// Modal that shows all generated parts for a role preview, with a tab per part.
+function PreviewModal({ items, onClose }) {
+  const [activeIdx, setActiveIdx] = useState(0);
+
+  useEffect(() => { setActiveIdx(0); }, [items]);
+
+  if (!items || items.length === 0) return null;
+
+  const item = items[activeIdx];
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl flex flex-col max-h-[90vh]">
+
+        {/* Header */}
         <div className="flex items-start justify-between px-5 py-4 border-b shrink-0">
-          <div>
-            <p className="text-sm font-semibold text-slate-800">{item.subject}</p>
+          <div className="flex-1 min-w-0 pr-4">
+            <p className="text-sm font-semibold text-slate-800 truncate">{item.subject}</p>
             <p className="text-xs text-slate-400 mt-0.5">
-              To: {item.to.join(', ')}
-              {item.cc && item.cc.length > 0 && <> &nbsp; Cc: {item.cc.join(', ')}</>}
+              <span className="font-medium text-slate-500">To:</span> {item.to.join(', ')}
+              {item.cc && item.cc.length > 0 && (
+                <> &nbsp; <span className="font-medium text-slate-500">Cc:</span> {item.cc.join(', ')}</>
+              )}
             </p>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none ml-4">&#x2715;</button>
+          <button
+            onClick={onClose}
+            className="shrink-0 text-slate-400 hover:text-slate-600 text-lg leading-none"
+          >
+            &#x2715;
+          </button>
         </div>
-        <div className="flex-1 overflow-auto p-4 bg-slate-50" dangerouslySetInnerHTML={{ __html: item.html }} />
+
+        {/* Tabs -- only shown when more than one part */}
+        {items.length > 1 && (
+          <div className="flex gap-1 px-5 pt-3 border-b shrink-0">
+            {items.map((it, i) => (
+              <button
+                key={i}
+                onClick={() => setActiveIdx(i)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-t-lg border-b-2 transition-colors ${
+                  i === activeIdx
+                    ? 'border-[#3DCD58] text-[#3DCD58]'
+                    : 'border-transparent text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                Part {it.wave}/{it.total_parts}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Body */}
+        <div
+          className="flex-1 overflow-auto p-4 bg-slate-50"
+          dangerouslySetInnerHTML={{ __html: item.html }}
+        />
       </div>
     </div>
   );
@@ -44,19 +85,20 @@ export default function MailGenerationPage() {
   const { projectId } = useParams();
   const queryClient   = useQueryClient();
 
-  // global wave schedule -- applied to every role
-  const [totalParts,       setTotalParts]       = useState(4);
-  const [partsToGenerate,  setPartsToGenerate]  = useState([1, 2, 3, 4]);
+  const [totalParts,      setTotalParts]      = useState(4);
+  const [partsToGenerate, setPartsToGenerate] = useState([1, 2, 3, 4]);
 
-  const [campaignName,        setCampaignName]        = useState('');
-  const [selectedTemplateId,  setSelectedTemplateId]  = useState(null);
-  const [results,             setResults]             = useState([]);
-  const [warnings,            setWarnings]            = useState([]);
-  const [previewItem,         setPreviewItem]         = useState(null);
-  const [previewingRole,      setPreviewingRole]      = useState(null);
-  const [previewError,        setPreviewError]        = useState(null);
-  const [generating,          setGenerating]          = useState(false);
-  const [generateError,       setGenerateError]       = useState(null);
+  const [campaignName,       setCampaignName]       = useState('');
+  const [selectedTemplateId, setSelectedTemplateId] = useState(null);
+  const [results,            setResults]            = useState([]);
+  const [warnings,           setWarnings]           = useState([]);
+
+  // previewItems: array of result objects (one per part) shown in the modal
+  const [previewItems,    setPreviewItems]    = useState(null);
+  const [previewingRole,  setPreviewingRole]  = useState(null);
+  const [previewError,    setPreviewError]    = useState(null);
+  const [generating,      setGenerating]      = useState(false);
+  const [generateError,   setGenerateError]   = useState(null);
 
   const { data: project } = useQuery({
     queryKey: ['project', projectId],
@@ -92,7 +134,7 @@ export default function MailGenerationPage() {
   }
 
   function toggleAllParts() {
-    const all = PART_OPTIONS.slice(0, totalParts);
+    const all    = PART_OPTIONS.slice(0, totalParts);
     const allSel = all.every(p => partsToGenerate.includes(p));
     setPartsToGenerate(allSel ? [] : all);
   }
@@ -101,8 +143,8 @@ export default function MailGenerationPage() {
 
   async function handlePreview(role) {
     setPreviewError(null);
-    if (!selectedTemplateId) { setPreviewError('Select a template first.'); return; }
-    if (partsToGenerate.length === 0) { setPreviewError('Select at least one part.'); return; }
+    if (!selectedTemplateId)        { setPreviewError('Select a template first.'); return; }
+    if (partsToGenerate.length === 0){ setPreviewError('Select at least one part.'); return; }
     setPreviewingRole(role);
     try {
       const { data } = await client.post(`/projects/${projectId}/generate/preview`, {
@@ -112,7 +154,8 @@ export default function MailGenerationPage() {
         template_id:       selectedTemplateId,
       });
       if (data.results && data.results.length > 0) {
-        setPreviewItem(data.results[0]);
+        // show all returned results (one per part) in the tabbed modal
+        setPreviewItems(data.results);
       } else {
         const warn = data.warnings && data.warnings.length > 0 ? ` ${data.warnings[0]}` : '';
         setPreviewError(`No preview for "${role}".${warn}`);
@@ -126,12 +169,11 @@ export default function MailGenerationPage() {
 
   async function handleGenerate() {
     setGenerateError(null);
-    if (!campaignName.trim())        { setGenerateError('Enter a campaign name.'); return; }
-    if (!selectedTemplateId)         { setGenerateError('Select a template.'); return; }
-    if (partsToGenerate.length === 0){ setGenerateError('Select at least one part to generate.'); return; }
-    if (roles.length === 0)          { setGenerateError('No roles found in the user list.'); return; }
+    if (!campaignName.trim())         { setGenerateError('Enter a campaign name.'); return; }
+    if (!selectedTemplateId)          { setGenerateError('Select a template.'); return; }
+    if (partsToGenerate.length === 0) { setGenerateError('Select at least one part to generate.'); return; }
+    if (roles.length === 0)           { setGenerateError('No roles found in the user list.'); return; }
 
-    // every role gets the same wave schedule
     const role_configs = roles.map(r => ({
       role:              r.role,
       total_parts:       totalParts,
@@ -161,7 +203,7 @@ export default function MailGenerationPage() {
     }
   }
 
-  // group results by playlist_name for display
+  // group results by playlist_name for the results table
   const resultsByPlaylist = useMemo(() => {
     const map = new Map();
     for (const r of results) {
@@ -241,7 +283,7 @@ export default function MailGenerationPage() {
       <div className="bg-white border rounded-xl p-5 mb-4">
         <h2 className="text-sm font-semibold text-slate-700 mb-1">Wave schedule</h2>
         <p className="text-xs text-slate-400 mb-4">
-          How many communication parts to split each training into, and which parts to include in this campaign.
+          How many parts to split each training into, and which parts to include in this campaign.
         </p>
         <div className="flex flex-wrap items-start gap-8">
           <div>
@@ -260,8 +302,7 @@ export default function MailGenerationPage() {
             <label className="text-xs text-slate-500 block mb-2">Parts to generate in this campaign</label>
             <div className="flex items-center gap-3 flex-wrap">
               <label className="flex items-center gap-1.5 text-sm cursor-pointer text-slate-500">
-                <input type="checkbox" checked={allPartsSelected} onChange={toggleAllParts} />
-                All
+                <input type="checkbox" checked={allPartsSelected} onChange={toggleAllParts} /> All
               </label>
               {PART_OPTIONS.slice(0, totalParts).map(n => (
                 <label key={n} className="flex items-center gap-1.5 text-sm cursor-pointer">
@@ -278,12 +319,12 @@ export default function MailGenerationPage() {
         </div>
       </div>
 
-      {/* Roles coverage */}
+      {/* Roles covered */}
       <div className="bg-white border rounded-xl p-5 mb-4">
         <h2 className="text-sm font-semibold text-slate-700 mb-1">Roles covered</h2>
         <p className="text-xs text-slate-400 mb-4">
-          All roles below will be included. The backend resolves each user's training group
-          via the role matrix (function + role + additional info).
+          All roles below will be included. Each user's training group is resolved via the role matrix.
+          Click Preview on any role to see what will be generated.
         </p>
         {rolesLoading && <p className="text-sm text-slate-400">Loading...</p>}
         {!rolesLoading && roles.length === 0 && (
@@ -297,7 +338,9 @@ export default function MailGenerationPage() {
                 className="flex items-center gap-2 border rounded-lg px-3 py-1.5 bg-slate-50"
               >
                 <span className="text-sm font-medium text-slate-700">{r.role}</span>
-                <span className="text-xs text-slate-400">{Number(r.user_count)} user{Number(r.user_count) !== 1 ? 's' : ''}</span>
+                <span className="text-xs text-slate-400">
+                  {Number(r.user_count)} user{Number(r.user_count) !== 1 ? 's' : ''}
+                </span>
                 <button
                   onClick={() => handlePreview(r.role)}
                   disabled={previewingRole === r.role || !selectedTemplateId || partsToGenerate.length === 0}
@@ -370,12 +413,18 @@ export default function MailGenerationPage() {
                           {(item.roles || []).join(', ')}
                         </td>
                       )}
-                      <td className="py-2 pr-4"><Badge color="green">Part {item.wave}/{item.total_parts}</Badge></td>
+                      <td className="py-2 pr-4">
+                        <Badge color="green">Part {item.wave}/{item.total_parts}</Badge>
+                      </td>
                       <td className="py-2 pr-4 text-slate-600">{item.to.length}</td>
                       <td className="py-2 pr-4 text-slate-600">{item.wave_hours}</td>
                       <td className="py-2 pr-4 text-slate-600">{item.module_count}</td>
                       <td className="py-2">
-                        <button className="text-xs text-blue-600 hover:underline" onClick={() => setPreviewItem(item)}>
+                        {/* open all waves for this playlist in the tabbed modal */}
+                        <button
+                          className="text-xs text-blue-600 hover:underline"
+                          onClick={() => setPreviewItems(waves)}
+                        >
                           Preview
                         </button>
                       </td>
@@ -388,7 +437,7 @@ export default function MailGenerationPage() {
         </div>
       )}
 
-      <PreviewModal item={previewItem} onClose={() => setPreviewItem(null)} />
+      <PreviewModal items={previewItems} onClose={() => setPreviewItems(null)} />
     </div>
   );
 }
