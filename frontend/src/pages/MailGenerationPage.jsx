@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import client from '../api/client';
 
 const PART_OPTIONS = [1, 2, 3, 4, 5, 6];
+const DEFAULT_CONFIG = { total_parts: 4, parts_to_generate: [1, 2, 3, 4] };
 
 function Badge({ children, color = 'slate' }) {
   const colors = {
@@ -108,37 +109,28 @@ export default function MailGenerationPage() {
   const { projectId } = useParams();
   const queryClient = useQueryClient();
 
-  // per-role configs
-  const [roleConfigs, setRoleConfigs]   = useState(new Map());
-
-  // campaign: just a name field -- will create-or-reuse on generate
-  const [campaignName, setCampaignName] = useState('');
-
-  // template
-  const [selectedTemplateId, setSelectedTemplateId] = useState(null); // number | null
-
-  // ui state
-  const [results,        setResults]        = useState([]);
-  const [warnings,       setWarnings]       = useState([]);
-  const [previewItem,    setPreviewItem]    = useState(null);
+  const [roleConfigs, setRoleConfigs]     = useState(new Map());
+  const [campaignName, setCampaignName]   = useState('');
+  const [selectedTemplateId, setSelectedTemplateId] = useState(null);
+  const [results,        setResults]      = useState([]);
+  const [warnings,       setWarnings]     = useState([]);
+  const [previewItem,    setPreviewItem]  = useState(null);
   const [previewingRole, setPreviewingRole] = useState(null);
-  const [previewError,   setPreviewError]   = useState(null);
-  const [generating,     setGenerating]     = useState(false);
-  const [generateError,  setGenerateError]  = useState(null);
+  const [previewError,   setPreviewError] = useState(null);
+  const [generating,     setGenerating]   = useState(false);
+  const [generateError,  setGenerateError] = useState(null);
 
-  // project (read-only)
   const { data: project } = useQuery({
     queryKey: ['project', projectId],
     queryFn:  () => client.get(`/projects/${projectId}`).then(r => r.data),
   });
 
-  // templates
   const { data: templates = [] } = useQuery({
     queryKey: ['templates', projectId],
     queryFn:  () => client.get(`/projects/${projectId}/templates`).then(r => r.data),
   });
 
-  // auto-select default template once loaded
+  // auto-select default template
   useEffect(() => {
     if (selectedTemplateId === null && templates.length > 0) {
       const def = templates.find(t => t.is_default) || templates[0];
@@ -146,86 +138,87 @@ export default function MailGenerationPage() {
     }
   }, [templates, selectedTemplateId]);
 
-  // roles
   const { data: roles = [], isLoading: rolesLoading } = useQuery({
     queryKey: ['generate-roles', projectId],
     queryFn:  () => client.get(`/projects/${projectId}/generate/roles`).then(r => r.data),
-    onSuccess: rows => {
-      setRoleConfigs(prev => {
-        const next = new Map(prev);
-        for (const r of rows) {
-          if (!next.has(r.role)) next.set(r.role, { total_parts: 4, parts_to_generate: [1,2,3,4] });
-        }
-        return next;
-      });
-    },
   });
+
+  // populate roleConfigs when roles arrive (onSuccess removed in React Query v5)
+  useEffect(() => {
+    if (!roles || roles.length === 0) return;
+    setRoleConfigs(prev => {
+      const next = new Map(prev);
+      for (const r of roles) {
+        if (!next.has(r.role)) next.set(r.role, { ...DEFAULT_CONFIG });
+      }
+      return next;
+    });
+  }, [roles]);
 
   function updateRoleConfig(role, patch) {
     setRoleConfigs(prev => {
       const next = new Map(prev);
-      next.set(role, { ...(prev.get(role) || { total_parts: 4, parts_to_generate: [1,2,3,4] }), ...patch });
+      next.set(role, { ...(prev.get(role) || { ...DEFAULT_CONFIG }), ...patch });
       return next;
     });
   }
 
-  // preview handler
   async function handlePreview(role) {
-    if (!selectedTemplateId) { setPreviewError('Select a template first.'); return; }
-    const config = roleConfigs.get(role);
-    if (!config || config.parts_to_generate.length === 0) return;
     setPreviewError(null);
+    if (!selectedTemplateId) { setPreviewError('Select a template first.'); return; }
+    // use stored config or fall back to default -- never bail silently
+    const config = roleConfigs.get(role) || { ...DEFAULT_CONFIG };
+    if (config.parts_to_generate.length === 0) { setPreviewError('Select at least one part to preview.'); return; }
     setPreviewingRole(role);
     try {
-      const data = await client.post(`/projects/${projectId}/generate/preview`, {
+      const { data } = await client.post(`/projects/${projectId}/generate/preview`, {
         role,
         total_parts:       config.total_parts,
         parts_to_generate: config.parts_to_generate,
         template_id:       selectedTemplateId,
-      }).then(r => r.data);
+      });
       if (data.results && data.results.length > 0) {
         setPreviewItem(data.results[0]);
       } else {
-        setPreviewError(`No preview generated for "${role}". Check the role matrix and playlists.`);
+        const warn = data.warnings && data.warnings.length > 0 ? ` (${data.warnings[0]})` : '';
+        setPreviewError(`No preview generated for "${role}"${warn}. Check the role matrix and playlists.`);
       }
     } catch (err) {
-      setPreviewError(err?.response?.data?.error || 'Preview failed.');
+      setPreviewError(err?.response?.data?.error || err.message || 'Preview failed.');
     } finally {
       setPreviewingRole(null);
     }
   }
 
-  // main generate handler
   async function handleGenerate() {
     setGenerateError(null);
     if (!campaignName.trim()) { setGenerateError('Enter a campaign name.'); return; }
     if (!selectedTemplateId)  { setGenerateError('Select a template.'); return; }
 
     const role_configs = roles
-      .filter(r => roleConfigs.has(r.role) && (roleConfigs.get(r.role)?.parts_to_generate.length ?? 0) > 0)
-      .map(r => ({ role: r.role, ...roleConfigs.get(r.role) }));
+      .map(r => ({ role: r.role, ...(roleConfigs.get(r.role) || { ...DEFAULT_CONFIG }) }))
+      .filter(rc => rc.parts_to_generate.length > 0);
 
     if (role_configs.length === 0) { setGenerateError('No roles with parts selected.'); return; }
 
     setGenerating(true);
     try {
-      // Always create a new campaign with the given name
       const campaign = await client.post(`/projects/${projectId}/campaigns`, {
         campaign_name: campaignName.trim(),
       }).then(r => r.data);
 
-      const res = await client.post(`/projects/${projectId}/generate/bulk`, {
+      const { data: res } = await client.post(`/projects/${projectId}/generate/bulk`, {
         campaign_id:  campaign.id,
         template_id:  selectedTemplateId,
         role_configs,
-      }).then(r => r.data);
+      });
 
-      setResults(res.results);
+      setResults(res.results || []);
       setWarnings(res.warnings || []);
       setCampaignName('');
       queryClient.invalidateQueries(['campaigns', projectId]);
     } catch (err) {
-      setGenerateError(err?.response?.data?.error || 'Generation failed.');
+      setGenerateError(err?.response?.data?.error || err.message || 'Generation failed.');
     } finally {
       setGenerating(false);
     }
@@ -240,15 +233,14 @@ export default function MailGenerationPage() {
     return [...map.entries()];
   }, [results]);
 
-  const canGenerate = campaignName.trim() && selectedTemplateId &&
-    roles.some(r => (roleConfigs.get(r.role)?.parts_to_generate.length ?? 0) > 0);
+  const canGenerate = !!campaignName.trim() && !!selectedTemplateId &&
+    roles.some(r => (roleConfigs.get(r.role)?.parts_to_generate.length ?? DEFAULT_CONFIG.parts_to_generate.length) > 0);
 
   return (
     <div>
       <h1 className="text-xl font-bold text-slate-800 mb-1">Mail Generation</h1>
       <p className="text-sm text-slate-500 mb-6">Generate per-role communications and save them to a new campaign</p>
 
-      {/* project info strip */}
       {project && (
         <div className="bg-slate-50 border rounded-xl px-5 py-3 mb-4 flex flex-wrap gap-6">
           <div>
@@ -269,7 +261,6 @@ export default function MailGenerationPage() {
         </div>
       )}
 
-      {/* campaign name + template */}
       <div className="bg-white border rounded-xl p-5 mb-4">
         <h2 className="text-sm font-semibold text-slate-700 mb-4">Campaign setup</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
@@ -290,7 +281,7 @@ export default function MailGenerationPage() {
             ) : (
               <select
                 className="border rounded-lg px-3 py-2 text-sm w-full"
-                value={selectedTemplateId || ''}
+                value={selectedTemplateId ?? ''}
                 onChange={e => setSelectedTemplateId(Number(e.target.value))}
               >
                 {templates.map(t => (
@@ -304,7 +295,6 @@ export default function MailGenerationPage() {
         </div>
       </div>
 
-      {/* per-role config table */}
       <div className="bg-white border rounded-xl p-5 mb-4">
         <h2 className="text-sm font-semibold text-slate-700 mb-3">Role configuration</h2>
         {rolesLoading && <p className="text-sm text-slate-400">Loading roles...</p>}
@@ -328,7 +318,7 @@ export default function MailGenerationPage() {
                     key={r.role}
                     role={r.role}
                     userCount={Number(r.user_count)}
-                    config={roleConfigs.get(r.role) || { total_parts: 4, parts_to_generate: [1,2,3,4] }}
+                    config={roleConfigs.get(r.role) || { ...DEFAULT_CONFIG }}
                     onChange={patch => updateRoleConfig(r.role, patch)}
                     onPreview={() => handlePreview(r.role)}
                     isPreviewing={previewingRole === r.role}
@@ -344,7 +334,6 @@ export default function MailGenerationPage() {
         )}
       </div>
 
-      {/* generate button */}
       <div className="mb-4">
         <button
           onClick={handleGenerate}
@@ -356,7 +345,6 @@ export default function MailGenerationPage() {
         {generateError && <p className="text-sm text-red-500 mt-2">{generateError}</p>}
       </div>
 
-      {/* warnings */}
       {warnings.length > 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
           <p className="text-xs font-semibold text-amber-700 mb-1">Warnings</p>
@@ -366,7 +354,6 @@ export default function MailGenerationPage() {
         </div>
       )}
 
-      {/* results */}
       {resultsByRole.length > 0 && (
         <div className="bg-white border rounded-xl p-5 mb-4">
           <h2 className="text-sm font-semibold text-slate-700 mb-3">
