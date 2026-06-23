@@ -118,7 +118,7 @@ const ROW_HOVER = {
 };
 
 // ---------------------------------------------------------------------------
-// Sort icon (inline SVG, no dependency)
+// Sort icon
 // ---------------------------------------------------------------------------
 function SortIcon({ dir }) {
   const top    = dir === 'asc'  ? '#3b82f6' : '#cbd5e1';
@@ -197,6 +197,58 @@ function ToggleSwitch({ checked, onChange, label }) {
 }
 
 // ---------------------------------------------------------------------------
+// Three-state info key button
+// state: null -> 'yes' -> 'no' -> null (cycles on click)
+// ---------------------------------------------------------------------------
+function InfoKeyButton({ label, state, onChange, onRemove, editMode }) {
+  // state: null | 'yes' | 'no'
+  function cycle() {
+    if (state === null)  return onChange('yes');
+    if (state === 'yes') return onChange('no');
+    return onChange(null);
+  }
+
+  let bg, border, textCls, icon;
+  if (state === 'yes') {
+    bg = 'bg-blue-50'; border = 'border-blue-300'; textCls = 'text-blue-700';
+    icon = (
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
+        <path d="M1.5 5L4 7.5L8.5 2.5" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+    );
+  } else if (state === 'no') {
+    bg = 'bg-red-50'; border = 'border-red-300'; textCls = 'text-red-600';
+    icon = (
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
+        <path d="M2 2L8 8M8 2L2 8" stroke="#dc2626" strokeWidth="1.8" strokeLinecap="round"/>
+      </svg>
+    );
+  } else {
+    bg = 'bg-white'; border = 'border-slate-200'; textCls = 'text-slate-500';
+    icon = null;
+  }
+
+  return (
+    <div className={`flex items-center border rounded-lg px-2 py-1 gap-1.5 cursor-pointer select-none transition-colors ${bg} ${border}`}
+      onClick={cycle}
+      title={state === null ? 'Click to require Yes' : state === 'yes' ? 'Click to require No' : 'Click to ignore'}
+    >
+      <span className={`text-[11px] font-medium truncate flex-1 ${textCls}`}>{label}</span>
+      <span className="w-4 h-4 flex items-center justify-center shrink-0">
+        {icon}
+      </span>
+      {editMode && (
+        <button
+          onClick={e => { e.stopPropagation(); onRemove(); }}
+          className="text-slate-300 hover:text-red-400 leading-none text-sm"
+          title={`Remove ${label}`}
+        >&times;</button>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Add-dimension modal
 // ---------------------------------------------------------------------------
 function AddDimModal({ label, badge, existing, onAdd, onClose }) {
@@ -259,7 +311,7 @@ function AddDimModal({ label, badge, existing, onAdd, onClose }) {
 }
 
 // ---------------------------------------------------------------------------
-// Selector panel
+// Selector panel (Function / Role)
 // ---------------------------------------------------------------------------
 function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNew, onRemove, editMode }) {
   const [search, setSearch] = useState('');
@@ -338,6 +390,67 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
               </button>
             )}
           </div>
+        ))}
+      </div>
+      {editMode && (
+        <div className="px-2.5 py-1.5 border-t bg-slate-50 shrink-0">
+          <button
+            onClick={onAddNew}
+            className="w-full border border-dashed border-slate-300 rounded-lg py-1 text-[11px] text-slate-500 hover:border-blue-400 hover:text-blue-600"
+          >
+            + Add new
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Additional Info filter panel (three-state per key)
+// selectedInfo: Record<string, 'yes' | 'no' | null>
+// ---------------------------------------------------------------------------
+function InfoFilterPanel({ title, infoKeys, selectedInfo, onChange, onAddNew, onRemove, editMode }) {
+  const hasAnyFilter = Object.values(selectedInfo).some(v => v !== null);
+
+  function handleReset() {
+    const cleared = {};
+    for (const k of infoKeys) cleared[k] = null;
+    onChange(cleared);
+  }
+
+  return (
+    <div className="flex flex-col border rounded-xl bg-white overflow-hidden" style={{ minHeight: 0 }}>
+      <div className="px-2.5 pt-2 pb-1.5 border-b bg-slate-50 shrink-0">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide shrink-0">{title}</p>
+          <span className="text-[10px] text-slate-400 flex-1">
+            click to cycle: ignore / yes / no
+          </span>
+          {hasAnyFilter && (
+            <button
+              onClick={handleReset}
+              className="text-[10px] text-slate-400 hover:text-red-500 underline leading-none shrink-0"
+              title="Clear all info filters"
+            >
+              Reset
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="overflow-y-auto flex-1 px-2 py-1.5 flex flex-col gap-1">
+        {infoKeys.length === 0 && (
+          <p className="text-[11px] text-slate-400 text-center py-3">No info keys yet</p>
+        )}
+        {infoKeys.map(k => (
+          <InfoKeyButton
+            key={k}
+            label={k}
+            state={selectedInfo[k] ?? null}
+            onChange={val => onChange({ ...selectedInfo, [k]: val })}
+            onRemove={() => onRemove(k)}
+            editMode={editMode}
+          />
         ))}
       </div>
       {editMode && (
@@ -672,7 +785,7 @@ function sortEntries(rows, sortState, profiles) {
 }
 
 // ---------------------------------------------------------------------------
-// Shape normalizers -- guarantee safe types regardless of cache state
+// Shape normalizers
 // ---------------------------------------------------------------------------
 function normalizeDimensions(data) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
@@ -689,6 +802,13 @@ function normalizeEntries(data) {
   return Array.isArray(data) ? data : [];
 }
 
+// Build an empty selectedInfo map from the known keys
+function emptyInfoFilter(keys) {
+  const map = {};
+  for (const k of keys) map[k] = null;
+  return map;
+}
+
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -700,7 +820,8 @@ export default function RoleMatrixPage() {
   const [editMode,      setEditMode]      = useState(false);
   const [selectedFn,    setSelectedFn]    = useState(null);
   const [selectedRole,  setSelectedRole]  = useState(null);
-  const [selectedInfo,  setSelectedInfo]  = useState([]);
+  // selectedInfo: Record<string, 'yes' | 'no' | null>  (null = ignore)
+  const [selectedInfo,  setSelectedInfo]  = useState({});
   const [statusFilter,  setStatusFilter]  = useState(null);
   const [modalEntry,    setModalEntry]    = useState(null);
   const [importError,   setImportError]   = useState('');
@@ -718,6 +839,16 @@ export default function RoleMatrixPage() {
     select: normalizeDimensions,
   });
   const safeDimensions = dimensions ?? { functions: [], roles: [], info_keys: [] };
+
+  // Keep selectedInfo keys in sync with safeDimensions.info_keys
+  useEffect(() => {
+    setSelectedInfo(prev => {
+      const next = {};
+      for (const k of safeDimensions.info_keys) next[k] = prev[k] ?? null;
+      return next;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(safeDimensions.info_keys)]);
 
   const { data: entries, isLoading } = useQuery({
     queryKey: matrixKey,
@@ -745,7 +876,7 @@ export default function RoleMatrixPage() {
       qc.refetchQueries({ queryKey: matrixKey, exact: true });
       if (variables.type === 'function') setSelectedFn(variables.value);
       if (variables.type === 'role')     setSelectedRole(variables.value);
-      if (variables.type === 'info_key') setSelectedInfo(prev => [...prev, variables.value]);
+      if (variables.type === 'info_key') setSelectedInfo(prev => ({ ...prev, [variables.value]: null }));
     },
     onError: err => console.error('Failed to add dimension:', err),
   });
@@ -758,7 +889,13 @@ export default function RoleMatrixPage() {
       qc.refetchQueries({ queryKey: matrixKey, exact: true });
       if (variables.type === 'function' && selectedFn === variables.value)   setSelectedFn(null);
       if (variables.type === 'role'     && selectedRole === variables.value) setSelectedRole(null);
-      if (variables.type === 'info_key') setSelectedInfo(prev => prev.filter(v => v !== variables.value));
+      if (variables.type === 'info_key') {
+        setSelectedInfo(prev => {
+          const next = { ...prev };
+          delete next[variables.value];
+          return next;
+        });
+      }
     },
     onError: err => console.error('Failed to remove dimension:', err),
   });
@@ -783,7 +920,7 @@ export default function RoleMatrixPage() {
       setImportStats(null);
       setSelectedFn(null);
       setSelectedRole(null);
-      setSelectedInfo([]);
+      setSelectedInfo({});
       setStatusFilter(null);
       setSortState({ col: null, dir: 'asc' });
     },
@@ -847,10 +984,16 @@ export default function RoleMatrixPage() {
 
   const dimFilteredEntries = useMemo(() => {
     let rows = safeEntries;
-    if (selectedFn)           rows = rows.filter(r => r.function === selectedFn);
-    if (selectedRole)         rows = rows.filter(r => r.role === selectedRole);
-    if (selectedInfo.length > 0)
-      rows = rows.filter(r => selectedInfo.every(k => r.additional_info && r.additional_info[k]));
+    if (selectedFn)   rows = rows.filter(r => r.function === selectedFn);
+    if (selectedRole) rows = rows.filter(r => r.role === selectedRole);
+    // Apply three-state info filters: 'yes' -> must be true, 'no' -> must be false, null -> ignored
+    for (const [k, v] of Object.entries(selectedInfo)) {
+      if (v === null) continue;
+      rows = rows.filter(r => {
+        const val = !!(r.additional_info && r.additional_info[k]);
+        return v === 'yes' ? val : !val;
+      });
+    }
     return rows;
   }, [safeEntries, selectedFn, selectedRole, selectedInfo]);
 
@@ -874,7 +1017,6 @@ export default function RoleMatrixPage() {
 
   const thBase = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide overflow-hidden text-ellipsis whitespace-nowrap';
 
-  // Compute a minimum table width so the Fill button is always reachable
   const minTableWidth =
     COL.function + COL.role +
     safeDimensions.info_keys.length * COL.info +
@@ -939,7 +1081,7 @@ export default function RoleMatrixPage() {
       )}
       {isDimPending && <p className="text-xs text-blue-500 mb-2">Updating matrix...</p>}
 
-      {/* 3-panel selector -- ~30% shorter than before (11rem vs 16rem) */}
+      {/* 3-panel selector */}
       <div className="grid grid-cols-3 gap-3 mb-4 shrink-0" style={{ height: '11rem' }}>
         <SelectorPanel title="Function" badge="FNC" items={safeDimensions.functions}
           selected={selectedFn} multi={false} onChange={v => { setSelectedFn(v); setStatusFilter(null); }}
@@ -951,11 +1093,15 @@ export default function RoleMatrixPage() {
           onAddNew={() => setAddModalType('role')}
           onRemove={v => removeDimMutation.mutate({ type: 'role', value: v })}
           editMode={editMode} />
-        <SelectorPanel title="Additional Info" badge="INF" items={safeDimensions.info_keys}
-          selected={selectedInfo} multi={true} onChange={v => { setSelectedInfo(v); setStatusFilter(null); }}
+        <InfoFilterPanel
+          title="Additional Info"
+          infoKeys={safeDimensions.info_keys}
+          selectedInfo={selectedInfo}
+          onChange={v => { setSelectedInfo(v); setStatusFilter(null); }}
           onAddNew={() => setAddModalType('info_key')}
           onRemove={v => removeDimMutation.mutate({ type: 'info_key', value: v })}
-          editMode={editMode} />
+          editMode={editMode}
+        />
       </div>
 
       {/* Status bar */}
@@ -966,7 +1112,7 @@ export default function RoleMatrixPage() {
         totalShown={filteredEntries.length}
       />
 
-      {/* Table -- overflow-x-auto enables horizontal scroll on narrow viewports */}
+      {/* Table */}
       <div className="overflow-y-auto overflow-x-auto rounded-xl border bg-white flex-1">
         <table
           className="w-full text-sm border-collapse"
