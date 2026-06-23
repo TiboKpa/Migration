@@ -6,8 +6,6 @@ const authenticate = require('../middleware/auth');
 const requireMember = require('../middleware/requireMember');
 const router = express.Router();
 
-// ── Rate limiter ───────────────────────────────────────────────────────────────
-
 const genLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 60,
@@ -53,11 +51,8 @@ function buildConcatenate(fn, role, filteredInfo, infoKeys) {
   return `${fn}||${role}||${parts.join('|')}`;
 }
 
-// Fingerprint = primaryPlaylistId + sorted complementary playlist ids.
-// Users with same primary but different complementary sets get separate groups.
 function buildGroupKey(primaryId, complementaryIds) {
-  const sorted = [...complementaryIds].sort((a, b) => a - b);
-  return `${primaryId}|${sorted.join(',')}`;
+  return `${primaryId}|${[...complementaryIds].sort((a, b) => a - b).join(',')}`;
 }
 
 function partitionModules(modules, k) {
@@ -76,15 +71,14 @@ function partitionModules(modules, k) {
     if (memo.has(key)) return memo.get(key);
     if (wavesLeft === 1) {
       const slice = modules.slice(idx);
-      const cost  = (slice.reduce((s, m) => s + m.duration_min, 0) - target) ** 2;
-      return [cost, [slice]];
+      return [(slice.reduce((s, m) => s + m.duration_min, 0) - target) ** 2, [slice]];
     }
     let bestCost = Infinity, bestParts = null, current = 0;
     for (let i = idx; i <= n - wavesLeft; i++) {
       current += modules[i].duration_min;
-      const [costRem, partsRem] = solve(i + 1, wavesLeft - 1);
-      const t = (current - target) ** 2 + costRem;
-      if (t < bestCost) { bestCost = t; bestParts = [modules.slice(idx, i + 1), ...partsRem]; }
+      const [cr, pr] = solve(i + 1, wavesLeft - 1);
+      const t = (current - target) ** 2 + cr;
+      if (t < bestCost) { bestCost = t; bestParts = [modules.slice(idx, i + 1), ...pr]; }
     }
     memo.set(key, [bestCost, bestParts]);
     return [bestCost, bestParts];
@@ -138,19 +132,10 @@ function renderTemplate(html, replacements) {
   );
 }
 
-// ── Core generation ────────────────────────────────────────────────────────────
-//
-// Grouping unit: (primary playlist id) + (sorted complementary playlist ids).
-// Users sharing the same primary training AND the same set of additional trainings
-// are merged into one recipient group and receive identical emails.
-// Users with the same primary training but different additional trainings
-// get separate groups and separate emails.
-//
-// roleParts: Map<role, { total_parts, parts_to_generate }>
-
-async function runGeneration(projectId, roleParts, appName, plantName, goLive, templateHtml) {
-  const goLiveFormatted = formatDateWithSuffix(goLive);
-
+// ── resolveGroups: dry-run matrix lookup, no email generation ──────────────────
+// Returns Map<groupKey, { groupKey, primaryPlaylist, complementaryPlaylists,
+//   roles: Set, emails: Set, user_count }>
+async function resolveGroups(projectId) {
   const infoKeys = (await pool.query(
     `SELECT value FROM role_matrix_dimensions WHERE project_id=$1 AND type='info_key' ORDER BY value`,
     [projectId]
@@ -161,15 +146,74 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
       .rows.map(r => [r.concatenate, r])
   );
 
-  const playlists = (await pool.query(
-    'SELECT * FROM playlists WHERE project_id=$1', [projectId]
-  )).rows;
+  const playlists    = (await pool.query('SELECT * FROM playlists WHERE project_id=$1', [projectId])).rows;
+  const playlistById = new Map(playlists.map(p => [p.id, p]));
+
+  const allUsers = (await pool.query('SELECT * FROM project_users WHERE project_id=$1', [projectId])).rows;
+
+  const groups   = new Map();
+  const warnings = [];
+
+  for (const u of allUsers) {
+    const info = parseJson(u.additional_info, {});
+    if (info.champion === true) continue;
+
+    const role = (u.role || '').split('+')[0].trim();
+    const fn   = (u.function || '').trim();
+    if (!role || !u.mail) continue;
+
+    const filteredInfo = {};
+    for (const k of infoKeys) filteredInfo[k] = !!info[k];
+
+    const concatenate = buildConcatenate(fn, role, filteredInfo, infoKeys);
+    const matrixRow   = matrixByConcatenate.get(concatenate);
+
+    if (!matrixRow) { warnings.push(`No matrix row: fn="${fn}" role="${role}"`); continue; }
+    if (matrixRow.na_training) continue;
+
+    const primaryId = matrixRow.recommended_training_id;
+    if (!primaryId || !playlistById.has(primaryId)) {
+      warnings.push(`No primary training for fn="${fn}" role="${role}"`);
+      continue;
+    }
+
+    const compRaw = parseJson(matrixRow.complementary_items, []);
+    const compIds = compRaw
+      .map(item => (typeof item === 'object' ? (item.playlist_id || item.id) : item))
+      .filter(id => id && playlistById.has(id))
+      .sort((a, b) => a - b);
+
+    const groupKey = buildGroupKey(primaryId, compIds);
+
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, {
+        groupKey,
+        primaryPlaylist:       playlistById.get(primaryId),
+        complementaryPlaylists: compIds.map(id => playlistById.get(id)),
+        roles:  new Set(),
+        emails: new Set(),
+      });
+    }
+    const g = groups.get(groupKey);
+    g.roles.add(role);
+    g.emails.add(u.mail);
+  }
+
+  return { groups, warnings };
+}
+
+// ── Core generation ────────────────────────────────────────────────────────────
+// groupConfigs: Map<groupKey, { total_parts, parts_to_generate }>
+// When null, defaults to 4 parts all selected.
+async function runGeneration(projectId, groupConfigs, appName, plantName, goLive, templateHtml) {
+  const goLiveFormatted = formatDateWithSuffix(goLive);
+
+  const playlists    = (await pool.query('SELECT * FROM playlists WHERE project_id=$1', [projectId])).rows;
   const playlistById = new Map(playlists.map(p => [p.id, p]));
 
   const playlistItems = playlists.length === 0 ? [] : (await pool.query(
     `SELECT pi.*,
-            tc.title AS curriculum_title, tc.link AS curriculum_link,
-            tm.title AS module_title,    tm.link AS module_link, tm.duration_min
+            tm.title AS module_title, tm.link AS module_link, tm.duration_min
      FROM playlist_items pi
      LEFT JOIN training_curricula tc ON tc.id = pi.curriculum_id
      LEFT JOIN training_modules   tm ON tm.id = pi.module_id
@@ -178,11 +222,9 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
     [playlists.map(p => p.id)]
   )).rows;
 
-  const curriculumIds = [...new Set(
-    playlistItems.filter(i => i.curriculum_id).map(i => i.curriculum_id)
-  )];
-  const curModules = curriculumIds.length === 0 ? [] : (await pool.query(
-    `SELECT cmi.curriculum_id, tm.title, tm.link, tm.duration_min, cmi.sequence_order
+  const curriculumIds = [...new Set(playlistItems.filter(i => i.curriculum_id).map(i => i.curriculum_id))];
+  const curModules    = curriculumIds.length === 0 ? [] : (await pool.query(
+    `SELECT cmi.curriculum_id, tm.title, tm.link, tm.duration_min
      FROM curriculum_module_items cmi
      JOIN training_modules tm ON tm.id = cmi.module_id
      WHERE cmi.curriculum_id = ANY($1::int[])
@@ -192,7 +234,7 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
 
   const modulesByPlaylistId = new Map();
   for (const pl of playlists) {
-    const items = playlistItems.filter(i => i.playlist_id === pl.id);
+    const items   = playlistItems.filter(i => i.playlist_id === pl.id);
     const modules = [];
     for (const item of items) {
       if (item.curriculum_id) {
@@ -206,109 +248,39 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
     modulesByPlaylistId.set(pl.id, modules);
   }
 
-  const allUsers = (await pool.query(
-    'SELECT * FROM project_users WHERE project_id=$1', [projectId]
-  )).rows;
+  const { groups, warnings } = await resolveGroups(projectId);
 
-  const champions = [];
-  const warnings  = [];
-
-  // groups: Map<groupKey, {
-  //   primaryPlaylist, complementaryIds: number[],
-  //   roles: Set<string>, emails: string[], managers: string[],
-  //   total_parts, parts_to_generate
-  // }>
-  const groups = new Map();
-
-  for (const u of allUsers) {
-    const info = parseJson(u.additional_info, {});
-
-    if (info.champion === true) {
-      const name  = [u.first_name, u.last_name].filter(Boolean).join(' ');
-      const email = u.mail || '';
-      champions.push(email ? `<a href="mailto:${email}">${name}</a>` : name);
-      continue;
-    }
-
-    const role = (u.role || '').split('+')[0].trim();
-    const fn   = (u.function || '').trim();
-    if (!role || !u.mail) continue;
-    if (roleParts && !roleParts.has(role)) continue;
-
-    const filteredInfo = {};
-    for (const k of infoKeys) filteredInfo[k] = !!info[k];
-
-    const concatenate = buildConcatenate(fn, role, filteredInfo, infoKeys);
-    const matrixRow   = matrixByConcatenate.get(concatenate);
-
-    if (!matrixRow) {
-      warnings.push(`No role matrix row for function="${fn}" role="${role}" (key: ${concatenate})`);
-      continue;
-    }
-    if (matrixRow.na_training) continue;
-
-    const primaryId = matrixRow.recommended_training_id;
-    if (!primaryId) {
-      warnings.push(`No primary training set in role matrix for function="${fn}" role="${role}"`);
-      continue;
-    }
-    if (!playlistById.has(primaryId)) {
-      warnings.push(`Primary training playlist id=${primaryId} not found (role="${role}")`);
-      continue;
-    }
-
-    // resolve complementary playlist ids from matrix row
-    const compRaw  = parseJson(matrixRow.complementary_items, []);
-    const compIds  = compRaw
-      .map(item => (typeof item === 'object' ? (item.playlist_id || item.id) : item))
-      .filter(id => id && playlistById.has(id))
-      .sort((a, b) => a - b);
-
-    const groupKey = buildGroupKey(primaryId, compIds);
-
-    const { total_parts, parts_to_generate } = roleParts
-      ? roleParts.get(role)
-      : { total_parts: 4, parts_to_generate: [1, 2, 3, 4] };
-
-    if (!groups.has(groupKey)) {
-      groups.set(groupKey, {
-        primaryPlaylist:  playlistById.get(primaryId),
-        complementaryIds: compIds,
-        roles:            new Set(),
-        emails:           [],
-        managers:         [],
-        total_parts,
-        parts_to_generate,
-      });
-    }
-
-    const group = groups.get(groupKey);
-    group.roles.add(role);
-    group.emails.push(u.mail);
-    if (u.manager_mail) group.managers.push(u.manager_mail);
-  }
-
-  const championsStr = champions.length
-    ? champions.join(', ')
+  // champions
+  const champRows = (await pool.query(
+    `SELECT first_name, last_name, mail, additional_info FROM project_users WHERE project_id=$1`,
+    [projectId]
+  )).rows.filter(u => parseJson(u.additional_info, {}).champion === true);
+  const championsStr = champRows.length
+    ? champRows.map(u => {
+        const name  = [u.first_name, u.last_name].filter(Boolean).join(' ');
+        return u.mail ? `<a href="mailto:${u.mail}">${name}</a>` : name;
+      }).join(', ')
     : 'No champion assigned for this plant.';
 
   const results = [];
 
-  for (const [, group] of groups) {
+  for (const [groupKey, group] of groups) {
+    // skip groups not in groupConfigs when configs are provided
+    if (groupConfigs && !groupConfigs.has(groupKey)) continue;
+
+    const { total_parts, parts_to_generate } = groupConfigs
+      ? groupConfigs.get(groupKey)
+      : { total_parts: 4, parts_to_generate: [1, 2, 3, 4] };
+
     const modules = modulesByPlaylistId.get(group.primaryPlaylist.id) || [];
     if (modules.length === 0) {
       warnings.push(`Playlist "${group.primaryPlaylist.title}" has no modules`);
       continue;
     }
 
-    const { total_parts, parts_to_generate } = group;
-    const rolesLabel = [...group.roles].sort().join(', ');
-
-    const complementaryHtml = group.complementaryIds
-      .map(cid => {
-        const pl = playlistById.get(cid);
-        return buildComplementaryHtml(pl.title, pl.link || '');
-      })
+    const rolesLabel        = [...group.roles].sort().join(', ');
+    const complementaryHtml = group.complementaryPlaylists
+      .map(pl => buildComplementaryHtml(pl.title, pl.link || ''))
       .join('');
 
     const waves    = partitionModules(modules, total_parts);
@@ -331,7 +303,7 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
         : templateHtml;
 
       if (complementaryHtml) {
-        const btnRe    = /(Click to open the full e-learning playlist<\/a>\s*<\/td>\s*<\/tr>\s*<\/table>\s*<\/td>\s*<\/tr>)/is;
+        const btnRe     = /(Click to open the full e-learning playlist<\/a>\s*<\/td>\s*<\/tr>\s*<\/table>\s*<\/td>\s*<\/tr>)/is;
         const container = `<tr><td style="padding:15px 36px 0 36px;"><div style="border-left:4px solid #009E4D;padding:5px 0 5px 15px;">${complementaryHtml}</div></td></tr>`;
         if (btnRe.test(body)) body = body.replace(btnRe, `$1${container}`);
       }
@@ -354,14 +326,19 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
       });
 
       results.push({
+        group_key:     groupKey,
         playlist_id:   group.primaryPlaylist.id,
         playlist_name: group.primaryPlaylist.title,
+        complementary: group.complementaryPlaylists.map(p => p.title),
         roles:         [...group.roles].sort(),
         wave:          waveNum,
         total_parts,
         subject:       `Action Required: ${appName} Training - Part ${waveNum}/${total_parts} - ${group.primaryPlaylist.title}`,
-        to:            [...new Set(group.emails)],
-        cc:            [...new Set(group.managers)],
+        to:            [...group.emails],
+        cc:            [...new Set(
+          (await pool.query('SELECT manager_mail FROM project_users WHERE project_id=$1 AND mail = ANY($2::text[])',
+            [projectId, [...group.emails]])).rows.map(r => r.manager_mail).filter(Boolean)
+        )],
         html:          body,
         total_hours:   formatDuration(totalMin),
         wave_hours:    formatDuration(waveMin),
@@ -373,20 +350,23 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
   return { results, warnings, championsStr };
 }
 
-// ── GET /roles ─────────────────────────────────────────────────────────────────
+// ── GET /groups ────────────────────────────────────────────────────────────────
+// Returns the resolved training groups for the project's user list.
 
-router.get('/:projectId/generate/roles', authenticate, requireMember(), genLimiter, async (req, res) => {
+router.get('/:projectId/generate/groups', authenticate, requireMember(), genLimiter, async (req, res) => {
   try {
-    const rows = await pool.query(
-      `SELECT role, COUNT(*) AS user_count
-       FROM project_users
-       WHERE project_id=$1 AND role IS NOT NULL AND role <> ''
-       GROUP BY role ORDER BY role`,
-      [req.params.projectId]
-    );
-    res.json(rows.rows);
+    const { groups, warnings } = await resolveGroups(req.params.projectId);
+    const payload = [...groups.values()].map(g => ({
+      group_key:              g.groupKey,
+      primary_playlist_id:    g.primaryPlaylist.id,
+      primary_playlist_name:  g.primaryPlaylist.title,
+      complementary_playlists: g.complementaryPlaylists.map(p => ({ id: p.id, title: p.title })),
+      roles:      [...g.roles].sort(),
+      user_count: g.emails.size,
+    }));
+    res.json({ groups: payload, warnings });
   } catch (err) {
-    console.error('[GET generate/roles]', err);
+    console.error('[GET generate/groups]', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -394,10 +374,10 @@ router.get('/:projectId/generate/roles', authenticate, requireMember(), genLimit
 // ── POST /bulk ─────────────────────────────────────────────────────────────────
 
 const bulkSchema = z.object({
-  campaign_id:  z.number().int().positive(),
-  template_id:  z.number().int().positive(),
-  role_configs: z.array(z.object({
-    role:              z.string().min(1),
+  campaign_id:   z.number().int().positive(),
+  template_id:   z.number().int().positive(),
+  group_configs: z.array(z.object({
+    group_key:         z.string().min(1),
     total_parts:       z.number().int().min(1).max(6),
     parts_to_generate: z.array(z.number().int().min(1).max(6)).min(1),
   })).min(1),
@@ -406,35 +386,31 @@ const bulkSchema = z.object({
 router.post('/:projectId/generate/bulk', authenticate, requireMember(), genLimiter, async (req, res) => {
   const parsed = bulkSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
-  const { campaign_id, template_id, role_configs } = parsed.data;
+  const { campaign_id, template_id, group_configs } = parsed.data;
 
   try {
     const project = (await pool.query(
-      `SELECT p.* FROM projects p
-       JOIN project_members pm ON pm.project_id = p.id
-       WHERE p.id=$1 AND pm.user_id=$2`,
+      `SELECT p.* FROM projects p JOIN project_members pm ON pm.project_id=p.id WHERE p.id=$1 AND pm.user_id=$2`,
       [req.params.projectId, req.user.id]
     )).rows[0];
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
     const campaign = (await pool.query(
-      'SELECT * FROM campaigns WHERE id=$1 AND project_id=$2',
-      [campaign_id, req.params.projectId]
+      'SELECT * FROM campaigns WHERE id=$1 AND project_id=$2', [campaign_id, req.params.projectId]
     )).rows[0];
     if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
 
     const template = (await pool.query(
-      'SELECT * FROM templates WHERE id=$1 AND project_id=$2',
-      [template_id, req.params.projectId]
+      'SELECT * FROM templates WHERE id=$1 AND project_id=$2', [template_id, req.params.projectId]
     )).rows[0];
     if (!template) return res.status(404).json({ error: 'Template not found' });
 
-    const roleParts = new Map(role_configs.map(rc => [
-      rc.role, { total_parts: rc.total_parts, parts_to_generate: rc.parts_to_generate },
+    const groupConfigsMap = new Map(group_configs.map(gc => [
+      gc.group_key, { total_parts: gc.total_parts, parts_to_generate: gc.parts_to_generate },
     ]));
 
     const { results, warnings, championsStr } = await runGeneration(
-      req.params.projectId, roleParts,
+      req.params.projectId, groupConfigsMap,
       project.application_name || '',
       project.plant_name       || '',
       project.go_live_date     || '',
@@ -456,12 +432,9 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), genLimit
       [req.params.projectId]
     )).rows[0].n;
 
-    const maxParts = role_configs.reduce((m, rc) => Math.max(m, rc.total_parts), 0);
-
-    await pool.query(
-      'UPDATE campaigns SET user_count=$1, part_count=$2 WHERE id=$3',
-      [parseInt(userCount, 10), maxParts, campaign_id]
-    );
+    const maxParts = group_configs.reduce((m, gc) => Math.max(m, gc.total_parts), 0);
+    await pool.query('UPDATE campaigns SET user_count=$1, part_count=$2 WHERE id=$3',
+      [parseInt(userCount, 10), maxParts, campaign_id]);
 
     res.json({ results, warnings, champions: championsStr });
   } catch (err) {
@@ -473,7 +446,7 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), genLimit
 // ── POST /preview ──────────────────────────────────────────────────────────────
 
 const previewSchema = z.object({
-  role:              z.string().min(1),
+  group_key:         z.string().min(1),
   total_parts:       z.number().int().min(1).max(6),
   parts_to_generate: z.array(z.number().int().min(1).max(6)).min(1),
   template_id:       z.number().int().positive(),
@@ -482,27 +455,24 @@ const previewSchema = z.object({
 router.post('/:projectId/generate/preview', authenticate, requireMember(), genLimiter, async (req, res) => {
   const parsed = previewSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
-  const { role, total_parts, parts_to_generate, template_id } = parsed.data;
+  const { group_key, total_parts, parts_to_generate, template_id } = parsed.data;
 
   try {
     const project = (await pool.query(
-      `SELECT p.* FROM projects p
-       JOIN project_members pm ON pm.project_id = p.id
-       WHERE p.id=$1 AND pm.user_id=$2`,
+      `SELECT p.* FROM projects p JOIN project_members pm ON pm.project_id=p.id WHERE p.id=$1 AND pm.user_id=$2`,
       [req.params.projectId, req.user.id]
     )).rows[0];
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
     const template = (await pool.query(
-      'SELECT * FROM templates WHERE id=$1 AND project_id=$2',
-      [template_id, req.params.projectId]
+      'SELECT * FROM templates WHERE id=$1 AND project_id=$2', [template_id, req.params.projectId]
     )).rows[0];
     if (!template) return res.status(404).json({ error: 'Template not found' });
 
-    const roleParts = new Map([[role, { total_parts, parts_to_generate }]]);
+    const groupConfigsMap = new Map([[group_key, { total_parts, parts_to_generate }]]);
 
     const { results, warnings } = await runGeneration(
-      req.params.projectId, roleParts,
+      req.params.projectId, groupConfigsMap,
       project.application_name || '',
       project.plant_name       || '',
       project.go_live_date     || '',
