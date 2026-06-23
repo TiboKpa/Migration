@@ -132,7 +132,6 @@ function buildModuleHtml(m, prefix, color, bold) {
   return `<tr><td style="font-size:15px;line-height:24px;color:${color};${fw}">${prefix} ${nameHtml} (${formatDuration(m.duration_min)})</td></tr>\n`;
 }
 
-// Renders a complementary item row using its resolved link from the training matrix.
 function buildComplementaryHtml(title, link) {
   const body = link
     ? `<a href="${link}" target="_blank" style="color:#009E4D;text-decoration:underline;">${title}</a>`
@@ -210,75 +209,17 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
     const infoKeys = infoKeysRes.rows.map(r => r.value);
 
     // 4. All role matrix rows -- keyed by concatenate for O(1) lookup
+    //    Each row carries recommended_training (primary profile) and
+    //    additional_trainings (array of complementary profile names).
+    //    Both come from the role matrix import, not from hardcoded logic.
     const matrixRes = await pool.query(
       'SELECT * FROM role_matrix WHERE project_id=$1',
       [req.params.projectId]
     );
     const matrixByConcatenate = new Map(matrixRes.rows.map(r => [r.concatenate, r]));
 
-    // 5. Training matrix: links for playlists, modules, curricula
-    const [playlistLinkRes, moduleLinkRes, curriculumLinkRes] = await Promise.all([
-      pool.query('SELECT id, link FROM playlists WHERE project_id=$1', [req.params.projectId]),
-      pool.query('SELECT id, link FROM training_modules WHERE project_id=$1', [req.params.projectId]),
-      pool.query('SELECT id, link FROM training_curricula WHERE project_id=$1', [req.params.projectId]),
-    ]);
-    const playlistLinkById   = new Map(playlistLinkRes.rows.map(r => [r.id, r.link || '']));
-    const moduleLinkById     = new Map(moduleLinkRes.rows.map(r => [r.id, r.link || '']));
-    const curriculumLinkById = new Map(curriculumLinkRes.rows.map(r => [r.id, r.link || '']));
-
-    function resolveItemLink(item) {
-      if (item.type === 'playlist')   return playlistLinkById.get(item.id)   || '';
-      if (item.type === 'module')     return moduleLinkById.get(item.id)     || '';
-      if (item.type === 'curriculum') return curriculumLinkById.get(item.id) || '';
-      return '';
-    }
-
-    // 6. All users
-    const usersRes = await pool.query(
-      'SELECT * FROM project_users WHERE project_id=$1',
-      [req.params.projectId]
-    );
-
-    const champions = [];
-    // role -> { emails[], managers[], userInfoSnapshots[] }
-    // userInfoSnapshots: one entry per unique additional_info combo seen in the group,
-    // used to look up complementary items from the role matrix.
-    const roleMap = new Map();
-
-    for (const u of usersRes.rows) {
-      const info = parseAdditionalInfo(u.additional_info);
-
-      // Champions are collected separately and skipped from mail groups.
-      if (info.champion === true) {
-        const name  = [u.first_name, u.last_name].filter(Boolean).join(' ');
-        const email = u.mail || '';
-        champions.push(email ? `<a href="mailto:${email}">${name}</a>` : name);
-        continue;
-      }
-
-      const role = (u.role || '').split('+')[0].trim();
-      if (!role || !u.mail) continue;
-
-      if (!roleMap.has(role)) {
-        roleMap.set(role, { emails: [], managers: [], fn: u.function || '', infoSnapshots: [] });
-      }
-      const entry = roleMap.get(role);
-      entry.emails.push(u.mail);
-      if (u.manager_mail) entry.managers.push(u.manager_mail);
-
-      // Store the user's info_keys-filtered snapshot for role matrix lookup.
-      // Only keep keys that are registered as info_keys to match the concatenate format.
-      const filteredInfo = {};
-      for (const k of infoKeys) filteredInfo[k] = !!info[k];
-      const snap = JSON.stringify(filteredInfo);
-      if (!entry.infoSnapshots.includes(snap)) entry.infoSnapshots.push(snap);
-    }
-
-    const championsStr = champions.length
-      ? champions.join(', ')
-      : 'No champion assigned for this plant.';
-
-    // 7. Playlists: build flat module list per playlist title
+    // 5. Build playlist lookup from training matrix.
+    //    playlistByTitle: lowercase title -> { id, link, total_min, modules[] }
     const playlists = (await pool.query(
       'SELECT * FROM playlists WHERE project_id=$1',
       [req.params.projectId]
@@ -306,7 +247,6 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
       [curriculumIds]
     )).rows;
 
-    // playlistByTitle: lowercase title -> { link, total_min, modules[] }
     const playlistByTitle = new Map();
     for (const pl of playlists) {
       const items = playlistItems.filter(i => i.playlist_id === pl.id);
@@ -320,54 +260,132 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
         }
       }
       const total_min = modules.reduce((s, m) => s + m.duration_min, 0);
-      playlistByTitle.set(pl.title.toLowerCase(), { link: pl.link || '', total_min, modules });
+      playlistByTitle.set(pl.title.toLowerCase().trim(), { link: pl.link || '', total_min, modules });
     }
 
-    // 8. Generate one result per role x wave
+    // Helper: resolve a playlist by title from the training matrix.
+    // Returns null when no match is found, with no fallback assumptions.
+    function resolvePlaylist(title) {
+      if (!title) return null;
+      return playlistByTitle.get(title.toLowerCase().trim()) || null;
+    }
+
+    // 6. All users
+    const usersRes = await pool.query(
+      'SELECT * FROM project_users WHERE project_id=$1',
+      [req.params.projectId]
+    );
+
+    const champions = [];
+    const roleMap = new Map();
+
+    for (const u of usersRes.rows) {
+      const info = parseAdditionalInfo(u.additional_info);
+
+      if (info.champion === true) {
+        const name  = [u.first_name, u.last_name].filter(Boolean).join(' ');
+        const email = u.mail || '';
+        champions.push(email ? `<a href="mailto:${email}">${name}</a>` : name);
+        continue;
+      }
+
+      const role = (u.role || '').split('+')[0].trim();
+      if (!role || !u.mail) continue;
+
+      if (!roleMap.has(role)) {
+        roleMap.set(role, { emails: [], managers: [], fn: u.function || '', infoSnapshots: [] });
+      }
+      const entry = roleMap.get(role);
+      entry.emails.push(u.mail);
+      if (u.manager_mail) entry.managers.push(u.manager_mail);
+
+      // Store only the registered info_keys so the concatenate key matches exactly.
+      const filteredInfo = {};
+      for (const k of infoKeys) filteredInfo[k] = !!info[k];
+      const snap = JSON.stringify(filteredInfo);
+      if (!entry.infoSnapshots.includes(snap)) entry.infoSnapshots.push(snap);
+    }
+
+    const championsStr = champions.length
+      ? champions.join(', ')
+      : 'No champion assigned for this plant.';
+
+    // 7. Generate one result per role x wave
     const results  = [];
     const warnings = [];
 
     for (const [roleName, group] of roleMap) {
-      const playlist = playlistByTitle.get(roleName.toLowerCase());
-      if (!playlist) {
-        warnings.push(`No playlist found for role "${roleName}"`);
-        continue;
-      }
-      if (playlist.modules.length === 0) {
-        warnings.push(`No modules found for role "${roleName}"`);
-        continue;
-      }
+      // Collect all unique recommended_training and additional_training titles
+      // across every info snapshot in this role group.
+      // These titles are resolved directly against the training matrix playlists.
+      // No field names from additional_info are ever referenced by name here.
+      const primaryTitles       = new Set();
+      const complementaryTitles = new Set();
 
-      // Collect complementary items from ALL role matrix rows that match
-      // any of the unique additional_info snapshots seen in this role group.
-      // De-duplicate by item id+type so the same training is not listed twice.
-      const seenCompItems = new Map(); // `${type}:${id}` -> { title, link }
       for (const snap of group.infoSnapshots) {
         const filteredInfo = JSON.parse(snap);
         const concatenate  = buildConcatenate(group.fn, roleName, filteredInfo);
         const matrixRow    = matrixByConcatenate.get(concatenate);
         if (!matrixRow || matrixRow.na_training) continue;
 
-        let compItems = matrixRow.complementary_items;
-        if (typeof compItems === 'string') {
-          try { compItems = JSON.parse(compItems); } catch { compItems = []; }
+        // Primary training profile comes from the role matrix recommended_training column.
+        if (matrixRow.recommended_training) {
+          primaryTitles.add(matrixRow.recommended_training.trim());
         }
-        if (!Array.isArray(compItems)) continue;
 
-        for (const item of compItems) {
-          if (!item || item.type === 'unresolved' || !item.id) continue;
-          const key = `${item.type}:${item.id}`;
-          if (!seenCompItems.has(key)) {
-            seenCompItems.set(key, { title: item.title, link: resolveItemLink(item) });
+        // Complementary training titles come from the role matrix additional_trainings column.
+        // This is a plain array of training profile names stored during role matrix import.
+        // No logic here interprets what those names mean; the training matrix resolves them.
+        let additionalTrainings = matrixRow.additional_trainings;
+        if (typeof additionalTrainings === 'string') {
+          try { additionalTrainings = JSON.parse(additionalTrainings); } catch { additionalTrainings = []; }
+        }
+        if (Array.isArray(additionalTrainings)) {
+          for (const t of additionalTrainings) {
+            if (t && typeof t === 'string') complementaryTitles.add(t.trim());
           }
         }
       }
 
-      const complementaryHtml = [...seenCompItems.values()]
+      // Resolve the primary playlist from the training matrix.
+      // Use the first matching primary title. Warn and skip if none resolves.
+      let primaryPlaylist = null;
+      let resolvedPrimaryTitle = null;
+      for (const title of primaryTitles) {
+        const pl = resolvePlaylist(title);
+        if (pl) { primaryPlaylist = pl; resolvedPrimaryTitle = title; break; }
+      }
+
+      if (!primaryPlaylist) {
+        warnings.push(`No training matrix playlist found for role "${roleName}" (looked for: ${[...primaryTitles].join(', ') || 'none'})`);
+        continue;
+      }
+      if (primaryPlaylist.modules.length === 0) {
+        warnings.push(`Playlist "${resolvedPrimaryTitle}" has no modules for role "${roleName}"`);
+        continue;
+      }
+
+      // Resolve complementary playlists from the training matrix.
+      // Each additional_training title is looked up as a playlist, same mechanism.
+      // Titles that do not match any playlist in the training matrix are silently skipped
+      // (they may be individual trainings not modelled as playlists yet).
+      const complementaryItems = [];
+      for (const title of complementaryTitles) {
+        if (title.toLowerCase().trim() === resolvedPrimaryTitle.toLowerCase().trim()) continue;
+        const pl = resolvePlaylist(title);
+        if (pl) {
+          complementaryItems.push({ title: pl.title || title, link: pl.link });
+        } else {
+          // Title not found as a playlist -- surface as a label-only item so nothing is lost.
+          complementaryItems.push({ title, link: '' });
+        }
+      }
+
+      const complementaryHtml = complementaryItems
         .map(c => buildComplementaryHtml(c.title, c.link))
         .join('');
 
-      const waves = partitionModules(playlist.modules, params.total_parts);
+      const waves = partitionModules(primaryPlaylist.modules, params.total_parts);
 
       for (let wi = 0; wi < waves.length; wi++) {
         const waveNum = wi + 1;
@@ -386,7 +404,6 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
           ? template.html_content.replace(ROADMAP_RE, roadmap)
           : template.html_content;
 
-        // Inject complementary trainings block after the playlist button (if any).
         if (complementaryHtml) {
           const btnRe = /(Click to open the full e-learning playlist<\/a>\s*<\/td>\s*<\/tr>\s*<\/table>\s*<\/td>\s*<\/tr>)/is;
           const container = `<tr><td style="padding:15px 36px 0 36px;"><div style="border-left:4px solid #009E4D;padding:5px 0 5px 15px;">${complementaryHtml}</div></td></tr>`;
@@ -400,14 +417,13 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
           APP_NAME:           appName,
           GO_LIVE_DATE:       goLiveFormatted,
           USER_ROLE:          roleName,
-          TOTAL_HOURS:        formatDuration(playlist.total_min),
+          TOTAL_HOURS:        formatDuration(primaryPlaylist.total_min),
           WAVE_HOURS:         formatDuration(waveMin),
           WAVE_NUMBER:        String(waveNum),
           PAST_MODULES_LIST:  pastHtml,
           NEW_MODULES_LIST:   newHtml,
-          MAIN_PLAYLIST_LINK: playlist.link || '#',
+          MAIN_PLAYLIST_LINK: primaryPlaylist.link || '#',
           SUPPORT_CHAMPIONS:  championsStr,
-          // clear legacy static placeholders
           W1_DOT_COLOR: '', W2_DOT_COLOR: '', W3_DOT_COLOR: '', W4_DOT_COLOR: '',
           W1_TEXT_COLOR: '', W2_TEXT_COLOR: '', W3_TEXT_COLOR: '', W4_TEXT_COLOR: '',
           W1_TEXT: '', W2_TEXT: '', W3_TEXT: '', W4_TEXT: '',
@@ -421,7 +437,7 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
           to:           group.emails,
           cc:           [...new Set(group.managers)],
           html:         body,
-          total_hours:  formatDuration(playlist.total_min),
+          total_hours:  formatDuration(primaryPlaylist.total_min),
           wave_hours:   formatDuration(waveMin),
           module_count: waveModules.length,
         });
