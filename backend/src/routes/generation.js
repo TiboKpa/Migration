@@ -42,15 +42,14 @@ function formatDateWithSuffix(dateStr) {
   return `${day}${suffix} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
-function parseAdditionalInfo(raw) {
-  if (!raw) return {};
-  if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
-  try { return JSON.parse(raw); } catch { return {}; }
+function parseJson(raw, fallback) {
+  if (!raw) return fallback;
+  if (typeof raw === 'object') return raw;
+  try { return JSON.parse(raw); } catch { return fallback; }
 }
 
-function buildConcatenate(fn, role, additionalInfo) {
-  const parts = Object.keys(additionalInfo).sort()
-    .map(k => `${k}:${additionalInfo[k] ? 'Yes' : 'No'}`);
+function buildConcatenate(fn, role, additionalInfo, infoKeys) {
+  const parts = infoKeys.sort().map(k => `${k}:${additionalInfo[k] ? 'Yes' : 'No'}`);
   return `${fn}||${role}||${parts.join('|')}`;
 }
 
@@ -80,23 +79,20 @@ function partitionModules(modules, k) {
       const t = (current - target) ** 2 + costRem;
       if (t < bestCost) { bestCost = t; bestParts = [modules.slice(idx, i + 1), ...partsRem]; }
     }
-    const result = [bestCost, bestParts];
-    memo.set(key, result);
-    return result;
+    memo.set(key, [bestCost, bestParts]);
+    return [bestCost, bestParts];
   }
-  const [, parts] = solve(0, k);
-  return parts;
+  return solve(0, k)[1];
 }
 
 function buildDynamicRoadmap(currentWave, totalWaves) {
   if (totalWaves < 1) return '';
   const dotW = totalWaves === 1 ? 100 : Math.floor((100 - (totalWaves - 1) * 10) / totalWaves);
-  const lineW = 10;
   const cols = [], labels = [], statuses = [];
   for (let i = 1; i <= totalWaves; i++) {
     const dotColor = i === currentWave ? '#009E4D' : i < currentWave ? '#148A4C' : '#777777';
     cols.push(`<td width="${dotW}%" align="center" valign="middle"><p style="margin:0;font-size:22px;line-height:22px;color:${dotColor};">&#9679;</p></td>`);
-    if (i < totalWaves) cols.push(`<td width="${lineW}%" align="center" valign="middle"><p style="margin:0;font-size:18px;line-height:18px;color:#c8c8c8;">&mdash;&mdash;&mdash;</p></td>`);
+    if (i < totalWaves) cols.push(`<td width="10%" align="center" valign="middle"><p style="margin:0;font-size:18px;line-height:18px;color:#c8c8c8;">&mdash;&mdash;&mdash;</p></td>`);
     labels.push(`<td align="center" style="padding-top:4px;"><p style="font-size:12px;font-weight:bold;color:#222222;text-transform:uppercase;">Part ${i}</p></td>`);
     if (i < totalWaves) labels.push('<td>&nbsp;</td>');
     const stTxt = i === currentWave ? 'Current mail' : i < currentWave ? 'Completed' : 'Upcoming';
@@ -136,24 +132,37 @@ function renderTemplate(html, replacements) {
 }
 
 // ── Core generation ────────────────────────────────────────────────────────────
-// roleParts: Map<roleName, { total_parts, parts_to_generate }>
+//
+// Groups users by their resolved primary playlist (via role_matrix recommended_training_id).
+// Each distinct playlist becomes one communication series (set of waves).
+// role_filter: optional Set<string> of role names to include (for preview).
+// parts_override: optional Map<playlistId, { total_parts, parts_to_generate }>
+//   when null, defaults from the roleParts map are used (keyed by role for compat).
+//
+// roleParts: Map<role, { total_parts, parts_to_generate }> -- used when provided
+//   to filter which roles to generate AND set wave counts.
 
 async function runGeneration(projectId, roleParts, appName, plantName, goLive, templateHtml) {
   const goLiveFormatted = formatDateWithSuffix(goLive);
 
+  // info keys for this project (define which additional_info fields matter)
   const infoKeys = (await pool.query(
     `SELECT value FROM role_matrix_dimensions WHERE project_id=$1 AND type='info_key' ORDER BY value`,
     [projectId]
   )).rows.map(r => r.value);
 
-  const matrixByConcatenate = new Map(
-    (await pool.query('SELECT * FROM role_matrix WHERE project_id=$1', [projectId]))
-      .rows.map(r => [r.concatenate, r])
-  );
+  // load full role matrix
+  const matrixRows = (await pool.query(
+    'SELECT * FROM role_matrix WHERE project_id=$1',
+    [projectId]
+  )).rows;
+  const matrixByConcatenate = new Map(matrixRows.map(r => [r.concatenate, r]));
 
+  // load playlists and their modules
   const playlists = (await pool.query(
     'SELECT * FROM playlists WHERE project_id=$1', [projectId]
   )).rows;
+  const playlistById = new Map(playlists.map(p => [p.id, p]));
 
   const playlistItems = playlists.length === 0 ? [] : (await pool.query(
     `SELECT pi.*,
@@ -179,7 +188,8 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
     [curriculumIds]
   )).rows;
 
-  const playlistByTitle = new Map();
+  // build resolved module list per playlist id
+  const modulesByPlaylistId = new Map();
   for (const pl of playlists) {
     const items = playlistItems.filter(i => i.playlist_id === pl.id);
     const modules = [];
@@ -192,97 +202,136 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
         modules.push({ title: item.module_title, link: item.module_link || '', duration_min: item.duration_min || 0 });
       }
     }
-    playlistByTitle.set(pl.title.toLowerCase().trim(), {
-      link: pl.link || '',
-      total_min: modules.reduce((s, m) => s + m.duration_min, 0),
-      modules,
-    });
+    modulesByPlaylistId.set(pl.id, modules);
   }
 
+  // load users
   const allUsers = (await pool.query(
     'SELECT * FROM project_users WHERE project_id=$1', [projectId]
   )).rows;
 
   const champions = [];
-  const roleMap   = new Map();
+  const warnings  = [];
+
+  // playlistGroup: Map<playlistId, {
+  //   playlist, roles: Set<string>, emails: string[], managers: string[],
+  //   complementaryIds: Set<number>, total_parts, parts_to_generate
+  // }>
+  const playlistGroups = new Map();
 
   for (const u of allUsers) {
-    const info = parseAdditionalInfo(u.additional_info);
+    const info = parseJson(u.additional_info, {});
+
+    // champions are collected separately
     if (info.champion === true) {
       const name  = [u.first_name, u.last_name].filter(Boolean).join(' ');
       const email = u.mail || '';
       champions.push(email ? `<a href="mailto:${email}">${name}</a>` : name);
       continue;
     }
+
     const role = (u.role || '').split('+')[0].trim();
+    const fn   = (u.function || '').trim();
     if (!role || !u.mail) continue;
-    if (!roleMap.has(role)) roleMap.set(role, { emails: [], managers: [], fn: u.function || '', infoSnapshots: [] });
-    const entry = roleMap.get(role);
-    entry.emails.push(u.mail);
-    if (u.manager_mail) entry.managers.push(u.manager_mail);
+
+    // filter by roleParts if provided
+    if (roleParts && !roleParts.has(role)) continue;
+
+    // build filteredInfo using project infoKeys only
     const filteredInfo = {};
     for (const k of infoKeys) filteredInfo[k] = !!info[k];
-    const snap = JSON.stringify(filteredInfo);
-    if (!entry.infoSnapshots.includes(snap)) entry.infoSnapshots.push(snap);
+
+    const concatenate = buildConcatenate(fn, role, filteredInfo, infoKeys);
+    const matrixRow   = matrixByConcatenate.get(concatenate);
+
+    if (!matrixRow) {
+      warnings.push(`No role matrix row found for function="${fn}" role="${role}" (key: ${concatenate})`);
+      continue;
+    }
+    if (matrixRow.na_training) continue; // user explicitly marked as no training needed
+
+    const playlistId = matrixRow.recommended_training_id;
+    if (!playlistId) {
+      warnings.push(`No primary training assigned in role matrix for function="${fn}" role="${role}"`);
+      continue;
+    }
+    if (!playlistById.has(playlistId)) {
+      warnings.push(`Primary training playlist id=${playlistId} not found for role="${role}"`);
+      continue;
+    }
+
+    // determine wave config: from roleParts (keyed by role) or default 4 parts
+    const { total_parts, parts_to_generate } = roleParts
+      ? roleParts.get(role)
+      : { total_parts: 4, parts_to_generate: [1, 2, 3, 4] };
+
+    // merge user into the playlist group
+    if (!playlistGroups.has(playlistId)) {
+      playlistGroups.set(playlistId, {
+        playlist:         playlistById.get(playlistId),
+        roles:            new Set(),
+        emails:           [],
+        managers:         [],
+        complementaryIds: new Set(),
+        total_parts,
+        parts_to_generate,
+      });
+    }
+    const group = playlistGroups.get(playlistId);
+    group.roles.add(role);
+    group.emails.push(u.mail);
+    if (u.manager_mail) group.managers.push(u.manager_mail);
+
+    // collect complementary playlist ids from the matrix row
+    const compItems = parseJson(matrixRow.complementary_items, []);
+    for (const item of compItems) {
+      const cid = typeof item === 'object' ? (item.playlist_id || item.id) : item;
+      if (cid && playlistById.has(cid)) group.complementaryIds.add(cid);
+    }
   }
 
-  const championsStr = champions.length ? champions.join(', ') : 'No champion assigned for this plant.';
-  const results  = [];
-  const warnings = [];
+  const championsStr = champions.length
+    ? champions.join(', ')
+    : 'No champion assigned for this plant.';
 
-  for (const [roleName, group] of roleMap) {
-    if (roleParts && !roleParts.has(roleName)) continue;
-    const { total_parts, parts_to_generate } = roleParts.get(roleName);
+  const results = [];
 
-    const primaryTitles       = new Set();
-    const complementaryTitles = new Set();
-
-    for (const snap of group.infoSnapshots) {
-      const filteredInfo = JSON.parse(snap);
-      const matrixRow = matrixByConcatenate.get(buildConcatenate(group.fn, roleName, filteredInfo));
-      if (!matrixRow || matrixRow.na_training) continue;
-      if (matrixRow.recommended_training) primaryTitles.add(matrixRow.recommended_training.trim());
-      let add = matrixRow.additional_trainings;
-      if (typeof add === 'string') { try { add = JSON.parse(add); } catch { add = []; } }
-      if (Array.isArray(add)) add.forEach(t => t && typeof t === 'string' && complementaryTitles.add(t.trim()));
-    }
-
-    let primaryPlaylist = null, resolvedPrimaryTitle = null;
-    for (const title of primaryTitles) {
-      const pl = playlistByTitle.get(title.toLowerCase().trim());
-      if (pl) { primaryPlaylist = pl; resolvedPrimaryTitle = title; break; }
-    }
-    if (!primaryPlaylist) {
-      warnings.push(`No playlist found for role "${roleName}" (looked for: ${[...primaryTitles].join(', ') || 'none'})`);
-      continue;
-    }
-    if (primaryPlaylist.modules.length === 0) {
-      warnings.push(`Playlist "${resolvedPrimaryTitle}" has no modules for role "${roleName}"`);
+  for (const [playlistId, group] of playlistGroups) {
+    const modules = modulesByPlaylistId.get(playlistId) || [];
+    if (modules.length === 0) {
+      warnings.push(`Playlist "${group.playlist.title}" has no modules`);
       continue;
     }
 
-    const complementaryItems = [];
-    for (const title of complementaryTitles) {
-      if (title.toLowerCase().trim() === resolvedPrimaryTitle.toLowerCase().trim()) continue;
-      const pl = playlistByTitle.get(title.toLowerCase().trim());
-      complementaryItems.push(pl ? { title: pl.title || title, link: pl.link } : { title, link: '' });
-    }
+    const { total_parts, parts_to_generate } = group;
+    const rolesLabel = [...group.roles].sort().join(', ');
 
-    const complementaryHtml = complementaryItems.map(c => buildComplementaryHtml(c.title, c.link)).join('');
-    const waves = partitionModules(primaryPlaylist.modules, total_parts);
+    // build complementary html
+    const complementaryHtml = [...group.complementaryIds]
+      .map(cid => {
+        const pl = playlistById.get(cid);
+        return buildComplementaryHtml(pl.title, pl.link || '');
+      })
+      .join('');
+
+    const waves = partitionModules(modules, total_parts);
 
     for (let wi = 0; wi < waves.length; wi++) {
       const waveNum    = wi + 1;
       if (!parts_to_generate.includes(waveNum)) continue;
+
       const waveModules = waves[wi];
       const pastModules = waves.slice(0, wi).flat();
       const waveMin     = waveModules.reduce((s, m) => s + m.duration_min, 0);
+      const totalMin    = modules.reduce((s, m) => s + m.duration_min, 0);
       const pastHtml    = pastModules.map(m => buildModuleHtml(m, '&#8226;', '#a0a0a0', false)).join('');
       const newHtml     = waveModules.map(m => buildModuleHtml(m, '&#x1F195;', '#222222', true)).join('')
         || '<tr><td style="font-size:15px;line-height:24px;color:#a0a0a0;font-style:italic;">Training modules overview</td></tr>';
 
       const roadmap = buildDynamicRoadmap(waveNum, total_parts);
-      let body = ROADMAP_RE.test(templateHtml) ? templateHtml.replace(ROADMAP_RE, roadmap) : templateHtml;
+      let body = ROADMAP_RE.test(templateHtml)
+        ? templateHtml.replace(ROADMAP_RE, roadmap)
+        : templateHtml;
 
       if (complementaryHtml) {
         const btnRe = /(Click to open the full e-learning playlist<\/a>\s*<\/td>\s*<\/tr>\s*<\/table>\s*<\/td>\s*<\/tr>)/is;
@@ -291,29 +340,35 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
       }
 
       body = renderTemplate(body, {
-        PLANT_NAME: plantName, APP_NAME: appName, GO_LIVE_DATE: goLiveFormatted,
-        USER_ROLE: roleName,
-        TOTAL_HOURS: formatDuration(primaryPlaylist.total_min),
-        WAVE_HOURS: formatDuration(waveMin),
-        WAVE_NUMBER: String(waveNum),
+        PLANT_NAME:        plantName,
+        APP_NAME:          appName,
+        GO_LIVE_DATE:      goLiveFormatted,
+        USER_ROLE:         rolesLabel,
+        TOTAL_HOURS:       formatDuration(totalMin),
+        WAVE_HOURS:        formatDuration(waveMin),
+        WAVE_NUMBER:       String(waveNum),
         PAST_MODULES_LIST: pastHtml,
-        NEW_MODULES_LIST: newHtml,
-        MAIN_PLAYLIST_LINK: primaryPlaylist.link || '#',
+        NEW_MODULES_LIST:  newHtml,
+        MAIN_PLAYLIST_LINK: group.playlist.link || '#',
         SUPPORT_CHAMPIONS: championsStr,
-        W1_DOT_COLOR:'', W2_DOT_COLOR:'', W3_DOT_COLOR:'', W4_DOT_COLOR:'',
-        W1_TEXT_COLOR:'', W2_TEXT_COLOR:'', W3_TEXT_COLOR:'', W4_TEXT_COLOR:'',
-        W1_TEXT:'', W2_TEXT:'', W3_TEXT:'', W4_TEXT:'',
+        W1_DOT_COLOR: '', W2_DOT_COLOR: '', W3_DOT_COLOR: '', W4_DOT_COLOR: '',
+        W1_TEXT_COLOR: '', W2_TEXT_COLOR: '', W3_TEXT_COLOR: '', W4_TEXT_COLOR: '',
+        W1_TEXT: '', W2_TEXT: '', W3_TEXT: '', W4_TEXT: '',
       });
 
       results.push({
-        role: roleName, wave: waveNum, total_parts,
-        subject: `Action Required: ${appName} Training - Part ${waveNum}/${total_parts} - ${roleName}`,
-        to: group.emails,
-        cc: [...new Set(group.managers)],
-        html: body,
-        total_hours: formatDuration(primaryPlaylist.total_min),
-        wave_hours: formatDuration(waveMin),
-        module_count: waveModules.length,
+        playlist_id:   playlistId,
+        playlist_name: group.playlist.title,
+        roles:         [...group.roles].sort(),
+        wave:          waveNum,
+        total_parts,
+        subject:       `Action Required: ${appName} Training - Part ${waveNum}/${total_parts} - ${group.playlist.title}`,
+        to:            [...new Set(group.emails)],
+        cc:            [...new Set(group.managers)],
+        html:          body,
+        total_hours:   formatDuration(totalMin),
+        wave_hours:    formatDuration(waveMin),
+        module_count:  waveModules.length,
       });
     }
   }
@@ -390,18 +445,18 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), genLimit
       template.html_content
     );
 
-    // Persist communications
     for (const r of results) {
       await pool.query(
         `INSERT INTO campaign_communications
            (campaign_id, role, wave, total_parts, subject, to_list, cc_list, html_body)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [campaign_id, r.role, r.wave, r.total_parts, r.subject,
+        [campaign_id,
+         r.playlist_name,   // store playlist name as the label
+         r.wave, r.total_parts, r.subject,
          JSON.stringify(r.to), JSON.stringify(r.cc), r.html]
       );
     }
 
-    // Update campaign counters using direct counts to avoid table-not-exists risk
     const userCount = (await pool.query(
       'SELECT COUNT(DISTINCT mail) AS n FROM project_users WHERE project_id=$1 AND mail IS NOT NULL',
       [req.params.projectId]
