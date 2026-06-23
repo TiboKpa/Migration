@@ -8,7 +8,7 @@ const router = express.Router();
 
 // ── Rate limiter ───────────────────────────────────────────────────────────────
 
-const previewLimiter = rateLimit({
+const genLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 60,
   standardHeaders: true,
@@ -22,15 +22,15 @@ function formatDuration(totalMinutes) {
   if (!totalMinutes || totalMinutes === 0) return '0h';
   const h = Math.floor(totalMinutes / 60);
   const m = totalMinutes % 60;
-  if (m === 0) return `${h}h`;
-  return `${h}h${String(m).padStart(2, '0')}`;
+  return m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, '0')}`;
 }
 
 function formatDateWithSuffix(dateStr) {
   const d = new Date(dateStr);
-  if (isNaN(d)) return dateStr;
+  if (isNaN(d)) return dateStr || '';
   const day = d.getUTCDate();
-  const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const months = ['January','February','March','April','May','June','July',
+    'August','September','October','November','December'];
   let suffix = 'th';
   const mod100 = day % 100;
   if (mod100 < 11 || mod100 > 13) {
@@ -49,7 +49,8 @@ function parseAdditionalInfo(raw) {
 }
 
 function buildConcatenate(fn, role, additionalInfo) {
-  const parts = Object.keys(additionalInfo).sort().map(k => `${k}:${additionalInfo[k] ? 'Yes' : 'No'}`);
+  const parts = Object.keys(additionalInfo).sort()
+    .map(k => `${k}:${additionalInfo[k] ? 'Yes' : 'No'}`);
   return `${fn}||${role}||${parts.join('|')}`;
 }
 
@@ -64,7 +65,6 @@ function partitionModules(modules, k) {
   const total = modules.reduce((s, m) => s + m.duration_min, 0);
   const target = total / k;
   const memo = new Map();
-
   function solve(idx, wavesLeft) {
     const key = `${idx}:${wavesLeft}`;
     if (memo.has(key)) return memo.get(key);
@@ -73,24 +73,17 @@ function partitionModules(modules, k) {
       const cost = (slice.reduce((s, m) => s + m.duration_min, 0) - target) ** 2;
       return [cost, [slice]];
     }
-    let bestCost = Infinity;
-    let bestParts = null;
-    let current = 0;
+    let bestCost = Infinity, bestParts = null, current = 0;
     for (let i = idx; i <= n - wavesLeft; i++) {
       current += modules[i].duration_min;
-      const costCurrent = (current - target) ** 2;
       const [costRem, partsRem] = solve(i + 1, wavesLeft - 1);
-      const total2 = costCurrent + costRem;
-      if (total2 < bestCost) {
-        bestCost = total2;
-        bestParts = [modules.slice(idx, i + 1), ...partsRem];
-      }
+      const t = (current - target) ** 2 + costRem;
+      if (t < bestCost) { bestCost = t; bestParts = [modules.slice(idx, i + 1), ...partsRem]; }
     }
     const result = [bestCost, bestParts];
     memo.set(key, result);
     return result;
   }
-
   const [, parts] = solve(0, k);
   return parts;
 }
@@ -98,10 +91,8 @@ function partitionModules(modules, k) {
 function buildDynamicRoadmap(currentWave, totalWaves) {
   if (totalWaves < 1) return '';
   const dotW = totalWaves === 1 ? 100 : Math.floor((100 - (totalWaves - 1) * 10) / totalWaves);
-  const lineW = totalWaves === 1 ? 0 : 10;
-  const cols = [];
-  const labels = [];
-  const statuses = [];
+  const lineW = 10;
+  const cols = [], labels = [], statuses = [];
   for (let i = 1; i <= totalWaves; i++) {
     const dotColor = i === currentWave ? '#009E4D' : i < currentWave ? '#148A4C' : '#777777';
     cols.push(`<td width="${dotW}%" align="center" valign="middle"><p style="margin:0;font-size:22px;line-height:22px;color:${dotColor};">&#9679;</p></td>`);
@@ -138,11 +129,13 @@ function buildComplementaryHtml(title, link) {
 const ROADMAP_RE = /<table[^>]*?table-layout:fixed[^>]*?>.*?(?:Part|Wave)\s*1.*?<\/table>/is;
 
 function renderTemplate(html, replacements) {
-  return Object.entries(replacements).reduce((acc, [k, v]) =>
-    acc.replace(new RegExp(`\\{${k}\\}`, 'g'), v ?? ''), html);
+  return Object.entries(replacements).reduce(
+    (acc, [k, v]) => acc.replace(new RegExp(`\\{${k}\\}`, 'g'), v ?? ''),
+    html
+  );
 }
 
-// ── Core generation (shared by bulk and preview) ───────────────────────────────
+// ── Core generation ────────────────────────────────────────────────────────────
 // roleParts: Map<roleName, { total_parts, parts_to_generate }>
 
 async function runGeneration(projectId, roleParts, appName, plantName, goLive, templateHtml) {
@@ -158,12 +151,14 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
       .rows.map(r => [r.concatenate, r])
   );
 
-  const playlists = (await pool.query('SELECT * FROM playlists WHERE project_id=$1', [projectId])).rows;
+  const playlists = (await pool.query(
+    'SELECT * FROM playlists WHERE project_id=$1', [projectId]
+  )).rows;
 
   const playlistItems = playlists.length === 0 ? [] : (await pool.query(
     `SELECT pi.*,
             tc.title AS curriculum_title, tc.link AS curriculum_link,
-            tm.title AS module_title, tm.link AS module_link, tm.duration_min
+            tm.title AS module_title,    tm.link AS module_link, tm.duration_min
      FROM playlist_items pi
      LEFT JOIN training_curricula tc ON tc.id = pi.curriculum_id
      LEFT JOIN training_modules   tm ON tm.id = pi.module_id
@@ -172,7 +167,9 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
     [playlists.map(p => p.id)]
   )).rows;
 
-  const curriculumIds = [...new Set(playlistItems.filter(i => i.curriculum_id).map(i => i.curriculum_id))];
+  const curriculumIds = [...new Set(
+    playlistItems.filter(i => i.curriculum_id).map(i => i.curriculum_id)
+  )];
   const curModules = curriculumIds.length === 0 ? [] : (await pool.query(
     `SELECT cmi.curriculum_id, tm.title, tm.link, tm.duration_min, cmi.sequence_order
      FROM curriculum_module_items cmi
@@ -188,8 +185,9 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
     const modules = [];
     for (const item of items) {
       if (item.curriculum_id) {
-        const cms = curModules.filter(m => m.curriculum_id === item.curriculum_id);
-        modules.push(...cms.map(m => ({ title: m.title, link: m.link || '', duration_min: m.duration_min || 0 })));
+        modules.push(...curModules
+          .filter(m => m.curriculum_id === item.curriculum_id)
+          .map(m => ({ title: m.title, link: m.link || '', duration_min: m.duration_min || 0 })));
       } else if (item.module_id) {
         modules.push({ title: item.module_title, link: item.module_link || '', duration_min: item.duration_min || 0 });
       }
@@ -201,9 +199,12 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
     });
   }
 
-  const allUsers = (await pool.query('SELECT * FROM project_users WHERE project_id=$1', [projectId])).rows;
+  const allUsers = (await pool.query(
+    'SELECT * FROM project_users WHERE project_id=$1', [projectId]
+  )).rows;
+
   const champions = [];
-  const roleMap = new Map();
+  const roleMap   = new Map();
 
   for (const u of allUsers) {
     const info = parseAdditionalInfo(u.additional_info);
@@ -231,9 +232,7 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
 
   for (const [roleName, group] of roleMap) {
     if (roleParts && !roleParts.has(roleName)) continue;
-    const { total_parts, parts_to_generate } = roleParts
-      ? roleParts.get(roleName)
-      : { total_parts: 4, parts_to_generate: [1,2,3,4] };
+    const { total_parts, parts_to_generate } = roleParts.get(roleName);
 
     const primaryTitles       = new Set();
     const complementaryTitles = new Set();
@@ -248,14 +247,13 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
       if (Array.isArray(add)) add.forEach(t => t && typeof t === 'string' && complementaryTitles.add(t.trim()));
     }
 
-    let primaryPlaylist = null;
-    let resolvedPrimaryTitle = null;
+    let primaryPlaylist = null, resolvedPrimaryTitle = null;
     for (const title of primaryTitles) {
       const pl = playlistByTitle.get(title.toLowerCase().trim());
       if (pl) { primaryPlaylist = pl; resolvedPrimaryTitle = title; break; }
     }
     if (!primaryPlaylist) {
-      warnings.push(`No training matrix playlist found for role "${roleName}" (looked for: ${[...primaryTitles].join(', ') || 'none'})`);
+      warnings.push(`No playlist found for role "${roleName}" (looked for: ${[...primaryTitles].join(', ') || 'none'})`);
       continue;
     }
     if (primaryPlaylist.modules.length === 0) {
@@ -274,7 +272,7 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
     const waves = partitionModules(primaryPlaylist.modules, total_parts);
 
     for (let wi = 0; wi < waves.length; wi++) {
-      const waveNum = wi + 1;
+      const waveNum    = wi + 1;
       if (!parts_to_generate.includes(waveNum)) continue;
       const waveModules = waves[wi];
       const pastModules = waves.slice(0, wi).flat();
@@ -289,7 +287,7 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
       if (complementaryHtml) {
         const btnRe = /(Click to open the full e-learning playlist<\/a>\s*<\/td>\s*<\/tr>\s*<\/table>\s*<\/td>\s*<\/tr>)/is;
         const container = `<tr><td style="padding:15px 36px 0 36px;"><div style="border-left:4px solid #009E4D;padding:5px 0 5px 15px;">${complementaryHtml}</div></td></tr>`;
-        body = btnRe.test(body) ? body.replace(btnRe, `$1${container}`) : body;
+        if (btnRe.test(body)) body = body.replace(btnRe, `$1${container}`);
       }
 
       body = renderTemplate(body, {
@@ -302,9 +300,9 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
         NEW_MODULES_LIST: newHtml,
         MAIN_PLAYLIST_LINK: primaryPlaylist.link || '#',
         SUPPORT_CHAMPIONS: championsStr,
-        W1_DOT_COLOR: '', W2_DOT_COLOR: '', W3_DOT_COLOR: '', W4_DOT_COLOR: '',
-        W1_TEXT_COLOR: '', W2_TEXT_COLOR: '', W3_TEXT_COLOR: '', W4_TEXT_COLOR: '',
-        W1_TEXT: '', W2_TEXT: '', W3_TEXT: '', W4_TEXT: '',
+        W1_DOT_COLOR:'', W2_DOT_COLOR:'', W3_DOT_COLOR:'', W4_DOT_COLOR:'',
+        W1_TEXT_COLOR:'', W2_TEXT_COLOR:'', W3_TEXT_COLOR:'', W4_TEXT_COLOR:'',
+        W1_TEXT:'', W2_TEXT:'', W3_TEXT:'', W4_TEXT:'',
       });
 
       results.push({
@@ -325,7 +323,7 @@ async function runGeneration(projectId, roleParts, appName, plantName, goLive, t
 
 // ── GET /roles ─────────────────────────────────────────────────────────────────
 
-router.get('/:projectId/generate/roles', authenticate, requireMember(), previewLimiter, async (req, res) => {
+router.get('/:projectId/generate/roles', authenticate, requireMember(), genLimiter, async (req, res) => {
   try {
     const rows = await pool.query(
       `SELECT role, COUNT(*) AS user_count
@@ -342,8 +340,7 @@ router.get('/:projectId/generate/roles', authenticate, requireMember(), previewL
 });
 
 // ── POST /bulk ─────────────────────────────────────────────────────────────────
-// Adds communications to an existing campaign.
-// Body: { campaign_id, template_id, role_configs: [{ role, total_parts, parts_to_generate }] }
+// Body: { campaign_id, template_id, role_configs }
 
 const bulkSchema = z.object({
   campaign_id:  z.number().int().positive(),
@@ -355,7 +352,7 @@ const bulkSchema = z.object({
   })).min(1),
 });
 
-router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewLimiter, async (req, res) => {
+router.post('/:projectId/generate/bulk', authenticate, requireMember(), genLimiter, async (req, res) => {
   const parsed = bulkSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
   const { campaign_id, template_id, role_configs } = parsed.data;
@@ -381,19 +378,19 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
     )).rows[0];
     if (!template) return res.status(404).json({ error: 'Template not found' });
 
-    const appName   = project.application_name || '';
-    const plantName = project.plant_name       || '';
-    const goLive    = project.go_live_date      || '';
-
     const roleParts = new Map(role_configs.map(rc => [
-      rc.role,
-      { total_parts: rc.total_parts, parts_to_generate: rc.parts_to_generate },
+      rc.role, { total_parts: rc.total_parts, parts_to_generate: rc.parts_to_generate },
     ]));
 
     const { results, warnings, championsStr } = await runGeneration(
-      req.params.projectId, roleParts, appName, plantName, goLive, template.html_content
+      req.params.projectId, roleParts,
+      project.application_name || '',
+      project.plant_name       || '',
+      project.go_live_date     || '',
+      template.html_content
     );
 
+    // Persist communications
     for (const r of results) {
       await pool.query(
         `INSERT INTO campaign_communications
@@ -404,23 +401,27 @@ router.post('/:projectId/generate/bulk', authenticate, requireMember(), previewL
       );
     }
 
+    // Update campaign counters using direct counts to avoid table-not-exists risk
+    const userCount = (await pool.query(
+      'SELECT COUNT(DISTINCT mail) AS n FROM project_users WHERE project_id=$1 AND mail IS NOT NULL',
+      [req.params.projectId]
+    )).rows[0].n;
+
+    const maxParts = role_configs.reduce((m, rc) => Math.max(m, rc.total_parts), 0);
+
     await pool.query(
-      `UPDATE campaigns
-       SET user_count = (SELECT COUNT(DISTINCT mail) FROM project_users WHERE project_id=$1 AND mail IS NOT NULL),
-           part_count = (SELECT MAX(total_parts) FROM campaign_communications WHERE campaign_id=$2)
-       WHERE id=$2`,
-      [req.params.projectId, campaign_id]
+      'UPDATE campaigns SET user_count=$1, part_count=$2 WHERE id=$3',
+      [parseInt(userCount, 10), maxParts, campaign_id]
     );
 
     res.json({ results, warnings, champions: championsStr });
   } catch (err) {
-    console.error('[POST generate/bulk]', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('[POST generate/bulk]', err.message, err.stack);
+    res.status(500).json({ error: err.message || 'Internal server error' });
   }
 });
 
 // ── POST /preview ──────────────────────────────────────────────────────────────
-// Renders a single role preview with a given template. No persistence.
 // Body: { role, total_parts, parts_to_generate, template_id }
 
 const previewSchema = z.object({
@@ -430,7 +431,7 @@ const previewSchema = z.object({
   template_id:       z.number().int().positive(),
 });
 
-router.post('/:projectId/generate/preview', authenticate, requireMember(), previewLimiter, async (req, res) => {
+router.post('/:projectId/generate/preview', authenticate, requireMember(), genLimiter, async (req, res) => {
   const parsed = previewSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
   const { role, total_parts, parts_to_generate, template_id } = parsed.data;
@@ -462,8 +463,8 @@ router.post('/:projectId/generate/preview', authenticate, requireMember(), previ
 
     res.json({ results, warnings });
   } catch (err) {
-    console.error('[POST generate/preview]', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('[POST generate/preview]', err.message, err.stack);
+    res.status(500).json({ error: err.message || 'Internal server error' });
   }
 });
 

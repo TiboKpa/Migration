@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import client from '../api/client';
 
 const PART_OPTIONS = [1, 2, 3, 4, 5, 6];
@@ -40,7 +40,7 @@ function PreviewModal({ item, onClose }) {
   );
 }
 
-function RoleConfigRow({ role, userCount, config, onChange, onPreview, isPreviewing }) {
+function RoleConfigRow({ role, userCount, config, onChange, onPreview, isPreviewing, canPreview }) {
   const { total_parts, parts_to_generate } = config;
 
   function setTotalParts(n) {
@@ -93,8 +93,9 @@ function RoleConfigRow({ role, userCount, config, onChange, onPreview, isPreview
       <td className="py-3 text-right">
         <button
           onClick={onPreview}
-          disabled={isPreviewing || parts_to_generate.length === 0}
-          className="text-xs text-blue-600 hover:underline disabled:opacity-40"
+          disabled={isPreviewing || parts_to_generate.length === 0 || !canPreview}
+          className="text-xs text-blue-600 hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+          title={!canPreview ? 'Select a template first' : ''}
         >
           {isPreviewing ? 'Loading...' : 'Preview'}
         </button>
@@ -108,53 +109,47 @@ export default function MailGenerationPage() {
   const queryClient = useQueryClient();
 
   // per-role configs
-  const [roleConfigs, setRoleConfigs] = useState(new Map());
+  const [roleConfigs, setRoleConfigs]   = useState(new Map());
 
-  // campaign state
-  const [campaignMode, setCampaignMode]         = useState('existing');
-  const [selectedCampaignId, setSelectedCampaignId] = useState('');
-  const [newCampaignName, setNewCampaignName]    = useState('');
+  // campaign: just a name field -- will create-or-reuse on generate
+  const [campaignName, setCampaignName] = useState('');
 
-  // template selection (per generation run, linked to campaign)
-  const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  // template
+  const [selectedTemplateId, setSelectedTemplateId] = useState(null); // number | null
 
-  // results & ui state
-  const [results,       setResults]       = useState([]);
-  const [warnings,      setWarnings]      = useState([]);
-  const [previewItem,   setPreviewItem]   = useState(null);
+  // ui state
+  const [results,        setResults]        = useState([]);
+  const [warnings,       setWarnings]       = useState([]);
+  const [previewItem,    setPreviewItem]    = useState(null);
   const [previewingRole, setPreviewingRole] = useState(null);
-  const [generateError, setGenerateError] = useState(null);
+  const [previewError,   setPreviewError]   = useState(null);
+  const [generating,     setGenerating]     = useState(false);
+  const [generateError,  setGenerateError]  = useState(null);
 
   // project (read-only)
   const { data: project } = useQuery({
     queryKey: ['project', projectId],
-    queryFn: () => client.get(`/projects/${projectId}`).then(r => r.data),
+    queryFn:  () => client.get(`/projects/${projectId}`).then(r => r.data),
   });
 
-  // campaigns list
-  const { data: campaigns = [] } = useQuery({
-    queryKey: ['campaigns', projectId],
-    queryFn: () => client.get(`/projects/${projectId}/campaigns`).then(r => r.data),
-  });
-
-  // templates list
+  // templates
   const { data: templates = [] } = useQuery({
     queryKey: ['templates', projectId],
-    queryFn: () => client.get(`/projects/${projectId}/templates`).then(r => r.data),
+    queryFn:  () => client.get(`/projects/${projectId}/templates`).then(r => r.data),
   });
 
-  // auto-select default template
+  // auto-select default template once loaded
   useEffect(() => {
-    if (!selectedTemplateId && templates.length > 0) {
+    if (selectedTemplateId === null && templates.length > 0) {
       const def = templates.find(t => t.is_default) || templates[0];
-      setSelectedTemplateId(String(def.id));
+      setSelectedTemplateId(def.id);
     }
   }, [templates, selectedTemplateId]);
 
-  // roles list -- initialise per-role configs on load
+  // roles
   const { data: roles = [], isLoading: rolesLoading } = useQuery({
     queryKey: ['generate-roles', projectId],
-    queryFn: () => client.get(`/projects/${projectId}/generate/roles`).then(r => r.data),
+    queryFn:  () => client.get(`/projects/${projectId}/generate/roles`).then(r => r.data),
     onSuccess: rows => {
       setRoleConfigs(prev => {
         const next = new Map(prev);
@@ -167,54 +162,44 @@ export default function MailGenerationPage() {
   });
 
   function updateRoleConfig(role, patch) {
-    setRoleConfigs(prev => { const next = new Map(prev); next.set(role, { ...prev.get(role), ...patch }); return next; });
+    setRoleConfigs(prev => {
+      const next = new Map(prev);
+      next.set(role, { ...(prev.get(role) || { total_parts: 4, parts_to_generate: [1,2,3,4] }), ...patch });
+      return next;
+    });
   }
 
-  // preview mutation
-  const previewMutation = useMutation({
-    mutationFn: ({ role, config, templateId }) => client.post(
-      `/projects/${projectId}/generate/preview`,
-      { role, total_parts: config.total_parts, parts_to_generate: config.parts_to_generate, template_id: Number(templateId) }
-    ).then(r => r.data),
-    onSuccess: data => {
-      setPreviewingRole(null);
-      if (data.results.length > 0) setPreviewItem(data.results[0]);
-    },
-    onError: () => setPreviewingRole(null),
-  });
-
-  function handlePreview(role) {
+  // preview handler
+  async function handlePreview(role) {
+    if (!selectedTemplateId) { setPreviewError('Select a template first.'); return; }
     const config = roleConfigs.get(role);
-    if (!config || config.parts_to_generate.length === 0 || !selectedTemplateId) return;
+    if (!config || config.parts_to_generate.length === 0) return;
+    setPreviewError(null);
     setPreviewingRole(role);
-    previewMutation.mutate({ role, config, templateId: selectedTemplateId });
+    try {
+      const data = await client.post(`/projects/${projectId}/generate/preview`, {
+        role,
+        total_parts:       config.total_parts,
+        parts_to_generate: config.parts_to_generate,
+        template_id:       selectedTemplateId,
+      }).then(r => r.data);
+      if (data.results && data.results.length > 0) {
+        setPreviewItem(data.results[0]);
+      } else {
+        setPreviewError(`No preview generated for "${role}". Check the role matrix and playlists.`);
+      }
+    } catch (err) {
+      setPreviewError(err?.response?.data?.error || 'Preview failed.');
+    } finally {
+      setPreviewingRole(null);
+    }
   }
 
-  // main generate handler -- creates campaign if needed, then bulk generates
+  // main generate handler
   async function handleGenerate() {
     setGenerateError(null);
-    if (!selectedTemplateId) { setGenerateError('Please select a template.'); return; }
-
-    let campaignId = selectedCampaignId;
-
-    if (campaignMode === 'new') {
-      if (!newCampaignName.trim()) { setGenerateError('Please enter a campaign name.'); return; }
-      try {
-        const created = await client.post(`/projects/${projectId}/campaigns`, {
-          campaign_name: newCampaignName.trim(),
-        }).then(r => r.data);
-        campaignId = String(created.id);
-        setSelectedCampaignId(campaignId);
-        setCampaignMode('existing');
-        setNewCampaignName('');
-        queryClient.invalidateQueries(['campaigns', projectId]);
-      } catch (err) {
-        setGenerateError(err?.response?.data?.error || 'Failed to create campaign.');
-        return;
-      }
-    }
-
-    if (!campaignId) { setGenerateError('Please select or create a campaign.'); return; }
+    if (!campaignName.trim()) { setGenerateError('Enter a campaign name.'); return; }
+    if (!selectedTemplateId)  { setGenerateError('Select a template.'); return; }
 
     const role_configs = roles
       .filter(r => roleConfigs.has(r.role) && (roleConfigs.get(r.role)?.parts_to_generate.length ?? 0) > 0)
@@ -222,17 +207,27 @@ export default function MailGenerationPage() {
 
     if (role_configs.length === 0) { setGenerateError('No roles with parts selected.'); return; }
 
+    setGenerating(true);
     try {
+      // Always create a new campaign with the given name
+      const campaign = await client.post(`/projects/${projectId}/campaigns`, {
+        campaign_name: campaignName.trim(),
+      }).then(r => r.data);
+
       const res = await client.post(`/projects/${projectId}/generate/bulk`, {
-        campaign_id:  Number(campaignId),
-        template_id:  Number(selectedTemplateId),
+        campaign_id:  campaign.id,
+        template_id:  selectedTemplateId,
         role_configs,
       }).then(r => r.data);
+
       setResults(res.results);
       setWarnings(res.warnings || []);
+      setCampaignName('');
       queryClient.invalidateQueries(['campaigns', projectId]);
     } catch (err) {
       setGenerateError(err?.response?.data?.error || 'Generation failed.');
+    } finally {
+      setGenerating(false);
     }
   }
 
@@ -245,17 +240,15 @@ export default function MailGenerationPage() {
     return [...map.entries()];
   }, [results]);
 
-  const canGenerate =
-    selectedTemplateId &&
-    ((campaignMode === 'existing' && selectedCampaignId) || (campaignMode === 'new' && newCampaignName.trim())) &&
+  const canGenerate = campaignName.trim() && selectedTemplateId &&
     roles.some(r => (roleConfigs.get(r.role)?.parts_to_generate.length ?? 0) > 0);
 
   return (
     <div>
       <h1 className="text-xl font-bold text-slate-800 mb-1">Mail Generation</h1>
-      <p className="text-sm text-slate-500 mb-6">Configure per-role communications and add them to a campaign</p>
+      <p className="text-sm text-slate-500 mb-6">Generate per-role communications and save them to a new campaign</p>
 
-      {/* project info */}
+      {/* project info strip */}
       {project && (
         <div className="bg-slate-50 border rounded-xl px-5 py-3 mb-4 flex flex-wrap gap-6">
           <div>
@@ -268,71 +261,38 @@ export default function MailGenerationPage() {
           </div>
           <div>
             <p className="text-xs text-slate-400">Go-live date</p>
-            <p className="text-sm font-medium text-slate-700">{project.go_live_date ? project.go_live_date.slice(0, 10) : <span className="italic text-slate-400">not set</span>}</p>
+            <p className="text-sm font-medium text-slate-700">
+              {project.go_live_date ? project.go_live_date.slice(0, 10) : <span className="italic text-slate-400">not set</span>}
+            </p>
           </div>
           <p className="text-xs text-slate-400 self-end pb-0.5">Edit in Project Settings</p>
         </div>
       )}
 
-      {/* campaign + template selection */}
+      {/* campaign name + template */}
       <div className="bg-white border rounded-xl p-5 mb-4">
-        <h2 className="text-sm font-semibold text-slate-700 mb-4">Campaign and template</h2>
-
+        <h2 className="text-sm font-semibold text-slate-700 mb-4">Campaign setup</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-          {/* campaign */}
           <div>
-            <p className="text-xs text-slate-500 mb-2">Target campaign</p>
-            <div className="flex gap-2 mb-2">
-              <button
-                onClick={() => setCampaignMode('existing')}
-                className={`text-xs px-3 py-1 rounded-lg border font-medium ${
-                  campaignMode === 'existing' ? 'bg-[#3DCD58] text-white border-[#3DCD58]' : 'text-slate-600 border-slate-200 hover:bg-slate-50'
-                }`}
-              >
-                Existing
-              </button>
-              <button
-                onClick={() => setCampaignMode('new')}
-                className={`text-xs px-3 py-1 rounded-lg border font-medium ${
-                  campaignMode === 'new' ? 'bg-[#3DCD58] text-white border-[#3DCD58]' : 'text-slate-600 border-slate-200 hover:bg-slate-50'
-                }`}
-              >
-                New
-              </button>
-            </div>
-            {campaignMode === 'existing' ? (
-              campaigns.length === 0
-                ? <p className="text-xs text-slate-400">No campaigns yet. Switch to New.</p>
-                : <select
-                    className="border rounded-lg px-3 py-2 text-sm w-full"
-                    value={selectedCampaignId}
-                    onChange={e => setSelectedCampaignId(e.target.value)}
-                  >
-                    <option value="">Select a campaign...</option>
-                    {campaigns.map(c => <option key={c.id} value={c.id}>{c.campaign_name}</option>)}
-                  </select>
-            ) : (
-              <input
-                className="border rounded-lg px-3 py-2 text-sm w-full"
-                placeholder="New campaign name"
-                value={newCampaignName}
-                onChange={e => setNewCampaignName(e.target.value)}
-              />
-            )}
+            <label className="text-xs text-slate-500 block mb-1">Campaign name</label>
+            <input
+              className="border rounded-lg px-3 py-2 text-sm w-full"
+              placeholder="e.g. Wave 1 - June 2026"
+              value={campaignName}
+              onChange={e => setCampaignName(e.target.value)}
+            />
+            <p className="text-xs text-slate-400 mt-1">A new campaign will be created with this name.</p>
           </div>
-
-          {/* template */}
           <div>
-            <p className="text-xs text-slate-500 mb-2">Email template</p>
+            <label className="text-xs text-slate-500 block mb-1">Email template</label>
             {templates.length === 0 ? (
-              <p className="text-xs text-slate-400">No templates. Upload one in the Templates page.</p>
+              <p className="text-xs text-slate-400 mt-2">No templates. Upload one in the Templates page.</p>
             ) : (
               <select
                 className="border rounded-lg px-3 py-2 text-sm w-full"
-                value={selectedTemplateId}
-                onChange={e => setSelectedTemplateId(e.target.value)}
+                value={selectedTemplateId || ''}
+                onChange={e => setSelectedTemplateId(Number(e.target.value))}
               >
-                <option value="">Select a template...</option>
                 {templates.map(t => (
                   <option key={t.id} value={t.id}>
                     {t.template_name}{t.is_default ? ' (default)' : ''}
@@ -344,11 +304,13 @@ export default function MailGenerationPage() {
         </div>
       </div>
 
-      {/* per-role configuration */}
+      {/* per-role config table */}
       <div className="bg-white border rounded-xl p-5 mb-4">
         <h2 className="text-sm font-semibold text-slate-700 mb-3">Role configuration</h2>
         {rolesLoading && <p className="text-sm text-slate-400">Loading roles...</p>}
-        {!rolesLoading && roles.length === 0 && <p className="text-sm text-slate-400">No roles found in the user list.</p>}
+        {!rolesLoading && roles.length === 0 && (
+          <p className="text-sm text-slate-400">No roles found in the user list.</p>
+        )}
         {roles.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -370,11 +332,15 @@ export default function MailGenerationPage() {
                     onChange={patch => updateRoleConfig(r.role, patch)}
                     onPreview={() => handlePreview(r.role)}
                     isPreviewing={previewingRole === r.role}
+                    canPreview={!!selectedTemplateId}
                   />
                 ))}
               </tbody>
             </table>
           </div>
+        )}
+        {previewError && (
+          <p className="text-xs text-red-500 mt-3">{previewError}</p>
         )}
       </div>
 
@@ -382,10 +348,10 @@ export default function MailGenerationPage() {
       <div className="mb-4">
         <button
           onClick={handleGenerate}
-          disabled={!canGenerate}
+          disabled={!canGenerate || generating}
           className="bg-[#3DCD58] text-white px-6 py-2.5 rounded-lg text-sm font-semibold hover:bg-[#35b84e] disabled:opacity-40"
         >
-          Add communications to campaign
+          {generating ? 'Generating...' : 'Create campaign and add communications'}
         </button>
         {generateError && <p className="text-sm text-red-500 mt-2">{generateError}</p>}
       </div>
