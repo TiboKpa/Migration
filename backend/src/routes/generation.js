@@ -55,30 +55,30 @@ function buildGroupKey(primaryId, complementaryIds) {
   return `${primaryId}|${[...complementaryIds].sort((a, b) => a - b).join(',')}`;
 }
 
-function partitionModules(modules, k) {
-  const n = modules.length;
+function partitionUnits(units, k) {
+  const n = units.length;
   if (n === 0) return Array.from({ length: k }, () => []);
   if (n <= k) {
     const waves = Array.from({ length: k }, () => []);
-    modules.forEach((m, i) => waves[i].push(m));
+    units.forEach((u, i) => waves[i].push(u));
     return waves;
   }
-  const total  = modules.reduce((s, m) => s + m.duration_min, 0);
+  const total  = units.reduce((s, u) => s + u.duration_min, 0);
   const target = total / k;
   const memo   = new Map();
   function solve(idx, wavesLeft) {
     const key = `${idx}:${wavesLeft}`;
     if (memo.has(key)) return memo.get(key);
     if (wavesLeft === 1) {
-      const slice = modules.slice(idx);
-      return [(slice.reduce((s, m) => s + m.duration_min, 0) - target) ** 2, [slice]];
+      const slice = units.slice(idx);
+      return [(slice.reduce((s, u) => s + u.duration_min, 0) - target) ** 2, [slice]];
     }
     let bestCost = Infinity, bestParts = null, current = 0;
     for (let i = idx; i <= n - wavesLeft; i++) {
-      current += modules[i].duration_min;
+      current += units[i].duration_min;
       const [cr, pr] = solve(i + 1, wavesLeft - 1);
       const t = (current - target) ** 2 + cr;
-      if (t < bestCost) { bestCost = t; bestParts = [modules.slice(idx, i + 1), ...pr]; }
+      if (t < bestCost) { bestCost = t; bestParts = [units.slice(idx, i + 1), ...pr]; }
     }
     memo.set(key, [bestCost, bestParts]);
     return [bestCost, bestParts];
@@ -108,12 +108,15 @@ function buildDynamicRoadmap(currentWave, totalWaves) {
 </table>`;
 }
 
-function buildModuleHtml(m, prefix, color, bold) {
+// unit: { title, link, duration_min, isCurriculum }
+// For curricula shown in past list: expand child modules inline (greyed out)
+// For new modules list: show curriculum as single bold entry
+function buildUnitHtml(unit, prefix, color, bold) {
   const fw = bold ? 'font-weight:bold;' : '';
-  const nameHtml = m.link
-    ? `<a href="${m.link}" target="_blank" style="color:${color};text-decoration:underline;">${m.title}</a>`
-    : m.title;
-  return `<tr><td style="font-size:15px;line-height:24px;color:${color};${fw}">${prefix} ${nameHtml} (${formatDuration(m.duration_min)})</td></tr>\n`;
+  const nameHtml = unit.link
+    ? `<a href="${unit.link}" target="_blank" style="color:${color};text-decoration:underline;">${unit.title}</a>`
+    : unit.title;
+  return `<tr><td style="font-size:15px;line-height:24px;color:${color};${fw}">${prefix} ${nameHtml} (${formatDuration(unit.duration_min)})</td></tr>\n`;
 }
 
 function buildComplementaryHtml(title, link) {
@@ -132,9 +135,45 @@ function renderTemplate(html, replacements) {
   );
 }
 
-// ── resolveGroups: dry-run matrix lookup, no email generation ──────────────────
-// Returns Map<groupKey, { groupKey, primaryPlaylist, complementaryPlaylists,
-//   roles: Set, emails: Set, user_count }>
+// ── buildUnitsForPlaylist ──────────────────────────────────────────────────────
+// Returns an array of units for a given playlist.
+// Each curriculum item becomes ONE unit (aggregate duration).
+// Each standalone module item stays as ONE unit.
+async function buildUnitsForPlaylist(playlistId, playlistItems, curModulesByIds) {
+  const items = playlistItems.filter(i => i.playlist_id === playlistId);
+  const units = [];
+  for (const item of items) {
+    if (item.curriculum_id) {
+      const children = curModulesByIds.get(item.curriculum_id) || [];
+      const totalMin = children.reduce((s, m) => s + (m.duration_min || 0), 0);
+      // Use the curriculum title stored on the playlist_item row (item.curriculum_title),
+      // falling back to a generic label.
+      units.push({
+        title:        item.curriculum_title || `Curriculum #${item.curriculum_id}`,
+        link:         item.curriculum_link  || '',
+        duration_min: totalMin,
+        isCurriculum: true,
+        curriculum_id: item.curriculum_id,
+        // Keep child modules for possible inline expansion later
+        children,
+      });
+    } else if (item.module_id) {
+      units.push({
+        title:        item.module_title,
+        link:         item.module_link || '',
+        duration_min: item.duration_min || 0,
+        isCurriculum: false,
+      });
+    }
+  }
+  return units;
+}
+
+// ── resolveGroups ──────────────────────────────────────────────────────────────
+// Returns Map<groupKey, { groupKey, primaryPlaylist, complementaryItems,
+//   roles: Set, emails: Set }>
+// complementaryItems: array of { title, link } resolved directly from the
+// role_matrix complementary_items JSON (no playlist-table lookup required).
 async function resolveGroups(projectId) {
   const infoKeys = (await pool.query(
     `SELECT value FROM role_matrix_dimensions WHERE project_id=$1 AND type='info_key' ORDER BY value`,
@@ -177,19 +216,41 @@ async function resolveGroups(projectId) {
       continue;
     }
 
+    // Resolve complementary items directly from the stored JSON.
+    // Each item may be: { title, link } | { playlist_id, title, link } | number (legacy).
+    // We do NOT require the item to exist in playlistById - the title/link are used as-is.
     const compRaw = parseJson(matrixRow.complementary_items, []);
-    const compIds = compRaw
-      .map(item => (typeof item === 'object' ? (item.playlist_id || item.id) : item))
-      .filter(id => id && playlistById.has(id))
-      .sort((a, b) => a - b);
+    const complementaryItems = compRaw
+      .map(item => {
+        if (typeof item === 'object' && item !== null) {
+          return {
+            title: item.title || '',
+            link:  item.link  || '',
+            // keep playlist_id if present for group-key deduplication
+            playlist_id: item.playlist_id || item.id || null,
+          };
+        }
+        // Legacy: bare numeric id - try to resolve from playlistById
+        if (typeof item === 'number' && playlistById.has(item)) {
+          const pl = playlistById.get(item);
+          return { title: pl.title, link: pl.link || '', playlist_id: pl.id };
+        }
+        return null;
+      })
+      .filter(item => item !== null && item.title);
 
-    const groupKey = buildGroupKey(primaryId, compIds);
+    // Build a stable group key using playlist_ids where available, else title hash
+    const compKeys = complementaryItems
+      .map(item => item.playlist_id != null ? `p${item.playlist_id}` : `t${item.title}`)
+      .sort()
+      .join(',');
+    const groupKey = `${primaryId}|${compKeys}`;
 
     if (!groups.has(groupKey)) {
       groups.set(groupKey, {
         groupKey,
-        primaryPlaylist:       playlistById.get(primaryId),
-        complementaryPlaylists: compIds.map(id => playlistById.get(id)),
+        primaryPlaylist:   playlistById.get(primaryId),
+        complementaryItems,
         roles:  new Set(),
         emails: new Set(),
       });
@@ -203,17 +264,17 @@ async function resolveGroups(projectId) {
 }
 
 // ── Core generation ────────────────────────────────────────────────────────────
-// groupConfigs: Map<groupKey, { total_parts, parts_to_generate }>
-// When null, defaults to 4 parts all selected.
 async function runGeneration(projectId, groupConfigs, appName, plantName, goLive, templateHtml) {
   const goLiveFormatted = formatDateWithSuffix(goLive);
 
   const playlists    = (await pool.query('SELECT * FROM playlists WHERE project_id=$1', [projectId])).rows;
   const playlistById = new Map(playlists.map(p => [p.id, p]));
 
+  // Fetch playlist_items, also pulling curriculum title/link from the curricula table
   const playlistItems = playlists.length === 0 ? [] : (await pool.query(
     `SELECT pi.*,
-            tm.title AS module_title, tm.link AS module_link, tm.duration_min
+            tc.title   AS curriculum_title, tc.link AS curriculum_link,
+            tm.title   AS module_title,     tm.link AS module_link, tm.duration_min
      FROM playlist_items pi
      LEFT JOIN training_curricula tc ON tc.id = pi.curriculum_id
      LEFT JOIN training_modules   tm ON tm.id = pi.module_id
@@ -223,7 +284,7 @@ async function runGeneration(projectId, groupConfigs, appName, plantName, goLive
   )).rows;
 
   const curriculumIds = [...new Set(playlistItems.filter(i => i.curriculum_id).map(i => i.curriculum_id))];
-  const curModules    = curriculumIds.length === 0 ? [] : (await pool.query(
+  const curModulesFlat = curriculumIds.length === 0 ? [] : (await pool.query(
     `SELECT cmi.curriculum_id, tm.title, tm.link, tm.duration_min
      FROM curriculum_module_items cmi
      JOIN training_modules tm ON tm.id = cmi.module_id
@@ -232,25 +293,22 @@ async function runGeneration(projectId, groupConfigs, appName, plantName, goLive
     [curriculumIds]
   )).rows;
 
-  const modulesByPlaylistId = new Map();
+  // Map curriculum_id -> child modules
+  const curModulesByIds = new Map();
+  for (const m of curModulesFlat) {
+    if (!curModulesByIds.has(m.curriculum_id)) curModulesByIds.set(m.curriculum_id, []);
+    curModulesByIds.get(m.curriculum_id).push(m);
+  }
+
+  // Build units per playlist (curricula = single unit, modules = single unit)
+  const unitsByPlaylistId = new Map();
   for (const pl of playlists) {
-    const items   = playlistItems.filter(i => i.playlist_id === pl.id);
-    const modules = [];
-    for (const item of items) {
-      if (item.curriculum_id) {
-        modules.push(...curModules
-          .filter(m => m.curriculum_id === item.curriculum_id)
-          .map(m => ({ title: m.title, link: m.link || '', duration_min: m.duration_min || 0 })));
-      } else if (item.module_id) {
-        modules.push({ title: item.module_title, link: item.module_link || '', duration_min: item.duration_min || 0 });
-      }
-    }
-    modulesByPlaylistId.set(pl.id, modules);
+    unitsByPlaylistId.set(pl.id, await buildUnitsForPlaylist(pl.id, playlistItems, curModulesByIds));
   }
 
   const { groups, warnings } = await resolveGroups(projectId);
 
-  // champions
+  // Champions
   const champRows = (await pool.query(
     `SELECT first_name, last_name, mail, additional_info FROM project_users WHERE project_id=$1`,
     [projectId]
@@ -265,36 +323,35 @@ async function runGeneration(projectId, groupConfigs, appName, plantName, goLive
   const results = [];
 
   for (const [groupKey, group] of groups) {
-    // skip groups not in groupConfigs when configs are provided
     if (groupConfigs && !groupConfigs.has(groupKey)) continue;
 
     const { total_parts, parts_to_generate } = groupConfigs
       ? groupConfigs.get(groupKey)
       : { total_parts: 4, parts_to_generate: [1, 2, 3, 4] };
 
-    const modules = modulesByPlaylistId.get(group.primaryPlaylist.id) || [];
-    if (modules.length === 0) {
+    const units = unitsByPlaylistId.get(group.primaryPlaylist.id) || [];
+    if (units.length === 0) {
       warnings.push(`Playlist "${group.primaryPlaylist.title}" has no modules`);
       continue;
     }
 
     const rolesLabel        = [...group.roles].sort().join(', ');
-    const complementaryHtml = group.complementaryPlaylists
-      .map(pl => buildComplementaryHtml(pl.title, pl.link || ''))
+    const complementaryHtml = group.complementaryItems
+      .map(item => buildComplementaryHtml(item.title, item.link))
       .join('');
 
-    const waves    = partitionModules(modules, total_parts);
-    const totalMin = modules.reduce((s, m) => s + m.duration_min, 0);
+    const waves    = partitionUnits(units, total_parts);
+    const totalMin = units.reduce((s, u) => s + u.duration_min, 0);
 
     for (let wi = 0; wi < waves.length; wi++) {
-      const waveNum = wi + 1;
+      const waveNum   = wi + 1;
       if (!parts_to_generate.includes(waveNum)) continue;
 
-      const waveModules = waves[wi];
-      const pastModules = waves.slice(0, wi).flat();
-      const waveMin     = waveModules.reduce((s, m) => s + m.duration_min, 0);
-      const pastHtml    = pastModules.map(m => buildModuleHtml(m, '&#8226;', '#a0a0a0', false)).join('');
-      const newHtml     = waveModules.map(m => buildModuleHtml(m, '&#x1F195;', '#222222', true)).join('')
+      const waveUnits = waves[wi];
+      const pastUnits = waves.slice(0, wi).flat();
+      const waveMin   = waveUnits.reduce((s, u) => s + u.duration_min, 0);
+      const pastHtml  = pastUnits.map(u => buildUnitHtml(u, '&#8226;', '#a0a0a0', false)).join('');
+      const newHtml   = waveUnits.map(u => buildUnitHtml(u, '&#x1F195;', '#222222', true)).join('')
         || '<tr><td style="font-size:15px;line-height:24px;color:#a0a0a0;font-style:italic;">Training modules overview</td></tr>';
 
       const roadmap = buildDynamicRoadmap(waveNum, total_parts);
@@ -329,7 +386,7 @@ async function runGeneration(projectId, groupConfigs, appName, plantName, goLive
         group_key:     groupKey,
         playlist_id:   group.primaryPlaylist.id,
         playlist_name: group.primaryPlaylist.title,
-        complementary: group.complementaryPlaylists.map(p => p.title),
+        complementary: group.complementaryItems.map(item => ({ title: item.title, link: item.link })),
         roles:         [...group.roles].sort(),
         wave:          waveNum,
         total_parts,
@@ -342,7 +399,7 @@ async function runGeneration(projectId, groupConfigs, appName, plantName, goLive
         html:          body,
         total_hours:   formatDuration(totalMin),
         wave_hours:    formatDuration(waveMin),
-        module_count:  waveModules.length,
+        unit_count:    waveUnits.length,
       });
     }
   }
@@ -351,7 +408,6 @@ async function runGeneration(projectId, groupConfigs, appName, plantName, goLive
 }
 
 // ── GET /groups ────────────────────────────────────────────────────────────────
-// Returns the resolved training groups for the project's user list.
 
 router.get('/:projectId/generate/groups', authenticate, requireMember(), genLimiter, async (req, res) => {
   try {
@@ -360,7 +416,10 @@ router.get('/:projectId/generate/groups', authenticate, requireMember(), genLimi
       group_key:              g.groupKey,
       primary_playlist_id:    g.primaryPlaylist.id,
       primary_playlist_name:  g.primaryPlaylist.title,
-      complementary_playlists: g.complementaryPlaylists.map(p => ({ id: p.id, title: p.title })),
+      complementary_playlists: g.complementaryItems.map(item => ({
+        title: item.title,
+        link:  item.link,
+      })),
       roles:      [...g.roles].sort(),
       user_count: g.emails.size,
     }));
