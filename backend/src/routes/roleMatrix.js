@@ -52,8 +52,6 @@ function cartesianInfoCombos(info_keys) {
 }
 
 // Insert rows for a specific set of fn/role pairs x all info combos.
-// Used when a new function or role is added -- only the new dimension
-// needs rows; existing rows are untouched.
 async function insertRowsForPairs(client, projectId, fnList, roleList, info_keys) {
   const combos = cartesianInfoCombos(info_keys);
   for (const fn of fnList) {
@@ -75,11 +73,6 @@ async function insertRowsForPairs(client, projectId, fnList, roleList, info_keys
   }
 }
 
-// When a new info_key is added:
-// 1. Every existing row gets the new key set to false in additional_info
-//    and its concatenate recomputed (UPDATE in place).
-// 2. A twin row with the new key set to true is inserted for each existing row.
-// This preserves all training/TLG data on existing rows and avoids wiping anything.
 async function expandExistingRowsForNewInfoKey(client, projectId, newKey) {
   const { rows } = await client.query(
     'SELECT * FROM role_matrix WHERE project_id=$1',
@@ -88,11 +81,8 @@ async function expandExistingRowsForNewInfoKey(client, projectId, newKey) {
 
   for (const row of rows) {
     const info = parseAdditionalInfo(row.additional_info);
-
-    // Skip rows that already have this key (idempotency).
     if (newKey in info) continue;
 
-    // Update existing row: add key=false, recompute concatenate.
     const updatedInfo = { ...info, [newKey]: false };
     const updatedConcatenate = buildConcatenate(row.function, row.role, updatedInfo);
     await client.query(
@@ -102,7 +92,6 @@ async function expandExistingRowsForNewInfoKey(client, projectId, newKey) {
       [JSON.stringify(updatedInfo), updatedConcatenate, row.id]
     );
 
-    // Insert twin row with key=true (blank training/TLG -- user must fill in).
     const twinInfo = { ...info, [newKey]: true };
     const twinConcatenate = buildConcatenate(row.function, row.role, twinInfo);
     await client.query(
@@ -272,6 +261,10 @@ router.delete('/:projectId/role-matrix/dimensions', authenticate, requireMember(
           );
         }
       }
+      await client.query(
+        'DELETE FROM role_matrix_info_key_links WHERE project_id=$1 AND info_key=$2',
+        [req.params.projectId, value]
+      );
     }
     const afterResult = await client.query(
       'SELECT type, value FROM role_matrix_dimensions WHERE project_id=$1', [req.params.projectId]
@@ -331,6 +324,50 @@ router.get('/:projectId/role-matrix/complementary-options', authenticate, requir
   }
 });
 
+// -- Info key links --------------------------------------------------------
+
+// GET all info-key links for a project
+router.get('/:projectId/role-matrix/info-key-links', authenticate, requireMember(), async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT info_key, complementary_items FROM role_matrix_info_key_links WHERE project_id=$1',
+      [req.params.projectId]
+    );
+    const links = {};
+    for (const row of result.rows) {
+      links[row.info_key] = parseJsonField(row.complementary_items, []);
+    }
+    res.json(links);
+  } catch (err) {
+    console.error('[GET role-matrix/info-key-links]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// PUT (upsert) info-key link for a specific info key
+router.put('/:projectId/role-matrix/info-key-links/:infoKey', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
+  const { infoKey } = req.params;
+  const { complementary_items } = req.body;
+  if (!Array.isArray(complementary_items))
+    return res.status(400).json({ error: 'complementary_items must be an array' });
+  try {
+    await pool.query(
+      `INSERT INTO role_matrix_info_key_links (project_id, info_key, complementary_items, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (project_id, info_key) DO UPDATE SET
+         complementary_items = EXCLUDED.complementary_items,
+         updated_at          = NOW()`,
+      [req.params.projectId, infoKey, JSON.stringify(complementary_items)]
+    );
+    res.json({ info_key: infoKey, complementary_items });
+  } catch (err) {
+    console.error('[PUT role-matrix/info-key-links/:infoKey]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// -- Role matrix CRUD ------------------------------------------------------
+
 router.put('/:projectId/role-matrix/:id', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
   const { tlg_primary, tlg_addon, na_tlg, na_training, recommended_training_id, complementary_items } = req.body;
   const isNaTlg = toBoolean(na_tlg);
@@ -370,6 +407,7 @@ router.delete('/:projectId/role-matrix', authenticate, requireMember(['owner']),
     await client.query('BEGIN');
     await client.query('DELETE FROM role_matrix WHERE project_id=$1', [req.params.projectId]);
     await client.query('DELETE FROM role_matrix_dimensions WHERE project_id=$1', [req.params.projectId]);
+    await client.query('DELETE FROM role_matrix_info_key_links WHERE project_id=$1', [req.params.projectId]);
     await client.query('COMMIT');
     res.json({ deleted: true });
   } catch (err) {
