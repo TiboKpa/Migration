@@ -260,15 +260,25 @@ function InfoKeyButton({ label, state, onChange, onRemove, editMode, onEditLink 
 
 // ---------------------------------------------------------------------------
 // InfoKeyLinkModal
-// Used at import time (one per info key with complementary names) AND for
-// editing existing info-key links from the sidebar.
+// Used at import time (one per info key) AND for editing existing links from
+// the sidebar.
+//
+// The auto-match logic:
+//   The column header "Additional Info PDM Champion" produces the info key
+//   "PDM Champion". At import time the modal is shown for each info key where
+//   at least one row with that key = true has a non-N/A primary training.
+//   The info key name itself is used to search the Training Matrix for an
+//   exact title match (case-insensitive). If found, that item is pre-selected
+//   in the modal (shown in the green "auto-matched" banner). The user can then
+//   keep it, deselect it, or add more items from the full list.
+//
 // props:
-//   infoKey          string   name of the info key
+//   infoKey               string   name of the info key (e.g. "PDM Champion")
 //   complementaryOptions  { modules, curricula }
-//   initialItems     array    pre-selected items (auto-matched or saved)
-//   autoMatchedNames array    names found in the Excel that were auto-matched
-//   onSave(items)    fn
-//   onClose          fn
+//   initialItems          array    pre-selected items (auto-matched or saved)
+//   autoMatchedNames      array    names that were auto-matched (for the banner)
+//   onSave(items)         fn
+//   onClose               fn
 // ---------------------------------------------------------------------------
 function InfoKeyLinkModal({ infoKey, complementaryOptions, initialItems, autoMatchedNames, onSave, onClose }) {
   const allItems = [
@@ -320,7 +330,7 @@ function InfoKeyLinkModal({ infoKey, complementaryOptions, initialItems, autoMat
 
         {hasAutoMatch && (
           <div className="bg-green-50 border border-green-200 rounded-lg px-3 py-2 mb-3">
-            <p className="text-xs font-semibold text-green-700 mb-1">Auto-matched from Excel</p>
+            <p className="text-xs font-semibold text-green-700 mb-1">Auto-matched from Training Matrix</p>
             <div className="flex flex-wrap gap-1">
               {autoMatchedNames.map(n => (
                 <span key={n} className="text-[11px] bg-green-100 text-green-700 border border-green-200 rounded px-1.5 py-0.5">{n}</span>
@@ -948,58 +958,48 @@ function emptyInfoFilter(keys) {
 
 // ---------------------------------------------------------------------------
 // Build the list of info keys that need a link modal during import.
-// An info key needs a modal when:
-//   - at least one entry with that key = true has a non-N/A primary, AND
-//   - there are complementary names in any such entry (to auto-match), OR we
-//     always show to allow manual linking.
-// We always show it so users can link even when there were no complementary
-// names in the Excel.
+//
+// Matching logic:
+//   The column header "Additional Info PDM Champion" produces the info key
+//   "PDM Champion". The modal is shown for every info key where at least one
+//   row has that key = true with a non-N/A primary column.
+//
+//   The name used for auto-matching in the Training Matrix is the info key
+//   name itself (e.g. "PDM Champion"). If a module, curriculum, or training
+//   exists in the Training Matrix with that exact name (case-insensitive), it
+//   is pre-selected in the modal and shown in the green auto-matched banner.
+//
+//   The user can keep the pre-selection, deselect it, or add more items.
 // ---------------------------------------------------------------------------
-function buildInfoKeyQueue(entries, complementaryOptions) {
-  // Collect all unique info keys
-  const keySet = new Set();
-  for (const e of entries) {
-    if (e.additional_info && typeof e.additional_info === 'object')
-      Object.keys(e.additional_info).forEach(k => keySet.add(k));
-  }
-
-  const allTitles = new Set([
-    ...complementaryOptions.curricula.map(c => c.title.trim().toLowerCase()),
-    ...complementaryOptions.modules.map(m => m.title.trim().toLowerCase()),
-  ]);
-
+function buildInfoKeyQueue(infoKeys, entries, complementaryOptions) {
   const allItems = [
     ...complementaryOptions.curricula.map(c => ({ ...c, type: 'curriculum' })),
     ...complementaryOptions.modules.map(m => ({ ...m, type: 'module' })),
   ];
 
+  const titleMap = new Map();
+  for (const item of allItems) {
+    titleMap.set(item.title.trim().toLowerCase(), item);
+  }
+
   const queue = [];
 
-  for (const key of keySet) {
-    // Check if at least one row has this key = true with a non-N/A primary
+  for (const key of infoKeys) {
+    // Only show modal when at least one row has this key = true with non-N/A primary
     const hasRelevantRow = entries.some(e =>
       e.additional_info?.[key] === true && !e.na_training
     );
     if (!hasRelevantRow) continue;
 
-    // Collect all complementary names seen across all entries where key = true
-    const seenCompNames = new Set();
-    for (const e of entries) {
-      if (e.additional_info?.[key] === true && !e.na_training) {
-        for (const name of (e.complementary_names || [])) {
-          seenCompNames.add(name.trim());
-        }
-      }
-    }
+    // Auto-match: search the Training Matrix for an item whose title matches
+    // the info key name exactly (case-insensitive).
+    const matchedItem = titleMap.get(key.trim().toLowerCase()) || null;
+    const autoMatchedNames = matchedItem ? [matchedItem.title] : [];
+    const initialItems     = matchedItem
+      ? [{ type: matchedItem.type, id: matchedItem.id, title: matchedItem.title }]
+      : [];
 
-    // Auto-match names that exist in the Training Matrix
-    const autoMatchedNames = [...seenCompNames].filter(n => allTitles.has(n.toLowerCase()));
-    const autoMatchedItems = autoMatchedNames.map(name => {
-      const key2 = name.toLowerCase();
-      return allItems.find(i => i.title.trim().toLowerCase() === key2) || null;
-    }).filter(Boolean);
-
-    queue.push({ key, autoMatchedNames, initialItems: autoMatchedItems });
+    queue.push({ key, autoMatchedNames, initialItems });
   }
 
   return queue;
@@ -1210,8 +1210,18 @@ export default function RoleMatrixPage() {
         const parsed = parseRoleMatrixExcel(evt.target.result);
         setImportError('');
 
-        // Build the link modal queue before importing
-        const queue = buildInfoKeyQueue(parsed, complementaryOptions);
+        // Collect info keys directly from the parsed header structure.
+        // The order is preserved as they appear in the Excel columns.
+        const infoKeySet = new Set();
+        for (const entry of parsed) {
+          if (entry.additional_info && typeof entry.additional_info === 'object') {
+            Object.keys(entry.additional_info).forEach(k => infoKeySet.add(k));
+          }
+        }
+        const infoKeys = [...infoKeySet];
+
+        // Build the link modal queue using the info key names as match candidates
+        const queue = buildInfoKeyQueue(infoKeys, parsed, complementaryOptions);
 
         if (queue.length > 0) {
           setPendingImport(parsed);
