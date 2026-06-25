@@ -51,7 +51,6 @@ function cartesianInfoCombos(info_keys) {
   return combos;
 }
 
-// Insert rows for a specific set of fn/role pairs x all info combos.
 async function insertRowsForPairs(client, projectId, fnList, roleList, info_keys) {
   const combos = cartesianInfoCombos(info_keys);
   for (const fn of fnList) {
@@ -308,15 +307,18 @@ router.get('/:projectId/role-matrix/training-profiles', authenticate, requireMem
   }
 });
 
+// Returns modules + curricula + playlists for complementary selection
 router.get('/:projectId/role-matrix/complementary-options', authenticate, requireMember(), async (req, res) => {
   try {
-    const [mods, currs] = await Promise.all([
+    const [mods, currs, plays] = await Promise.all([
       pool.query('SELECT id, title FROM training_modules WHERE project_id=$1 ORDER BY title', [req.params.projectId]),
       pool.query('SELECT id, title FROM training_curricula WHERE project_id=$1 ORDER BY title', [req.params.projectId]),
+      pool.query('SELECT id, title FROM playlists WHERE project_id=$1 ORDER BY title', [req.params.projectId]),
     ]);
     res.json({
       modules:   mods.rows.map(r => ({ ...r, type: 'module' })),
       curricula: currs.rows.map(r => ({ ...r, type: 'curriculum' })),
+      playlists: plays.rows.map(r => ({ ...r, type: 'playlist' })),
     });
   } catch (err) {
     console.error('[GET role-matrix/complementary-options]', err);
@@ -326,7 +328,6 @@ router.get('/:projectId/role-matrix/complementary-options', authenticate, requir
 
 // -- Info key links --------------------------------------------------------
 
-// GET all info-key links for a project
 router.get('/:projectId/role-matrix/info-key-links', authenticate, requireMember(), async (req, res) => {
   try {
     const result = await pool.query(
@@ -344,7 +345,6 @@ router.get('/:projectId/role-matrix/info-key-links', authenticate, requireMember
   }
 });
 
-// PUT (upsert) info-key link for a specific info key
 router.put('/:projectId/role-matrix/info-key-links/:infoKey', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
   const { infoKey } = req.params;
   const { complementary_items } = req.body;
