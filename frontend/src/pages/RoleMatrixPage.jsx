@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
@@ -198,10 +198,8 @@ function ToggleSwitch({ checked, onChange, label }) {
 
 // ---------------------------------------------------------------------------
 // Three-state info key button
-// state: null -> 'yes' -> 'no' -> null (cycles on click)
 // ---------------------------------------------------------------------------
-function InfoKeyButton({ label, state, onChange, onRemove, editMode }) {
-  // state: null | 'yes' | 'no'
+function InfoKeyButton({ label, state, onChange, onRemove, editMode, onEditLink }) {
   function cycle() {
     if (state === null)  return onChange('yes');
     if (state === 'yes') return onChange('no');
@@ -229,14 +227,26 @@ function InfoKeyButton({ label, state, onChange, onRemove, editMode }) {
   }
 
   return (
-    <div className={`flex items-center border rounded-lg px-2 py-1 gap-1.5 cursor-pointer select-none transition-colors ${bg} ${border}`}
-      onClick={cycle}
-      title={state === null ? 'Click to require Yes' : state === 'yes' ? 'Click to require No' : 'Click to ignore'}
-    >
-      <span className={`text-[11px] font-medium truncate flex-1 ${textCls}`}>{label}</span>
-      <span className="w-4 h-4 flex items-center justify-center shrink-0">
+    <div className={`flex items-center border rounded-lg px-2 py-1 gap-1.5 ${ editMode ? '' : 'cursor-pointer' } select-none transition-colors ${bg} ${border}`}>
+      <span
+        className={`text-[11px] font-medium truncate flex-1 ${textCls} cursor-pointer`}
+        onClick={cycle}
+        title={state === null ? 'Click to require Yes' : state === 'yes' ? 'Click to require No' : 'Click to ignore'}
+      >{label}</span>
+      <span className="w-4 h-4 flex items-center justify-center shrink-0 cursor-pointer" onClick={cycle}>
         {icon}
       </span>
+      {/* Link icon: always visible, opens the InfoKeyLinkModal */}
+      <button
+        onClick={e => { e.stopPropagation(); onEditLink && onEditLink(); }}
+        className="text-slate-300 hover:text-blue-500 leading-none text-sm"
+        title={`Link ${label} to complementary trainings`}
+      >
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M6.5 9.5a3.5 3.5 0 0 0 5 0l2-2a3.5 3.5 0 0 0-5-5L7.5 3.5"/>
+          <path d="M9.5 6.5a3.5 3.5 0 0 0-5 0l-2 2a3.5 3.5 0 0 0 5 5l1-1"/>
+        </svg>
+      </button>
       {editMode && (
         <button
           onClick={e => { e.stopPropagation(); onRemove(); }}
@@ -244,6 +254,141 @@ function InfoKeyButton({ label, state, onChange, onRemove, editMode }) {
           title={`Remove ${label}`}
         >&times;</button>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// InfoKeyLinkModal
+// Used at import time (one per info key with complementary names) AND for
+// editing existing info-key links from the sidebar.
+// props:
+//   infoKey          string   name of the info key
+//   complementaryOptions  { modules, curricula }
+//   initialItems     array    pre-selected items (auto-matched or saved)
+//   autoMatchedNames array    names found in the Excel that were auto-matched
+//   onSave(items)    fn
+//   onClose          fn
+// ---------------------------------------------------------------------------
+function InfoKeyLinkModal({ infoKey, complementaryOptions, initialItems, autoMatchedNames, onSave, onClose }) {
+  const allItems = [
+    ...complementaryOptions.curricula.map(c => ({ ...c, type: 'curriculum' })),
+    ...complementaryOptions.modules.map(m => ({ ...m, type: 'module' })),
+  ];
+
+  const [selected, setSelected] = useState(initialItems || []);
+  const [search, setSearch]     = useState('');
+
+  useEffect(() => {
+    function onKey(e) { if (e.key === 'Escape') onClose(); }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const filtered = allItems.filter(i => i.title.toLowerCase().includes(search.toLowerCase()));
+
+  function toggle(item) {
+    setSelected(prev => {
+      const exists = prev.some(s => s.type === item.type && s.id === item.id);
+      return exists
+        ? prev.filter(s => !(s.type === item.type && s.id === item.id))
+        : [...prev, { type: item.type, id: item.id, title: item.title }];
+    });
+  }
+
+  const hasAutoMatch = autoMatchedNames && autoMatchedNames.length > 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-5" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-sm font-semibold text-slate-800">
+            Link additional info to complementary trainings
+          </h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
+        </div>
+
+        <div className="mb-3">
+          <span className="inline-flex items-center gap-1.5 bg-blue-50 border border-blue-200 text-blue-700 rounded-full px-2.5 py-0.5 text-xs font-medium">
+            <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6.5 9.5a3.5 3.5 0 0 0 5 0l2-2a3.5 3.5 0 0 0-5-5L7.5 3.5"/>
+              <path d="M9.5 6.5a3.5 3.5 0 0 0-5 0l-2 2a3.5 3.5 0 0 0 5 5l1-1"/>
+            </svg>
+            {infoKey}
+          </span>
+        </div>
+
+        {hasAutoMatch && (
+          <div className="bg-green-50 border border-green-200 rounded-lg px-3 py-2 mb-3">
+            <p className="text-xs font-semibold text-green-700 mb-1">Auto-matched from Excel</p>
+            <div className="flex flex-wrap gap-1">
+              {autoMatchedNames.map(n => (
+                <span key={n} className="text-[11px] bg-green-100 text-green-700 border border-green-200 rounded px-1.5 py-0.5">{n}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <p className="text-xs text-slate-500 mb-2">
+          Select the complementary trainings that apply when this info is <strong>Yes</strong>.
+          This link applies across the whole matrix.
+          If the primary column is N/A there are no complementary trainings.
+        </p>
+
+        {/* Selected chips */}
+        {selected.length > 0 && (
+          <div className="flex flex-wrap gap-1 mb-2">
+            {selected.map(i => (
+              <span key={`${i.type}-${i.id}`}
+                className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5 text-xs">
+                <span className="text-blue-400 uppercase text-[10px] font-semibold">{i.type === 'curriculum' ? 'CUR' : 'MOD'}</span>
+                {i.title}
+                <button onClick={() => toggle(i)} className="ml-0.5 text-blue-400 hover:text-blue-700 leading-none">&times;</button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        <input
+          className="border rounded-lg px-3 py-1.5 text-xs w-full mb-1"
+          placeholder="Search modules or curricula..."
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          autoFocus
+        />
+
+        <div className="border rounded-lg overflow-y-auto mb-4" style={{ maxHeight: '12rem' }}>
+          {filtered.length === 0 && (
+            <p className="text-xs text-slate-400 text-center py-3">No modules or curricula found</p>
+          )}
+          {filtered.map(item => {
+            const checked = selected.some(s => s.type === item.type && s.id === item.id);
+            return (
+              <label key={`${item.type}-${item.id}`}
+                className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 cursor-pointer hover:bg-slate-50 ${checked ? 'bg-blue-50' : ''}`}>
+                <input type="checkbox" checked={checked} onChange={() => toggle(item)} className="rounded" />
+                <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">
+                  {item.type === 'curriculum' ? 'CUR' : 'MOD'}
+                </span>
+                <span className="text-xs text-slate-700">{item.title}</span>
+              </label>
+            );
+          })}
+        </div>
+
+        <div className="flex gap-2 justify-end">
+          <button onClick={onClose}
+            className="border px-3 py-1.5 rounded-lg text-xs text-slate-600 hover:bg-slate-50">
+            Skip
+          </button>
+          <button
+            onClick={() => onSave(selected)}
+            className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-700"
+          >
+            Confirm
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -408,9 +553,8 @@ function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNe
 
 // ---------------------------------------------------------------------------
 // Additional Info filter panel (three-state per key)
-// selectedInfo: Record<string, 'yes' | 'no' | null>
 // ---------------------------------------------------------------------------
-function InfoFilterPanel({ title, infoKeys, selectedInfo, onChange, onAddNew, onRemove, editMode }) {
+function InfoFilterPanel({ title, infoKeys, selectedInfo, onChange, onAddNew, onRemove, editMode, onEditLink }) {
   const hasAnyFilter = Object.values(selectedInfo).some(v => v !== null);
 
   function handleReset() {
@@ -424,9 +568,7 @@ function InfoFilterPanel({ title, infoKeys, selectedInfo, onChange, onAddNew, on
       <div className="px-2.5 pt-2 pb-1.5 border-b bg-slate-50 shrink-0">
         <div className="flex items-center gap-1.5 min-w-0">
           <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide shrink-0">{title}</p>
-          <span className="text-[10px] text-slate-400 flex-1">
-            click to cycle: ignore / yes / no
-          </span>
+          <span className="text-[10px] text-slate-400 flex-1">click to cycle: ignore / yes / no</span>
           {hasAnyFilter && (
             <button
               onClick={handleReset}
@@ -450,6 +592,7 @@ function InfoFilterPanel({ title, infoKeys, selectedInfo, onChange, onAddNew, on
             onChange={val => onChange({ ...selectedInfo, [k]: val })}
             onRemove={() => onRemove(k)}
             editMode={editMode}
+            onEditLink={() => onEditLink && onEditLink(k)}
           />
         ))}
       </div>
@@ -477,7 +620,6 @@ function TlgGroupSelector({ naTlg, onNaTlgChange, tlgPrimary, tlgAddon, onChange
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">TLG Group</p>
         <ToggleSwitch checked={naTlg} onChange={onNaTlgChange} label="N/A (not applicable)" />
       </div>
-
       <div className={`grid grid-cols-2 gap-3 transition-opacity ${
         naTlg ? 'opacity-40 pointer-events-none select-none' : ''
       }`}>
@@ -489,12 +631,8 @@ function TlgGroupSelector({ naTlg, onNaTlgChange, tlgPrimary, tlgAddon, onChange
                 className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 cursor-pointer hover:bg-slate-50 ${
                   tlgPrimary === opt ? 'bg-indigo-50' : ''
                 }`}>
-                <input
-                  type="radio"
-                  name="tlg_primary"
-                  checked={tlgPrimary === opt}
-                  onChange={() => onChange({ tlgPrimary: tlgPrimary === opt ? '' : opt, tlgAddon })}
-                />
+                <input type="radio" name="tlg_primary" checked={tlgPrimary === opt}
+                  onChange={() => onChange({ tlgPrimary: tlgPrimary === opt ? '' : opt, tlgAddon })} />
                 <span className="text-xs text-slate-700">{opt}</span>
               </label>
             ))}
@@ -525,7 +663,7 @@ function TlgGroupSelector({ naTlg, onNaTlgChange, tlgPrimary, tlgAddon, onChange
 }
 
 // ---------------------------------------------------------------------------
-// Edit modal
+// Edit (Fill) modal
 // ---------------------------------------------------------------------------
 function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
   const allItems = [
@@ -802,11 +940,69 @@ function normalizeEntries(data) {
   return Array.isArray(data) ? data : [];
 }
 
-// Build an empty selectedInfo map from the known keys
 function emptyInfoFilter(keys) {
   const map = {};
   for (const k of keys) map[k] = null;
   return map;
+}
+
+// ---------------------------------------------------------------------------
+// Build the list of info keys that need a link modal during import.
+// An info key needs a modal when:
+//   - at least one entry with that key = true has a non-N/A primary, AND
+//   - there are complementary names in any such entry (to auto-match), OR we
+//     always show to allow manual linking.
+// We always show it so users can link even when there were no complementary
+// names in the Excel.
+// ---------------------------------------------------------------------------
+function buildInfoKeyQueue(entries, complementaryOptions) {
+  // Collect all unique info keys
+  const keySet = new Set();
+  for (const e of entries) {
+    if (e.additional_info && typeof e.additional_info === 'object')
+      Object.keys(e.additional_info).forEach(k => keySet.add(k));
+  }
+
+  const allTitles = new Set([
+    ...complementaryOptions.curricula.map(c => c.title.trim().toLowerCase()),
+    ...complementaryOptions.modules.map(m => m.title.trim().toLowerCase()),
+  ]);
+
+  const allItems = [
+    ...complementaryOptions.curricula.map(c => ({ ...c, type: 'curriculum' })),
+    ...complementaryOptions.modules.map(m => ({ ...m, type: 'module' })),
+  ];
+
+  const queue = [];
+
+  for (const key of keySet) {
+    // Check if at least one row has this key = true with a non-N/A primary
+    const hasRelevantRow = entries.some(e =>
+      e.additional_info?.[key] === true && !e.na_training
+    );
+    if (!hasRelevantRow) continue;
+
+    // Collect all complementary names seen across all entries where key = true
+    const seenCompNames = new Set();
+    for (const e of entries) {
+      if (e.additional_info?.[key] === true && !e.na_training) {
+        for (const name of (e.complementary_names || [])) {
+          seenCompNames.add(name.trim());
+        }
+      }
+    }
+
+    // Auto-match names that exist in the Training Matrix
+    const autoMatchedNames = [...seenCompNames].filter(n => allTitles.has(n.toLowerCase()));
+    const autoMatchedItems = autoMatchedNames.map(name => {
+      const key2 = name.toLowerCase();
+      return allItems.find(i => i.title.trim().toLowerCase() === key2) || null;
+    }).filter(Boolean);
+
+    queue.push({ key, autoMatchedNames, initialItems: autoMatchedItems });
+  }
+
+  return queue;
 }
 
 // ---------------------------------------------------------------------------
@@ -820,7 +1016,6 @@ export default function RoleMatrixPage() {
   const [editMode,      setEditMode]      = useState(false);
   const [selectedFn,    setSelectedFn]    = useState(null);
   const [selectedRole,  setSelectedRole]  = useState(null);
-  // selectedInfo: Record<string, 'yes' | 'no' | null>  (null = ignore)
   const [selectedInfo,  setSelectedInfo]  = useState({});
   const [statusFilter,  setStatusFilter]  = useState(null);
   const [modalEntry,    setModalEntry]    = useState(null);
@@ -829,8 +1024,19 @@ export default function RoleMatrixPage() {
   const [addModalType,  setAddModalType]  = useState(null);
   const [sortState,     setSortState]     = useState({ col: null, dir: 'asc' });
 
+  // Info-key link modal state
+  // linkModalQueue: array of { key, autoMatchedNames, initialItems }
+  // linkModalIdx:   current index in the queue
+  // linkEditKey:    non-null when editing an existing link from the sidebar
+  const [linkModalQueue, setLinkModalQueue] = useState([]);
+  const [linkModalIdx,   setLinkModalIdx]   = useState(0);
+  const [linkEditKey,    setLinkEditKey]    = useState(null);
+  // Pending entries to import after the queue is done
+  const [pendingImport,  setPendingImport]  = useState(null);
+
   const dimKey    = ['role-matrix-dimensions', projectId];
   const matrixKey = ['role-matrix', projectId];
+  const linksKey  = ['role-matrix-info-key-links', projectId];
 
   const { data: dimensions } = useQuery({
     queryKey: dimKey,
@@ -840,7 +1046,6 @@ export default function RoleMatrixPage() {
   });
   const safeDimensions = dimensions ?? { functions: [], roles: [], info_keys: [] };
 
-  // Keep selectedInfo keys in sync with safeDimensions.info_keys
   useEffect(() => {
     setSelectedInfo(prev => {
       const next = {};
@@ -866,6 +1071,20 @@ export default function RoleMatrixPage() {
   const { data: complementaryOptions = { modules: [], curricula: [] } } = useQuery({
     queryKey: ['role-matrix-complementary', projectId],
     queryFn: () => client.get(`/projects/${projectId}/role-matrix/complementary-options`).then(r => r.data),
+  });
+
+  // Saved info-key links: Record<infoKey, ComplementaryItem[]>
+  const { data: infoKeyLinks = {} } = useQuery({
+    queryKey: linksKey,
+    queryFn: () => client.get(`/projects/${projectId}/role-matrix/info-key-links`).then(r => r.data),
+  });
+
+  const saveInfoKeyLinkMutation = useMutation({
+    mutationFn: ({ infoKey, complementary_items }) =>
+      client.put(`/projects/${projectId}/role-matrix/info-key-links/${encodeURIComponent(infoKey)}`, { complementary_items }).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: linksKey });
+    },
   });
 
   const addDimMutation = useMutation({
@@ -917,6 +1136,7 @@ export default function RoleMatrixPage() {
     onSuccess: () => {
       qc.setQueryData(dimKey, { functions: [], roles: [], info_keys: [] });
       qc.setQueryData(matrixKey, []);
+      qc.setQueryData(linksKey, {});
       setImportStats(null);
       setSelectedFn(null);
       setSelectedRole(null);
@@ -939,6 +1159,30 @@ export default function RoleMatrixPage() {
     },
     onError: err => setImportError(err?.response?.data?.error || err.message || 'Import failed'),
   });
+
+  // After the link modal queue is resolved, run the actual import
+  const runPendingImport = useCallback((entries) => {
+    importMutation.mutate({ entries });
+    setPendingImport(null);
+  }, [importMutation]);
+
+  // Advance through the link modal queue.
+  // Called on each "Confirm" or "Skip" click.
+  const advanceLinkQueue = useCallback((savedItems) => {
+    const current = linkModalQueue[linkModalIdx];
+    if (current && savedItems !== null) {
+      saveInfoKeyLinkMutation.mutate({ infoKey: current.key, complementary_items: savedItems });
+    }
+    const nextIdx = linkModalIdx + 1;
+    if (nextIdx < linkModalQueue.length) {
+      setLinkModalIdx(nextIdx);
+    } else {
+      // Queue exhausted -- now run the import
+      setLinkModalQueue([]);
+      setLinkModalIdx(0);
+      if (pendingImport) runPendingImport(pendingImport);
+    }
+  }, [linkModalQueue, linkModalIdx, pendingImport, runPendingImport, saveInfoKeyLinkMutation]);
 
   function handleExport() {
     const data = safeEntries.map(e => {
@@ -965,7 +1209,17 @@ export default function RoleMatrixPage() {
       try {
         const parsed = parseRoleMatrixExcel(evt.target.result);
         setImportError('');
-        importMutation.mutate({ entries: parsed });
+
+        // Build the link modal queue before importing
+        const queue = buildInfoKeyQueue(parsed, complementaryOptions);
+
+        if (queue.length > 0) {
+          setPendingImport(parsed);
+          setLinkModalQueue(queue);
+          setLinkModalIdx(0);
+        } else {
+          importMutation.mutate({ entries: parsed });
+        }
       } catch (err) { setImportError(err.message); }
     };
     reader.readAsArrayBuffer(file);
@@ -982,11 +1236,15 @@ export default function RoleMatrixPage() {
     setSortState(prev => ({ col, dir: nextDir(prev, prev.col, col) }));
   }
 
+  // Open the info-key link modal from the sidebar (edit existing link)
+  function handleEditInfoKeyLink(key) {
+    setLinkEditKey(key);
+  }
+
   const dimFilteredEntries = useMemo(() => {
     let rows = safeEntries;
     if (selectedFn)   rows = rows.filter(r => r.function === selectedFn);
     if (selectedRole) rows = rows.filter(r => r.role === selectedRole);
-    // Apply three-state info filters: 'yes' -> must be true, 'no' -> must be false, null -> ignored
     for (const [k, v] of Object.entries(selectedInfo)) {
       if (v === null) continue;
       rows = rows.filter(r => {
@@ -1022,8 +1280,17 @@ export default function RoleMatrixPage() {
     safeDimensions.info_keys.length * COL.info +
     COL.primary + 180 + COL.tlgGroup + COL.tlgAddon + COL.action;
 
+  // Current item in the import-time link modal queue
+  const currentLinkItem = linkModalQueue.length > 0 ? linkModalQueue[linkModalIdx] : null;
+
+  // Current item for the sidebar edit link modal
+  const editLinkItem = linkEditKey
+    ? { key: linkEditKey, initialItems: infoKeyLinks[linkEditKey] || [], autoMatchedNames: [] }
+    : null;
+
   return (
     <div className="flex flex-col h-full">
+      {/* Fill (edit) modal */}
       {modalEntry !== null && (
         <EditModal
           entry={modalEntry}
@@ -1034,6 +1301,7 @@ export default function RoleMatrixPage() {
         />
       )}
 
+      {/* Add dimension modal */}
       {addModalType && (
         <AddDimModal
           label={addModalType === 'function' ? 'Function' : addModalType === 'role' ? 'Role' : 'Info Key'}
@@ -1045,6 +1313,33 @@ export default function RoleMatrixPage() {
           }
           onAdd={value => addDimMutation.mutate({ type: addModalType, value })}
           onClose={() => setAddModalType(null)}
+        />
+      )}
+
+      {/* Import-time info-key link modal queue */}
+      {currentLinkItem && (
+        <InfoKeyLinkModal
+          infoKey={currentLinkItem.key}
+          complementaryOptions={complementaryOptions}
+          initialItems={currentLinkItem.initialItems}
+          autoMatchedNames={currentLinkItem.autoMatchedNames}
+          onSave={items => advanceLinkQueue(items)}
+          onClose={() => advanceLinkQueue(null)}
+        />
+      )}
+
+      {/* Sidebar edit info-key link modal */}
+      {editLinkItem && !currentLinkItem && (
+        <InfoKeyLinkModal
+          infoKey={editLinkItem.key}
+          complementaryOptions={complementaryOptions}
+          initialItems={editLinkItem.initialItems}
+          autoMatchedNames={editLinkItem.autoMatchedNames}
+          onSave={items => {
+            saveInfoKeyLinkMutation.mutate({ infoKey: editLinkItem.key, complementary_items: items });
+            setLinkEditKey(null);
+          }}
+          onClose={() => setLinkEditKey(null)}
         />
       )}
 
@@ -1062,7 +1357,7 @@ export default function RoleMatrixPage() {
             </button>
           )}
           <ToggleSwitch checked={editMode} onChange={setEditMode} label="Edit mode" />
-          <button onClick={() => fileRef.current.click()} disabled={importMutation.isPending}
+          <button onClick={() => fileRef.current.click()} disabled={importMutation.isPending || linkModalQueue.length > 0}
             className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
             {importMutation.isPending ? 'Importing...' : 'Import Excel'}
           </button>
@@ -1101,6 +1396,7 @@ export default function RoleMatrixPage() {
           onAddNew={() => setAddModalType('info_key')}
           onRemove={v => removeDimMutation.mutate({ type: 'info_key', value: v })}
           editMode={editMode}
+          onEditLink={handleEditInfoKeyLink}
         />
       </div>
 
