@@ -731,9 +731,9 @@ function CurriculaTab({ projectId, search, editMode, reloadKey }) {
   );
 }
 
-// -- Trainings tab -------------------------------------------------------------
+// -- Playlists tab -------------------------------------------------------------
 
-function TrainingsTab({ projectId, search, editMode, reloadKey }) {
+function PlaylistsTab({ projectId, search, editMode, reloadKey }) {
   const [playlists, setPlaylists]         = useState([]);
   const [selected, setSelected]           = useState(null);
   const [detail, setDetail]               = useState(null);
@@ -813,7 +813,7 @@ function TrainingsTab({ projectId, search, editMode, reloadKey }) {
   }
 
   async function del() {
-    if (!confirm('Delete this training and all its items?')) return;
+    if (!confirm('Delete this playlist and all its items?')) return;
     await client.delete(`/projects/${projectId}/playlists/${selected}`);
     delete detailCache.current[selected];
     setSelected(null);
@@ -823,7 +823,7 @@ function TrainingsTab({ projectId, search, editMode, reloadKey }) {
   }
 
   async function delAll() {
-    if (!confirm('Delete ALL trainings? This cannot be undone.')) return;
+    if (!confirm('Delete ALL playlists? This cannot be undone.')) return;
     await client.delete(`/projects/${projectId}/playlists`);
     detailCache.current = {};
     setSelected(null);
@@ -978,7 +978,7 @@ function TrainingsTab({ projectId, search, editMode, reloadKey }) {
         {editMode && playlists.length > 0 && (
           <button onClick={delAll}
             className="border border-red-200 px-3 py-1.5 rounded-lg text-sm text-red-500 hover:bg-red-50 w-full">
-            Delete all trainings
+            Delete all playlists
           </button>
         )}
       </div>
@@ -986,7 +986,7 @@ function TrainingsTab({ projectId, search, editMode, reloadKey }) {
       {/* Detail panel */}
       <div className="flex-1 overflow-y-auto">
         {showAdd && (
-          <FormBox title="New training" onSave={create} onCancel={() => setShowAdd(false)} saveDisabled={!form.title.trim()}>
+          <FormBox title="New playlist" onSave={create} onCancel={() => setShowAdd(false)} saveDisabled={!form.title.trim()}>
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2">
                 <InlineField label="Title *" value={form.title} onChange={v => setForm(f => ({ ...f, title: v }))} />
@@ -1001,7 +1001,7 @@ function TrainingsTab({ projectId, search, editMode, reloadKey }) {
         )}
 
         {!selected && !showAdd && (
-          <p className="text-sm text-slate-400 mt-16 text-center">Select a training to view it.</p>
+          <p className="text-sm text-slate-400 mt-16 text-center">Select a playlist to view it.</p>
         )}
         {selected && loadingDetail && (
           <p className="text-sm text-slate-400 mt-16 text-center">Loading...</p>
@@ -1010,7 +1010,7 @@ function TrainingsTab({ projectId, search, editMode, reloadKey }) {
         {selected && !loadingDetail && detail && (
           <div className="flex flex-col gap-6">
             {editingMode ? (
-              <FormBox title="Edit training" onSave={update} onCancel={() => setEditingMode(false)} saveDisabled={!editForm.title?.trim()}>
+              <FormBox title="Edit playlist" onSave={update} onCancel={() => setEditingMode(false)} saveDisabled={!editForm.title?.trim()}>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="col-span-2">
                     <InlineField label="Title *" value={editForm.title || ''} onChange={v => setEditForm(f => ({ ...f, title: v }))} />
@@ -1260,16 +1260,8 @@ async function buildExportWorkbook(projectId) {
   const wb = XLSX.utils.book_new();
 
   // ---- Sheet: Training Path Flat ----
-  // Row 1 (index 0): blank
-  // Row 2 (index 1): playlist titles from col L (index 11)
-  // Row 3 (index 2): descriptions
-  // Row 4 (index 3): links
-  // Rows 5-11 (indices 4-10): blank
-  // Rows 12+ (index 11+): data
-
   const COL_PLAYLIST_START = 11;
 
-  // Build sequence maps: playlistId -> Map<itemTitle.lower -> sequence_order>
   const playlistSeqMaps = detailedPlaylists.map(pl => {
     const m = new Map();
     for (const item of pl.ordered_items) {
@@ -1278,12 +1270,6 @@ async function buildExportWorkbook(projectId) {
     return m;
   });
 
-  // Build all data rows
-  // Each curriculum becomes a header row (C=0, D=0)
-  // Each module inside a curriculum becomes a detail row (C=chapterIdx, D=brick)
-  // Standalone modules (not in any curriculum) become standalone rows (C=0, D=moduleIdx)
-
-  const curriculumIds = new Set(curricula.map(c => c.id));
   const moduleInCurriculumIds = new Set(
     curricula.flatMap(c => (c.modules || []).map(m => m.module_id))
   );
@@ -1291,11 +1277,9 @@ async function buildExportWorkbook(projectId) {
 
   const dataRows = [];
 
-  // Curricula and their modules
   curricula.forEach((cur, cIdx) => {
     const chapterNum = cIdx + 1;
     const sortedMods = [...(cur.modules || [])].sort((a, b) => a.sequence_order - b.sequence_order);
-    // Curriculum header row: C=0, D=0
     const curSeqs = detailedPlaylists.map((_, pi) => playlistSeqMaps[pi].get((cur.title || '').toLowerCase()) ?? '');
     dataRows.push({
       group: '',
@@ -1311,7 +1295,6 @@ async function buildExportWorkbook(projectId) {
       contentType: 'Curriculum',
       plSeqs: curSeqs,
     });
-    // Module rows inside curriculum: C=chapterNum, D=brick
     sortedMods.forEach((mod) => {
       const modData = modules.find(m => m.id === mod.module_id) || {};
       const durationMin = modData.duration_min || 0;
@@ -1334,7 +1317,6 @@ async function buildExportWorkbook(projectId) {
     });
   });
 
-  // Standalone modules: C=0, D=index
   standaloneModules.forEach((mod, idx) => {
     const modSeqs = detailedPlaylists.map((_, pi) => playlistSeqMaps[pi].get((mod.title || '').toLowerCase()) ?? '');
     dataRows.push({
@@ -1353,35 +1335,27 @@ async function buildExportWorkbook(projectId) {
     });
   });
 
-  // Build the aoa (array of arrays)
   const numPlaylists = detailedPlaylists.length;
   const totalCols = COL_PLAYLIST_START + numPlaylists;
 
   const makeEmptyRow = () => Array(totalCols).fill('');
 
   const aoa = [];
-  // Row 0: blank
   aoa.push(makeEmptyRow());
-  // Row 1: playlist titles
   const titleRow = makeEmptyRow();
   detailedPlaylists.forEach((pl, i) => { titleRow[COL_PLAYLIST_START + i] = pl.title || ''; });
   aoa.push(titleRow);
-  // Row 2: descriptions
   const descRow = makeEmptyRow();
   detailedPlaylists.forEach((pl, i) => { descRow[COL_PLAYLIST_START + i] = pl.description || ''; });
   aoa.push(descRow);
-  // Row 3: links
   const linkRow = makeEmptyRow();
   detailedPlaylists.forEach((pl, i) => { linkRow[COL_PLAYLIST_START + i] = pl.link || ''; });
   aoa.push(linkRow);
-  // Rows 4-10: blank (7 rows)
   for (let i = 0; i < 7; i++) aoa.push(makeEmptyRow());
-  // Header row (row 11, index 11) -- col labels matching what the parser expects
   const headerRow = makeEmptyRow();
   ['Group', 'Row', 'Chapter', 'Brick', 'Title', 'Family', 'Mandatory Duration', 'Optional Duration', 'Total Duration', 'Content ID', 'Content Type'].forEach((h, i) => { headerRow[i] = h; });
   detailedPlaylists.forEach((pl, i) => { headerRow[COL_PLAYLIST_START + i] = pl.title || ''; });
   aoa.push(headerRow);
-  // Data rows
   for (const dr of dataRows) {
     const row = makeEmptyRow();
     row[0]  = dr.group;
@@ -1407,104 +1381,87 @@ async function buildExportWorkbook(projectId) {
 
 // -- Page shell ----------------------------------------------------------------
 
-const TABS = ['Modules', 'Curricula', 'Trainings'];
+const TABS = ['Modules', 'Curricula', 'Playlists'];
 
 export default function TrainingMatrixPage() {
   const { projectId } = useParams();
-  const [tab, setTab]                   = useState('Modules');
-  const [search, setSearch]             = useState('');
-  const [importing, setImporting]       = useState(false);
-  const [exporting, setExporting]       = useState(false);
-  const [importResult, setImportResult] = useState(null);
-  const [reloadKey, setReloadKey]       = useState(0);
-  const [editMode, setEditMode]         = useState(false);
-  const importRef = useRef();
+  const [tab, setTab]           = useState('Modules');
+  const [search, setSearch]     = useState('');
+  const [editMode, setEditMode] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [importing, setImporting] = useState(false);
+  const fileRef = useRef();
 
-  function handleTabChange(t) {
-    setTab(t);
-    setSearch('');
-  }
-
-  async function handleImportFile(e) {
+  async function handleImport(e) {
     const file = e.target.files[0];
     if (!file) return;
-    e.target.value = '';
     setImporting(true);
-    setImportResult(null);
     try {
-      const buf    = await file.arrayBuffer();
-      const parsed = parseTrainingPathFlat(buf);
-      const r      = await client.post(`/projects/${projectId}/playlists/import`, parsed);
-      setImportResult({
-        ok:  true,
-        msg: `${r.data.imported_modules} modules, ${r.data.imported_curricula} curricula, ${r.data.imported_playlists} trainings imported.`,
-      });
+      const buf  = await file.arrayBuffer();
+      const wb   = XLSX.read(buf);
+      const data = parseTrainingPathFlat(wb);
+      await client.post(`/projects/${projectId}/training-matrix/import`, data);
       setReloadKey(k => k + 1);
-      reResolveRoleMatrix(projectId);
     } catch (err) {
-      setImportResult({ ok: false, msg: err.response?.data?.error || err.message });
+      alert('Import failed: ' + (err?.response?.data?.error || err.message));
     } finally {
       setImporting(false);
+      e.target.value = '';
     }
   }
 
   async function handleExport() {
-    setExporting(true);
     try {
       const wb = await buildExportWorkbook(projectId);
       XLSX.writeFile(wb, 'training-matrix-export.xlsx');
     } catch (err) {
-      console.error('Export failed:', err);
-    } finally {
-      setExporting(false);
+      alert('Export failed: ' + err.message);
     }
   }
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between mb-4 shrink-0">
-        <h1 className="text-xl font-bold text-slate-800">Training Matrix</h1>
-        <div className="flex gap-2 items-center">
-          <ToggleSwitch checked={editMode} onChange={setEditMode} label="Edit mode" />
+      {/* Header */}
+      <div className="flex items-center justify-between px-6 py-4 border-b bg-white shrink-0">
+        <div className="flex items-center gap-4">
+          <h1 className="text-base font-bold text-slate-800">Module / Curricula / Playlists</h1>
+          <div className="flex gap-1 bg-slate-100 rounded-lg p-0.5">
+            {TABS.map(t => (
+              <button key={t} onClick={() => { setTab(t); setSearch(''); }}
+                className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
+                  tab === t ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                }`}>
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
           <input
             type="text"
+            placeholder={`Search ${tab.toLowerCase()}...`}
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search..."
-            className="border rounded-lg px-3 py-1.5 text-sm text-slate-700 w-48 focus:outline-none focus:ring-2 focus:ring-blue-200"
+            className="border rounded-lg px-3 py-1.5 text-sm w-56 focus:outline-none focus:ring-2 focus:ring-blue-200"
           />
-          <button onClick={() => importRef.current.click()} disabled={importing}
-            className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
-            {importing ? 'Importing...' : 'Import Excel'}
+          <ToggleSwitch checked={editMode} onChange={setEditMode} label="Edit mode" />
+          <button onClick={handleExport}
+            className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">
+            Export
           </button>
-          <button onClick={handleExport} disabled={exporting}
-            className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
-            {exporting ? 'Exporting...' : 'Export Excel'}
+          <button onClick={() => fileRef.current?.click()} disabled={importing}
+            className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+            {importing ? 'Importing...' : 'Import'}
           </button>
-          <input ref={importRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportFile} />
+          <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImport} />
         </div>
       </div>
 
-      {importResult && (
-        <p className={`text-sm mb-3 shrink-0 ${importResult.ok ? 'text-green-600' : 'text-red-500'}`}>
-          {importResult.ok ? importResult.msg : `Error: ${importResult.msg}`}
-        </p>
-      )}
-
-      <div className="flex border-b mb-4 shrink-0">
-        {TABS.map(t => (
-          <button key={t} onClick={() => handleTabChange(t)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors
-              ${tab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
-            {t}
-          </button>
-        ))}
-      </div>
-
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      {/* Tab content */}
+      <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col">
         {tab === 'Modules'   && <ModulesTab   projectId={projectId} search={search} editMode={editMode} reloadKey={reloadKey} />}
         {tab === 'Curricula' && <CurriculaTab projectId={projectId} search={search} editMode={editMode} reloadKey={reloadKey} />}
-        {tab === 'Trainings' && <TrainingsTab projectId={projectId} search={search} editMode={editMode} reloadKey={reloadKey} />}
+        {tab === 'Playlists' && <PlaylistsTab projectId={projectId} search={search} editMode={editMode} reloadKey={reloadKey} />}
       </div>
     </div>
   );
