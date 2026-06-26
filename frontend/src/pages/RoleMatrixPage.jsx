@@ -1,282 +1,140 @@
-import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { useParams } from 'react-router-dom';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { useParams }          from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
 import client from '../api/client';
 
-const TLG_PRIMARY_OPTIONS = [
-  'Heavy Author L1',
-  'Medium Author L2',
-  'Light Author L3',
-  'Viewer L5',
-];
-
-const TLG_ADDON_OPTIONS = [
-  'SE_TLG_Supplier_Management',
-  'SE_TLG_BOM_Transformation',
-  'SE_TLG_MPM_Process_Plan',
-];
-
-const SKIP_COLS = new Set(['Function', 'Role', 'Concatenate', 'PDM Role', 'TLG Group']);
-
-function cleanInfoKeyName(header) {
-  return header
-    .replace(/^Additional\s+Info\s+/i, '')
-    .replace(/\s*\(yes\s*\/\s*no\)\s*$/i, '')
-    .trim();
-}
-
-function splitByPlus(raw) {
-  if (!raw || !String(raw).trim()) return [];
-  return String(raw).split(' + ').map(s => s.trim()).filter(Boolean);
-}
-
-function parseRoleMatrixExcel(buffer) {
-  const wb = XLSX.read(buffer, { type: 'array' });
-  let rawSheet = null;
-  let headerIdx = -1;
-  for (const name of wb.SheetNames) {
-    const ws = wb.Sheets[name];
-    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-    for (let i = 0; i < Math.min(raw.length, 10); i++) {
-      const row = raw[i].map(c => String(c).trim());
-      if (row.includes('Function') && row.includes('Role')) { rawSheet = raw; headerIdx = i; break; }
-    }
-    if (rawSheet) break;
-  }
-  if (!rawSheet || headerIdx === -1) throw new Error('No header row with Function and Role found.');
-  const headers = rawSheet[headerIdx].map(c => String(c).trim());
-  const fnIdx       = headers.indexOf('Function');
-  const roleIdx     = headers.indexOf('Role');
-  const pdmRoleIdx  = headers.findIndex(h => h === 'PDM Role');
-  const tlgGroupIdx = headers.findIndex(h => h === 'TLG Group');
-  const infoHeaders = headers.map((h, i) => ({ raw: h, clean: cleanInfoKeyName(h), i })).filter(({ raw }) => raw && !SKIP_COLS.has(raw));
-  const entries = [];
-  for (let i = headerIdx + 1; i < rawSheet.length; i++) {
-    const row  = rawSheet[i];
-    const fn   = String(row[fnIdx]   || '').trim();
-    const role = String(row[roleIdx] || '').trim();
-    if (!fn || !role) continue;
-    const additional_info = {};
-    for (const { clean, i: ci } of infoHeaders) {
-      const val = row[ci];
-      additional_info[clean] = val === true || val === 1 || (typeof val === 'string' && val.trim().toLowerCase() === 'yes');
-    }
-    const tlgRaw   = tlgGroupIdx >= 0 ? String(row[tlgGroupIdx] || '').trim() : '';
-    const isNaTlg  = tlgRaw === 'N/A';
-    const tlgParts = isNaTlg ? [] : splitByPlus(tlgRaw);
-    const pdmRaw   = pdmRoleIdx >= 0 ? String(row[pdmRoleIdx] || '').trim() : '';
-    const isNaTrn  = pdmRaw === 'N/A';
-    const pdmParts = isNaTrn ? [] : splitByPlus(pdmRaw);
-    entries.push({
-      function: fn, role,
-      additional_info,
-      tlg_primary: isNaTlg ? 'N/A' : (tlgParts[0] || ''),
-      tlg_addon:   isNaTlg ? [] : tlgParts.slice(1),
-      na_tlg: isNaTlg,
-      primary_training_name: pdmParts[0] || '',
-      complementary_names:   pdmParts.slice(1),
-      na_training: isNaTrn,
-    });
-  }
-  if (entries.length === 0) throw new Error('No data rows found.');
-  return entries;
-}
-
 // ---------------------------------------------------------------------------
-// Row status helpers
+// Helpers / tiny shared components
 // ---------------------------------------------------------------------------
-function rowStatus(entry) {
-  if (entry.na_training && entry.na_tlg) return 'na';
-  if (!entry.na_training) {
-    const hasName = entry.primary_training_name && entry.primary_training_name.trim() !== '';
-    const hasId   = !!entry.recommended_training_id;
-    if (!hasName && !hasId) return 'empty';
-    if (hasName && !hasId)  return 'unresolved';
-    if (hasId) {
-      const compItems = Array.isArray(entry.complementary_items) ? entry.complementary_items : [];
-      if (compItems.some(i => i.type === 'unresolved')) return 'comp-unresolved';
-    }
-  }
-  return 'ok';
-}
 
-const ROW_BG = {
-  na:                'bg-slate-100',
-  empty:             'bg-red-50',
-  unresolved:        'bg-orange-50',
-  'comp-unresolved': 'bg-yellow-50',
-  ok:                '',
-};
-
-const ROW_HOVER = {
-  na:                'hover:bg-slate-200/60',
-  empty:             'hover:bg-red-100/60',
-  unresolved:        'hover:bg-orange-100/60',
-  'comp-unresolved': 'hover:bg-yellow-100/60',
-  ok:                'hover:bg-slate-50/50',
-};
-
-// ---------------------------------------------------------------------------
-// Sort icon
-// ---------------------------------------------------------------------------
-function SortIcon({ dir }) {
-  const top    = dir === 'asc'  ? '#3b82f6' : '#cbd5e1';
-  const bottom = dir === 'desc' ? '#3b82f6' : '#cbd5e1';
+function Badge({ color = 'slate', children }) {
+  const map = {
+    slate:  'bg-slate-100 text-slate-600 border-slate-200',
+    blue:   'bg-blue-50  text-blue-700  border-blue-200',
+    green:  'bg-green-50 text-green-700 border-green-200',
+    amber:  'bg-amber-50 text-amber-700 border-amber-200',
+    red:    'bg-red-50   text-red-700   border-red-200',
+  };
   return (
-    <svg width="10" height="12" viewBox="0 0 10 12" fill="none" className="inline-block shrink-0">
-      <path d="M5 1L2 4h6L5 1Z" fill={top} />
-      <path d="M5 11L8 8H2l3 3Z" fill={bottom} />
-    </svg>
+    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${map[color] ?? map.slate}`}>
+      {children}
+    </span>
   );
 }
 
-function SortTh({ label, colKey, sortState, onSort, className, children, vertical }) {
-  const dir = sortState.col === colKey ? sortState.dir : null;
-  if (vertical) {
-    return (
-      <th
-        title={label}
-        className="px-0 pb-2 pt-3 text-center align-bottom overflow-hidden cursor-pointer select-none group"
-        onClick={() => onSort(colKey)}
-      >
-        <span style={{
-          writingMode: 'vertical-rl',
-          transform: 'rotate(180deg)',
-          display: 'inline-block',
-          maxHeight: 120,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          fontSize: 10,
-          fontWeight: 600,
-          color: dir ? '#3b82f6' : '#94a3b8',
-          letterSpacing: '0.04em',
-          textTransform: 'uppercase',
-        }}>
-          {label}
-        </span>
-        <span className="block mt-0.5">
-          <SortIcon dir={dir} />
-        </span>
-      </th>
-    );
-  }
-  return (
-    <th
-      className={`${className} cursor-pointer select-none group`}
-      onClick={() => onSort(colKey)}
-    >
-      <span className="inline-flex items-center gap-1">
-        <span className={dir ? 'text-blue-600' : ''}>{children || label}</span>
-        <SortIcon dir={dir} />
-      </span>
-    </th>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Toggle switch
-// ---------------------------------------------------------------------------
 function ToggleSwitch({ checked, onChange, label }) {
   return (
-    <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-      <span className="text-xs text-slate-500">{label}</span>
-      <span
+    <label className="flex items-center gap-2 cursor-pointer select-none">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
         onClick={() => onChange(!checked)}
-        className={`relative inline-block w-9 h-5 rounded-full transition-colors duration-200 ${
-          checked ? 'bg-blue-600' : 'bg-slate-300'
-        }`}
+        className={`relative inline-flex h-5 w-9 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${checked ? 'bg-blue-600' : 'bg-slate-200'}`}
       >
-        <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${
-          checked ? 'translate-x-4' : 'translate-x-0'
-        }`} />
-      </span>
+        <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform mt-0.5 ${checked ? 'translate-x-4 ml-0.5' : 'translate-x-0.5'}`} />
+      </button>
+      {label && <span className="text-xs text-slate-500">{label}</span>}
     </label>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Three-state info key button
+// TLG Group selector (reused in EditModal)
 // ---------------------------------------------------------------------------
-function InfoKeyButton({ label, state, onChange, onRemove, editMode, onEditLink }) {
-  function cycle() {
-    if (state === null)  return onChange('yes');
-    if (state === 'yes') return onChange('no');
-    return onChange(null);
-  }
 
-  let bg, border, textCls, icon;
-  if (state === 'yes') {
-    bg = 'bg-blue-50'; border = 'border-blue-300'; textCls = 'text-blue-700';
-    icon = (
-      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
-        <path d="M1.5 5L4 7.5L8.5 2.5" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-      </svg>
-    );
-  } else if (state === 'no') {
-    bg = 'bg-red-50'; border = 'border-red-300'; textCls = 'text-red-600';
-    icon = (
-      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
-        <path d="M2 2L8 8M8 2L2 8" stroke="#dc2626" strokeWidth="1.8" strokeLinecap="round"/>
-      </svg>
-    );
-  } else {
-    bg = 'bg-white'; border = 'border-slate-200'; textCls = 'text-slate-500';
-    icon = null;
-  }
+const TLG_OPTIONS = ['EMEA', 'NA', 'APAC', 'LATAM', 'MEA', 'Global'];
 
+function TlgGroupSelector({ naTlg, onNaTlgChange, tlgPrimary, tlgAddon, onChange }) {
   return (
-    <div className={`flex items-center border rounded-lg px-2 py-1 gap-1.5 ${ editMode ? '' : 'cursor-pointer' } select-none transition-colors ${bg} ${border}`}>
-      <span
-        className={`text-[11px] font-medium truncate flex-1 ${textCls} cursor-pointer`}
-        onClick={cycle}
-        title={state === null ? 'Click to require Yes' : state === 'yes' ? 'Click to require No' : 'Click to ignore'}
-      >{label}</span>
-      <span className="w-4 h-4 flex items-center justify-center shrink-0 cursor-pointer" onClick={cycle}>
-        {icon}
-      </span>
-      {/* Link icon: always visible, opens the InfoKeyLinkModal */}
-      <button
-        onClick={e => { e.stopPropagation(); onEditLink && onEditLink(); }}
-        className="text-slate-300 hover:text-blue-500 leading-none text-sm"
-        title={`Link ${label} to complementary trainings`}
-      >
-        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M6.5 9.5a3.5 3.5 0 0 0 5 0l2-2a3.5 3.5 0 0 0-5-5L7.5 3.5"/>
-          <path d="M9.5 6.5a3.5 3.5 0 0 0-5 0l-2 2a3.5 3.5 0 0 0 5 5l1-1"/>
-        </svg>
-      </button>
-      {editMode && (
-        <button
-          onClick={e => { e.stopPropagation(); onRemove(); }}
-          className="text-slate-300 hover:text-red-400 leading-none text-sm"
-          title={`Remove ${label}`}
-        >&times;</button>
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">TLG Group</p>
+        <ToggleSwitch checked={naTlg} onChange={onNaTlgChange} label="N/A (not applicable)" />
+      </div>
+      {!naTlg && (
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Primary</label>
+            <select
+              value={tlgPrimary}
+              onChange={e => onChange({ tlgPrimary: e.target.value, tlgAddon })}
+              className="border rounded-lg px-2 py-1.5 text-xs w-full"
+            >
+              <option value="">— None —</option>
+              {TLG_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Add-ons</label>
+            <div className="border rounded-lg p-1.5 flex flex-wrap gap-1">
+              {TLG_OPTIONS.filter(o => o !== tlgPrimary).map(o => (
+                <button
+                  key={o}
+                  type="button"
+                  onClick={() => {
+                    const next = tlgAddon.includes(o) ? tlgAddon.filter(x => x !== o) : [...tlgAddon, o];
+                    onChange({ tlgPrimary, tlgAddon: next });
+                  }}
+                  className={`text-[11px] rounded px-1.5 py-0.5 border transition-colors ${
+                    tlgAddon.includes(o) ? 'bg-blue-600 text-white border-blue-600' : 'text-slate-600 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  {o}
+                </button>
+              ))}
+              {TLG_OPTIONS.filter(o => o !== tlgPrimary).length === 0 && (
+                <p className="text-[11px] text-slate-400">No options available</p>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
+// Three-state info key button
+// ---------------------------------------------------------------------------
+
+function InfoStateButton({ label, value, onChange }) {
+  // value: null = unset, true = yes, false = no
+  const states = [null, true, false];
+  const idx = states.indexOf(value);
+  const next = states[(idx + 1) % 3];
+
+  const style = value === true
+    ? 'bg-blue-600 text-white border-blue-600'
+    : value === false
+      ? 'bg-slate-100 text-slate-400 border-slate-200 line-through'
+      : 'bg-white text-slate-600 border-slate-300';
+
+  return (
+    <button
+      onClick={() => onChange(next)}
+      title={`Link ${label} to complementary trainings`}
+      className={`text-xs rounded-full px-2.5 py-1 border font-medium transition-colors ${style}`}
+    >
+      {label}
+      {value === true && <span className="ml-1 opacity-70">Yes</span>}
+      {value === false && <span className="ml-1 opacity-70">No</span>}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // InfoKeyLinkModal
+//
 // Used at import time (one per info key) AND for editing existing links from
 // the sidebar.
 //
-// The auto-match logic:
-//   The column header "Additional Info PDM Champion" produces the info key
-//   "PDM Champion". At import time the modal is shown for each info key where
-//   at least one row with that key = true has a non-N/A primary training.
-//   The info key name itself is used to search the Training Matrix for an
-//   exact title match (case-insensitive). If found, that item is pre-selected
-//   in the modal (shown in the green "auto-matched" banner). The user can then
-//   keep it, deselect it, or add more items from the full list.
-//
-// props:
+// Props:
 //   infoKey               string   name of the info key (e.g. "PDM Champion")
 //   complementaryOptions  { modules, curricula }
-//   initialItems          array    pre-selected items (auto-matched or saved)
-//   autoMatchedNames      array    names that were auto-matched (for the banner)
+//   initialItems          ComplementaryItem[]  already-saved items (pre-selected)
+//   autoMatchedNames      string[]             names auto-matched from Training Matrix
 //   onSave(items)         fn
 //   onClose               fn
 // ---------------------------------------------------------------------------
@@ -286,7 +144,14 @@ function InfoKeyLinkModal({ infoKey, complementaryOptions, initialItems, autoMat
     ...complementaryOptions.modules.map(m => ({ ...m, type: 'module' })),
   ];
 
-  const [selected, setSelected] = useState(initialItems || []);
+  const [selected, setSelected] = useState(() => {
+    if (initialItems && initialItems.length > 0) return initialItems;
+    if (autoMatchedNames && autoMatchedNames.length > 0) {
+      return allItems.filter(i => autoMatchedNames.some(n => n.toLowerCase() === i.title.toLowerCase()))
+        .map(i => ({ type: i.type, id: i.id, title: i.title }));
+    }
+    return [];
+  });
   const [search, setSearch]     = useState('');
 
   useEffect(() => {
@@ -313,7 +178,7 @@ function InfoKeyLinkModal({ infoKey, complementaryOptions, initialItems, autoMat
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-5" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-1">
           <h3 className="text-sm font-semibold text-slate-800">
-            Link additional info to complementary trainings
+            Link tag to complementary trainings
           </h3>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
         </div>
@@ -340,9 +205,7 @@ function InfoKeyLinkModal({ infoKey, complementaryOptions, initialItems, autoMat
         )}
 
         <p className="text-xs text-slate-500 mb-2">
-          Select the complementary trainings that apply when this info is <strong>Yes</strong>.
-          This link applies across the whole matrix.
-          If the primary column is N/A there are no complementary trainings.
+          Select trainings to link when this tag is <strong>Yes</strong>.
         </p>
 
         {/* Selected chips */}
@@ -408,56 +271,43 @@ function InfoKeyLinkModal({ infoKey, complementaryOptions, initialItems, autoMat
 // ---------------------------------------------------------------------------
 function AddDimModal({ label, badge, existing, onAdd, onClose }) {
   const [search, setSearch] = useState('');
-  const [value, setValue] = useState('');
-  const inputRef = useRef();
+  const trimmed = search.trim();
 
-  useEffect(() => { inputRef.current?.focus(); }, []);
   useEffect(() => {
     function onKey(e) { if (e.key === 'Escape') onClose(); }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const filtered = existing.filter(v => v.toLowerCase().includes(search.toLowerCase()));
-  const trimmed  = value.trim();
-  const isNew    = trimmed && !existing.some(v => v.toLowerCase() === trimmed.toLowerCase());
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold text-slate-800">Add {label}</h3>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
         </div>
         <input
-          ref={inputRef}
-          className="border rounded-lg px-3 py-2 text-xs w-full mb-2"
-          placeholder={`Type a new ${label}...`}
-          value={value}
-          onChange={e => { setValue(e.target.value); setSearch(e.target.value); }}
+          className="border rounded-lg px-3 py-1.5 text-xs w-full mb-3"
+          placeholder={`${label} name...`}
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && trimmed) { onAdd(trimmed); onClose(); } }}
+          autoFocus
         />
-        {filtered.length > 0 && (
-          <div className="border rounded-lg overflow-y-auto mb-3" style={{ maxHeight: '10rem' }}>
-            {filtered.map(v => (
-              <button key={v} onClick={() => setValue(v)}
-                className={`flex items-center gap-2 w-full px-3 py-1.5 text-left hover:bg-slate-50 border-b last:border-0 ${
-                  value === v ? 'bg-slate-100' : ''
-                }`}>
-                <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">{badge}</span>
-                <span className="text-xs text-slate-700">{v}</span>
-              </button>
-            ))}
-          </div>
+        {trimmed && existing.some(x => x.toLowerCase() === trimmed.toLowerCase()) && (
+          <p className="text-xs text-red-500 mb-2">Already exists.</p>
         )}
         <div className="flex gap-2 justify-end">
           <button onClick={onClose}
-            className="border px-3 py-1.5 rounded-lg text-xs text-slate-600 hover:bg-slate-50">Cancel</button>
+            className="border px-3 py-1.5 rounded-lg text-xs text-slate-600 hover:bg-slate-50">
+            Cancel
+          </button>
           <button
-            disabled={!trimmed}
+            disabled={!trimmed || existing.some(x => x.toLowerCase() === trimmed.toLowerCase())}
             onClick={() => { if (trimmed) { onAdd(trimmed); onClose(); } }}
-            className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-700 disabled:opacity-40"
+            className="bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-700"
           >
-            {isNew ? `Add "${trimmed}"` : `Select "${trimmed}"`}
+            Add
           </button>
         </div>
       </div>
@@ -468,213 +318,137 @@ function AddDimModal({ label, badge, existing, onAdd, onClose }) {
 // ---------------------------------------------------------------------------
 // Selector panel (Function / Role)
 // ---------------------------------------------------------------------------
+
 function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNew, onRemove, editMode }) {
   const [search, setSearch] = useState('');
+  const filtered = items.filter(i => i.toLowerCase().includes(search.toLowerCase()));
 
-  const displayed = useMemo(() => {
-    const list = items.filter(v => v.toLowerCase().includes(search.toLowerCase()));
-    return [...list].sort((a, b) => a.localeCompare(b));
-  }, [items, search]);
-
-  const hasSelection = multi ? selected.length > 0 : selected !== null;
-
-  function toggle(v) {
+  function handleClick(item) {
     if (multi) {
-      onChange(selected.includes(v) ? selected.filter(x => x !== v) : [...selected, v]);
+      if (Array.isArray(selected)) {
+        onChange(selected.includes(item) ? selected.filter(x => x !== item) : [...selected, item]);
+      } else {
+        onChange([item]);
+      }
     } else {
-      onChange(selected === v ? null : v);
+      onChange(selected === item ? null : item);
     }
   }
 
-  function handleReset() {
-    setSearch('');
-    onChange(multi ? [] : null);
-  }
-
-  const isSelected = v => multi ? selected.includes(v) : selected === v;
+  const isSelected = item => multi
+    ? (Array.isArray(selected) && selected.includes(item))
+    : selected === item;
 
   return (
-    <div className="flex flex-col border rounded-xl bg-white overflow-hidden" style={{ minHeight: 0 }}>
-      <div className="px-2.5 pt-2 pb-1.5 border-b bg-slate-50 shrink-0">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide shrink-0">{title}</p>
-          <input
-            className="border rounded-md px-1.5 py-0.5 text-[11px] flex-1 min-w-0"
-            placeholder="Search..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
-          {hasSelection && (
-            <button
-              onClick={handleReset}
-              className="text-[10px] text-slate-400 hover:text-red-500 underline leading-none shrink-0"
-              title="Clear selection"
-            >
-              Reset
-            </button>
-          )}
-        </div>
-      </div>
-      <div className="overflow-y-auto flex-1">
-        {displayed.length === 0 && (
-          <p className="text-[11px] text-slate-400 text-center py-3">No {title.toLowerCase()} yet</p>
+    <div className="bg-white border rounded-xl p-3 flex flex-col gap-2 min-w-0">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{title}</span>
+        {editMode && (
+          <button onClick={onAddNew} className="text-[11px] text-blue-600 hover:underline">+ Add</button>
         )}
-        {displayed.map(v => (
-          <div key={v}
-            className={`flex items-center border-b last:border-0 ${
-              isSelected(v) ? 'bg-indigo-50' : 'hover:bg-slate-50'
-            }`}>
-            <label className="flex items-center gap-1.5 px-2.5 py-1.5 cursor-pointer flex-1 min-w-0">
-              <input
-                type={multi ? 'checkbox' : 'radio'}
-                checked={isSelected(v)}
-                onChange={() => toggle(v)}
-                onClick={!multi ? () => { if (isSelected(v)) onChange(null); } : undefined}
-                className={multi ? 'rounded accent-teal-600' : ''}
-              />
-              <span className="text-[9px] font-semibold uppercase text-slate-400 w-7 shrink-0">{badge}</span>
-              <span className="text-[11px] text-slate-700 truncate">{v}</span>
-            </label>
+      </div>
+      {items.length > 6 && (
+        <input
+          className="border rounded px-2 py-1 text-xs"
+          placeholder="Search..."
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+      )}
+      <div className="flex flex-col gap-0.5 overflow-y-auto" style={{ maxHeight: '10rem' }}>
+        {filtered.length === 0 && (
+          <p className="text-[11px] text-slate-400 text-center py-2">Nothing here yet</p>
+        )}
+        {filtered.map(item => (
+          <div key={item} className="flex items-center gap-1 group">
+            <button
+              onClick={() => handleClick(item)}
+              className={`flex-1 text-left text-xs px-2 py-1 rounded-lg transition-colors ${
+                isSelected(item) ? 'bg-blue-600 text-white' : 'hover:bg-slate-100 text-slate-700'
+              }`}
+            >
+              <span className={`inline-block mr-1.5 text-[9px] font-bold uppercase ${isSelected(item) ? 'text-blue-300' : 'text-slate-400'}`}>{badge}</span>
+              {item}
+            </button>
             {editMode && (
               <button
-                onClick={e => { e.stopPropagation(); onRemove(v); }}
-                className="pr-2.5 pl-1 py-1.5 text-slate-300 hover:text-red-400 shrink-0 leading-none"
-                title={`Remove ${v}`}
-              >
-                &times;
-              </button>
+                onClick={() => onRemove(item)}
+                className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 text-xs px-1 transition-opacity"
+                title={`Remove ${item}`}
+              >×</button>
             )}
           </div>
         ))}
       </div>
-      {editMode && (
-        <div className="px-2.5 py-1.5 border-t bg-slate-50 shrink-0">
-          <button
-            onClick={onAddNew}
-            className="w-full border border-dashed border-slate-300 rounded-lg py-1 text-[11px] text-slate-500 hover:border-blue-400 hover:text-blue-600"
-          >
-            + Add new
-          </button>
-        </div>
-      )}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Additional Info filter panel (three-state per key)
+// Tags filter panel (three-state per key)
 // ---------------------------------------------------------------------------
-function InfoFilterPanel({ title, infoKeys, selectedInfo, onChange, onAddNew, onRemove, editMode, onEditLink }) {
-  const hasAnyFilter = Object.values(selectedInfo).some(v => v !== null);
 
-  function handleReset() {
+function InfoFilterPanel({ title, infoKeys, selectedInfo, onChange, onAddNew, onRemove, editMode, onEditLink }) {
+  function clearAll() {
     const cleared = {};
     for (const k of infoKeys) cleared[k] = null;
     onChange(cleared);
   }
 
+  const hasAnySelection = Object.values(selectedInfo).some(v => v !== null);
+
   return (
-    <div className="flex flex-col border rounded-xl bg-white overflow-hidden" style={{ minHeight: 0 }}>
-      <div className="px-2.5 pt-2 pb-1.5 border-b bg-slate-50 shrink-0">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide shrink-0">{title}</p>
-          <span className="text-[10px] text-slate-400 flex-1">click to cycle: ignore / yes / no</span>
-          {hasAnyFilter && (
-            <button
-              onClick={handleReset}
-              className="text-[10px] text-slate-400 hover:text-red-500 underline leading-none shrink-0"
-              title="Clear all info filters"
-            >
-              Reset
-            </button>
+    <div className="bg-white border rounded-xl p-3 flex flex-col gap-2 min-w-0">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{title}</span>
+        <div className="flex items-center gap-2">
+          {hasAnySelection && (
+            <button onClick={clearAll} className="text-[11px] text-slate-400 hover:text-slate-600">Clear</button>
+          )}
+          {editMode && (
+            <button onClick={onAddNew} className="text-[11px] text-blue-600 hover:underline">+ Add</button>
           )}
         </div>
       </div>
-      <div className="overflow-y-auto flex-1 px-2 py-1.5 flex flex-col gap-1">
-        {infoKeys.length === 0 && (
-          <p className="text-[11px] text-slate-400 text-center py-3">No info keys yet</p>
-        )}
-        {infoKeys.map(k => (
-          <InfoKeyButton
-            key={k}
-            label={k}
-            state={selectedInfo[k] ?? null}
-            onChange={val => onChange({ ...selectedInfo, [k]: val })}
-            onRemove={() => onRemove(k)}
-            editMode={editMode}
-            onEditLink={() => onEditLink && onEditLink(k)}
-          />
-        ))}
-      </div>
-      {editMode && (
-        <div className="px-2.5 py-1.5 border-t bg-slate-50 shrink-0">
-          <button
-            onClick={onAddNew}
-            className="w-full border border-dashed border-slate-300 rounded-lg py-1 text-[11px] text-slate-500 hover:border-blue-400 hover:text-blue-600"
-          >
-            + Add new
-          </button>
-        </div>
+      {infoKeys.length === 0 && (
+        <p className="text-[11px] text-slate-400 text-center py-3">No tags yet</p>
       )}
+      {infoKeys.map(k => (
+        <div key={k} className="flex items-center gap-1.5 group">
+          <InfoStateButton
+            label={k}
+            value={selectedInfo[k] ?? null}
+            onChange={v => onChange({ ...selectedInfo, [k]: v })}
+          />
+          {editMode && (
+            <>
+              <button
+                onClick={() => onEditLink(k)}
+                className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-blue-500 text-xs transition-opacity"
+                title="Edit linked trainings"
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M6.5 9.5a3.5 3.5 0 0 0 5 0l2-2a3.5 3.5 0 0 0-5-5L7.5 3.5"/>
+                  <path d="M9.5 6.5a3.5 3.5 0 0 0-5 0l-2 2a3.5 3.5 0 0 0 5 5l1-1"/>
+                </svg>
+              </button>
+              <button
+                onClick={() => onRemove(k)}
+                className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 text-xs px-0.5 transition-opacity"
+                title={`Remove ${k}`}
+              >×</button>
+            </>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// TLG selector
+// Edit-entry modal
 // ---------------------------------------------------------------------------
-function TlgGroupSelector({ naTlg, onNaTlgChange, tlgPrimary, tlgAddon, onChange }) {
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-3">
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">TLG Group</p>
-        <ToggleSwitch checked={naTlg} onChange={onNaTlgChange} label="N/A (not applicable)" />
-      </div>
-      <div className={`grid grid-cols-2 gap-3 transition-opacity ${
-        naTlg ? 'opacity-40 pointer-events-none select-none' : ''
-      }`}>
-        <div>
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Primary TLG Group</p>
-          <div className="border rounded-lg overflow-hidden">
-            {TLG_PRIMARY_OPTIONS.map(opt => (
-              <label key={opt}
-                className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 cursor-pointer hover:bg-slate-50 ${
-                  tlgPrimary === opt ? 'bg-indigo-50' : ''
-                }`}>
-                <input type="radio" name="tlg_primary" checked={tlgPrimary === opt}
-                  onChange={() => onChange({ tlgPrimary: tlgPrimary === opt ? '' : opt, tlgAddon })} />
-                <span className="text-xs text-slate-700">{opt}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-        <div>
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Add-on TLG Groups</p>
-          <div className="border rounded-lg overflow-hidden">
-            {TLG_ADDON_OPTIONS.map(opt => {
-              const checked = tlgAddon.includes(opt);
-              return (
-                <label key={opt}
-                  className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 cursor-pointer hover:bg-slate-50 ${
-                    checked ? 'bg-teal-50' : ''
-                  }`}>
-                  <input type="checkbox" checked={checked}
-                    onChange={() => onChange({ tlgPrimary, tlgAddon: checked ? tlgAddon.filter(x => x !== opt) : [...tlgAddon, opt] })}
-                    className="rounded accent-teal-600" />
-                  <span className="text-xs text-slate-700">{opt}</span>
-                </label>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
-// ---------------------------------------------------------------------------
-// Edit (Fill) modal
-// ---------------------------------------------------------------------------
 function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
   const allItems = [
     ...complementaryOptions.curricula.map(c => ({ ...c, type: 'curriculum' })),
@@ -756,40 +530,46 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
           <div className={`grid grid-cols-2 gap-4 transition-opacity ${
             naTraining ? 'opacity-40 pointer-events-none select-none' : ''
           }`}>
-            <div className="flex flex-col">
-              <label className="text-xs text-slate-500 block mb-1">Recommended Primary Training</label>
-              {selectedProfile && !naTraining && (
-                <div className="flex flex-wrap gap-1 mb-2">
-                  <span className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full px-2 py-0.5 text-xs">
-                    <span className="text-indigo-400 uppercase text-[10px] font-semibold">PLY</span>
-                    {selectedProfile.profile_name}
-                    <button onClick={() => setRecommendedId('')} className="ml-0.5 text-indigo-400 hover:text-indigo-700 leading-none">&times;</button>
-                  </span>
+            {/* Primary training */}
+            <div>
+              <label className="text-xs text-slate-500 block mb-1">Primary Training</label>
+              {selectedProfile && (
+                <div className="flex items-center gap-1.5 bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5 mb-1.5">
+                  <span className="text-xs text-blue-700 flex-1">{selectedProfile.profile_name}</span>
+                  <button onClick={() => setRecommendedId('')} className="text-blue-400 hover:text-blue-700 text-sm leading-none">&times;</button>
                 </div>
               )}
-              <input className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1" placeholder="Search primary trainings..."
-                value={primarySearch} onChange={e => setPrimarySearch(e.target.value)} disabled={naTraining} />
-              <div className="border rounded-lg overflow-y-auto flex-1" style={{ maxHeight: '11rem' }}>
-                {filteredProfiles.length === 0 && <p className="text-xs text-slate-400 text-center py-3">No primary trainings found</p>}
+              <input
+                className="border rounded-lg px-2 py-1 text-xs w-full mb-1"
+                placeholder="Search profiles..."
+                value={primarySearch}
+                onChange={e => setPrimarySearch(e.target.value)}
+              />
+              <div className="border rounded-lg overflow-y-auto" style={{ maxHeight: '9rem' }}>
+                {filteredProfiles.length === 0 && <p className="text-xs text-slate-400 text-center py-2">No profiles</p>}
                 {filteredProfiles.map(p => (
-                  <label key={p.id} className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 ${
-                    naTraining ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'
-                  } ${String(p.id) === recommendedId ? 'bg-indigo-50' : ''}`}>
-                    <input type="radio" name="recommended_training_id" checked={String(p.id) === recommendedId}
-                      disabled={naTraining} onChange={() => setRecommendedId(String(p.id))} />
-                    <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">PLY</span>
-                    <span className="text-xs text-slate-700">{p.profile_name}</span>
-                  </label>
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setRecommendedId(String(p.id))}
+                    className={`w-full text-left text-xs px-3 py-1.5 border-b last:border-0 transition-colors ${
+                      String(p.id) === recommendedId ? 'bg-blue-50 text-blue-700' : 'hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    {p.profile_name}
+                  </button>
                 ))}
               </div>
             </div>
 
-            <div className="flex flex-col">
+            {/* Complementary trainings */}
+            <div>
               <label className="text-xs text-slate-500 block mb-1">Complementary Trainings</label>
               {complementaryItems.length > 0 && !naTraining && (
-                <div className="flex flex-wrap gap-1 mb-2">
+                <div className="flex flex-wrap gap-1 mb-1.5">
                   {complementaryItems.map(i => (
-                    <span key={`${i.type}-${i.id}`} className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5 text-xs">
+                    <span key={`${i.type}-${i.id}`}
+                      className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5 text-xs">
                       <span className="text-blue-400 uppercase text-[10px] font-semibold">{i.type === 'curriculum' ? 'CUR' : 'MOD'}</span>
                       {i.title}
                       <button onClick={() => toggleComp(i)} className="ml-0.5 text-blue-400 hover:text-blue-700 leading-none">&times;</button>
@@ -797,17 +577,23 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
                   ))}
                 </div>
               )}
-              <input className="border rounded-lg px-2 py-1.5 text-xs w-full mb-1" placeholder="Search modules or curricula..."
-                value={itemSearch} onChange={e => setItemSearch(e.target.value)} disabled={naTraining} />
-              <div className="border rounded-lg overflow-y-auto flex-1" style={{ maxHeight: '11rem' }}>
-                {filteredItems.length === 0 && <p className="text-xs text-slate-400 text-center py-3">No modules or curricula found</p>}
+              <input
+                className="border rounded-lg px-2 py-1 text-xs w-full mb-1"
+                placeholder="Search items..."
+                value={itemSearch}
+                onChange={e => setItemSearch(e.target.value)}
+              />
+              <div className="border rounded-lg overflow-y-auto" style={{ maxHeight: '9rem' }}>
+                {filteredItems.length === 0 && <p className="text-xs text-slate-400 text-center py-2">No items</p>}
                 {filteredItems.map(item => (
-                  <label key={`${item.type}-${item.id}`} className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 ${
-                    naTraining ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'
-                  } ${complementaryItems.some(i => i.type === item.type && i.id === item.id) ? 'bg-blue-50' : ''}`}>
-                    <input type="checkbox"
+                  <label key={`${item.type}-${item.id}`}
+                    className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 cursor-pointer hover:bg-slate-50 ${ complementaryItems.some(i => i.type === item.type && i.id === item.id) ? 'bg-blue-50' : ''}`}>
+                    <input
+                      type="checkbox"
                       checked={complementaryItems.some(i => i.type === item.type && i.id === item.id)}
-                      disabled={naTraining} onChange={() => toggleComp(item)} className="rounded" />
+                      onChange={() => toggleComp(item)}
+                      className="rounded"
+                    />
                     <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">{item.type === 'curriculum' ? 'CUR' : 'MOD'}</span>
                     <span className="text-xs text-slate-700">{item.title}</span>
                   </label>
@@ -815,13 +601,12 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
               </div>
             </div>
           </div>
-
           {naTraining && (
             <p className="text-xs text-slate-400 mt-2">Training is marked as not applicable. No primary or complementary training will be saved.</p>
           )}
         </div>
 
-        <div className="flex gap-2 justify-end">
+        <div className="flex justify-end gap-2 pt-2 border-t">
           <button onClick={onClose} className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
           <button
             onClick={() => onSave({
@@ -841,119 +626,65 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
 }
 
 // ---------------------------------------------------------------------------
-// Status bar
+// Status legend
 // ---------------------------------------------------------------------------
-const STATUS_CHIPS = [
-  { status: 'empty',            bg: 'bg-red-50',    border: 'border-red-200',    text: 'text-red-600',    activeBg: 'bg-red-100',    label: 'Empty' },
-  { status: 'unresolved',       bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-600', activeBg: 'bg-orange-100', label: 'Primary training not matched' },
-  { status: 'comp-unresolved',  bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', activeBg: 'bg-yellow-100', label: 'Complementary training not matched' },
-  { status: 'na',               bg: 'bg-slate-100', border: 'border-slate-300',  text: 'text-slate-500',  activeBg: 'bg-slate-200',  label: 'N/A' },
+
+const STATUS_CONFIGS = [
+  { status: 'complete',        bg: 'bg-green-50',  border: 'border-green-200',  text: 'text-green-700',  activeBg: 'bg-green-100',  label: 'Complete' },
+  { status: 'primary-only',    bg: 'bg-blue-50',   border: 'border-blue-200',   text: 'text-blue-700',   activeBg: 'bg-blue-100',   label: 'Primary only' },
+  { status: 'comp-unresolved', bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', activeBg: 'bg-yellow-100', label: 'Complementary training not matched' },
+  { status: 'partial',         bg: 'bg-amber-50',  border: 'border-amber-200',  text: 'text-amber-700',  activeBg: 'bg-amber-100',  label: 'Partially filled' },
+  { status: 'empty',           bg: 'bg-slate-50',  border: 'border-slate-200',  text: 'text-slate-500',  activeBg: 'bg-slate-100',  label: 'Empty' },
+  { status: 'na',              bg: 'bg-slate-50',  border: 'border-slate-200',  text: 'text-slate-400',  activeBg: 'bg-slate-100',  label: 'N/A' },
 ];
 
-function StatusBar({ counts, activeStatus, onToggle, totalShown }) {
+function getEntryStatus(entry) {
+  if (entry.na_training) return 'na';
+  const hasRec  = !!entry.recommended_training_id;
+  const hasComp = Array.isArray(entry.complementary_items) && entry.complementary_items.length > 0;
+  const hasUnresolved = Array.isArray(entry.complementary_items) && entry.complementary_items.some(i => !i.id);
+  if (hasUnresolved) return 'comp-unresolved';
+  if (hasRec && hasComp) return 'complete';
+  if (hasRec) return 'primary-only';
+  if (hasComp) return 'partial';
+  return 'empty';
+}
+
+function StatusBar({ counts, active, onFilter }) {
   return (
-    <div className="flex items-center gap-2 flex-wrap mb-3 shrink-0">
-      <span className="text-xs text-slate-400 shrink-0">{totalShown} rows</span>
-      <span className="text-slate-200 text-xs select-none">|</span>
-      {STATUS_CHIPS.map(({ status, bg, border, text, activeBg, label }) => {
-        const count  = counts[status] || 0;
-        const active = activeStatus === status;
+    <div className="flex flex-wrap gap-1.5 mb-3">
+      {STATUS_CONFIGS.map(cfg => {
+        const count = counts[cfg.status] ?? 0;
         if (count === 0) return null;
+        const isActive = active === cfg.status;
         return (
-          <button key={status} onClick={() => onToggle(status)}
-            title={active ? 'Clear filter' : `Show only: ${label}`}
-            className={`inline-flex items-center gap-1.5 border rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors ${border} ${text} ${
-              active ? activeBg : bg
-            } cursor-pointer`}
+          <button
+            key={cfg.status}
+            onClick={() => onFilter(isActive ? null : cfg.status)}
+            className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors
+              ${isActive ? `${cfg.activeBg} ${cfg.border} ${cfg.text}` : `${cfg.bg} ${cfg.border} ${cfg.text} opacity-70 hover:opacity-100`}`}
           >
-            <span className={`inline-block w-1.5 h-1.5 rounded-full bg-current ${active ? '' : 'opacity-50'}`} />
-            {label}
-            <span className="font-semibold">{count}</span>
-            {active && <span className="ml-0.5 opacity-60">&times;</span>}
+            <span className={`inline-block w-1.5 h-1.5 rounded-full ${cfg.bg.replace('bg-', 'bg-').replace('-50', '-400')}`} />
+            {cfg.label}
+            <span className="font-bold">{count}</span>
           </button>
         );
       })}
-      {activeStatus !== null && (
-        <button onClick={() => onToggle(null)} className="text-xs text-slate-400 hover:text-slate-600 underline">Reset</button>
-      )}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Column width constants
+// Helpers for normalizing API data
 // ---------------------------------------------------------------------------
-const COL = {
-  function:  160,
-  role:      160,
-  info:       32,
-  primary:   170,
-  tlgGroup:  148,
-  tlgAddon:  220,
-  action:     44,
-};
 
-// ---------------------------------------------------------------------------
-// Sorting helpers
-// ---------------------------------------------------------------------------
-function nextDir(current, col, clickedCol) {
-  if (current.col !== clickedCol) return 'asc';
-  if (current.dir === 'asc') return 'desc';
-  return 'asc';
-}
-
-function sortEntries(rows, sortState, profiles) {
-  const { col, dir } = sortState;
-  if (!col) return rows;
-  const mul = dir === 'asc' ? 1 : -1;
-  return [...rows].sort((a, b) => {
-    let va = '', vb = '';
-    if (col === 'function') { va = a.function; vb = b.function; }
-    else if (col === 'role') { va = a.role; vb = b.role; }
-    else if (col === 'primary') {
-      const ra = profiles.find(p => p.id === a.recommended_training_id);
-      const rb = profiles.find(p => p.id === b.recommended_training_id);
-      va = ra ? ra.profile_name : (a.primary_training_name || '');
-      vb = rb ? rb.profile_name : (b.primary_training_name || '');
-    } else if (col === 'complementary') {
-      const ca = Array.isArray(a.complementary_items) ? a.complementary_items.map(i => i.title).join(' ') : '';
-      const cb = Array.isArray(b.complementary_items) ? b.complementary_items.map(i => i.title).join(' ') : '';
-      va = ca; vb = cb;
-    } else if (col === 'tlgGroup') {
-      va = a.tlg_primary || ''; vb = b.tlg_primary || '';
-    } else if (col === 'tlgAddon') {
-      va = Array.isArray(a.tlg_addon) ? a.tlg_addon.join(' ') : '';
-      vb = Array.isArray(b.tlg_addon) ? b.tlg_addon.join(' ') : '';
-    } else {
-      va = a.additional_info?.[col] ? '1' : '0';
-      vb = b.additional_info?.[col] ? '1' : '0';
-    }
-    return mul * va.localeCompare(vb);
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Shape normalizers
-// ---------------------------------------------------------------------------
 function normalizeDimensions(data) {
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    return { functions: [], roles: [], info_keys: [] };
-  }
+  if (!data || typeof data !== 'object') return { functions: [], roles: [], info_keys: [] };
   return {
     functions: Array.isArray(data.functions) ? data.functions : [],
     roles:     Array.isArray(data.roles)     ? data.roles     : [],
     info_keys: Array.isArray(data.info_keys) ? data.info_keys : [],
   };
-}
-
-function normalizeEntries(data) {
-  return Array.isArray(data) ? data : [];
-}
-
-function emptyInfoFilter(keys) {
-  const map = {};
-  for (const k of keys) map[k] = null;
-  return map;
 }
 
 // ---------------------------------------------------------------------------
@@ -1040,32 +771,28 @@ export default function RoleMatrixPage() {
 
   const { data: dimensions } = useQuery({
     queryKey: dimKey,
-    queryFn: () => client.get(`/projects/${projectId}/role-matrix/dimensions`).then(r => r.data),
-    staleTime: 0,
-    select: normalizeDimensions,
+    queryFn: () => client.get(`/projects/${projectId}/role-matrix/dimensions`).then(r => normalizeDimensions(r.data)),
   });
+
   const safeDimensions = dimensions ?? { functions: [], roles: [], info_keys: [] };
 
+  // Keep selectedInfo keys in sync with info_keys dimension
   useEffect(() => {
     setSelectedInfo(prev => {
       const next = {};
       for (const k of safeDimensions.info_keys) next[k] = prev[k] ?? null;
       return next;
     });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(safeDimensions.info_keys)]);
 
-  const { data: entries, isLoading } = useQuery({
+  const { data: matrixEntries = [] } = useQuery({
     queryKey: matrixKey,
     queryFn: () => client.get(`/projects/${projectId}/role-matrix`).then(r => r.data),
-    staleTime: 0,
-    select: normalizeEntries,
   });
-  const safeEntries = entries ?? [];
 
   const { data: profiles = [] } = useQuery({
     queryKey: ['role-matrix-profiles', projectId],
-    queryFn: () => client.get(`/projects/${projectId}/role-matrix/training-profiles`).then(r => r.data),
+    queryFn: () => client.get(`/projects/${projectId}/role-matrix/profiles`).then(r => r.data),
   });
 
   const { data: complementaryOptions = { modules: [], curricula: [] } } = useQuery({
@@ -1084,6 +811,7 @@ export default function RoleMatrixPage() {
       client.put(`/projects/${projectId}/role-matrix/info-key-links/${encodeURIComponent(infoKey)}`, { complementary_items }).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: linksKey });
+      qc.invalidateQueries({ queryKey: matrixKey });
     },
   });
 
@@ -1106,15 +834,9 @@ export default function RoleMatrixPage() {
     onSuccess: (data, variables) => {
       qc.setQueryData(dimKey, normalizeDimensions(data));
       qc.refetchQueries({ queryKey: matrixKey, exact: true });
-      if (variables.type === 'function' && selectedFn === variables.value)   setSelectedFn(null);
-      if (variables.type === 'role'     && selectedRole === variables.value) setSelectedRole(null);
-      if (variables.type === 'info_key') {
-        setSelectedInfo(prev => {
-          const next = { ...prev };
-          delete next[variables.value];
-          return next;
-        });
-      }
+      if (variables.type === 'function') setSelectedFn(null);
+      if (variables.type === 'role')     setSelectedRole(null);
+      if (variables.type === 'info_key') setSelectedInfo(prev => { const next = { ...prev }; delete next[variables.value]; return next; });
     },
     onError: err => console.error('Failed to remove dimension:', err),
   });
@@ -1147,15 +869,13 @@ export default function RoleMatrixPage() {
   });
 
   const importMutation = useMutation({
-    mutationFn: payload =>
-      client.post(`/projects/${projectId}/role-matrix/import`, payload).then(r => r.data),
-    onSuccess: async data => {
-      setImportError('');
+    mutationFn: ({ entries }) =>
+      client.post(`/projects/${projectId}/role-matrix/import`, { entries }).then(r => r.data),
+    onSuccess: data => {
       setImportStats(data);
-      await Promise.all([
-        qc.refetchQueries({ queryKey: dimKey, exact: true }),
-        qc.refetchQueries({ queryKey: matrixKey, exact: true }),
-      ]);
+      setImportError('');
+      qc.refetchQueries({ queryKey: dimKey, exact: true });
+      qc.refetchQueries({ queryKey: matrixKey, exact: true });
     },
     onError: err => setImportError(err?.response?.data?.error || err.message || 'Import failed'),
   });
@@ -1187,7 +907,7 @@ export default function RoleMatrixPage() {
   function handleExport() {
     const data = safeEntries.map(e => {
       const row = { Function: e.function, Role: e.role };
-      for (const k of safeDimensions.info_keys) row[`Additional Info ${k}`] = e.additional_info?.[k] ? 'Yes' : 'No';
+      for (const k of safeDimensions.info_keys) row[`Tag: ${k}`] = e.additional_info?.[k] ? 'Yes' : 'No';
       row['Concatenate'] = '';
       const rec = profiles.find(p => p.id === e.recommended_training_id);
       const compTitles = Array.isArray(e.complementary_items) ? e.complementary_items.map(i => i.title) : [];
@@ -1198,100 +918,138 @@ export default function RoleMatrixPage() {
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Role Matrix');
-    XLSX.writeFile(wb, 'role-matrix-export.xlsx');
+    XLSX.writeFile(wb, 'role-matrix.xlsx');
   }
 
-  function handleFileChange(e) {
-    const file = e.target.files[0];
+  function handleImport(e) {
+    const file = e.target.files?.[0];
     if (!file) return;
+    e.target.value = '';
+    setImportError('');
+    setImportStats(null);
+
     const reader = new FileReader();
     reader.onload = evt => {
       try {
-        const parsed = parseRoleMatrixExcel(evt.target.result);
-        setImportError('');
+        const wb   = XLSX.read(evt.target.result, { type: 'array' });
+        const ws   = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+        if (!rows.length) { setImportError('No rows found in spreadsheet.'); return; }
+
+        const headers = Object.keys(rows[0]);
 
         // Collect info keys directly from the parsed header structure.
-        // The order is preserved as they appear in the Excel columns.
+        // A header like "Additional Info PDM Champion" -> info key "PDM Champion"
         const infoKeySet = new Set();
-        for (const entry of parsed) {
-          if (entry.additional_info && typeof entry.additional_info === 'object') {
-            Object.keys(entry.additional_info).forEach(k => infoKeySet.add(k));
-          }
+        for (const h of headers) {
+          const m = h.match(/^(?:Additional Info|Tag:|Tags?:?)\s+(.+)$/i);
+          if (m) infoKeySet.add(m[1].trim());
         }
         const infoKeys = [...infoKeySet];
 
-        // Build the link modal queue using the info key names as match candidates
-        const queue = buildInfoKeyQueue(infoKeys, parsed, complementaryOptions);
+        const entries = rows.map(row => {
+          const additional_info = {};
+          for (const h of headers) {
+            const m = h.match(/^(?:Additional Info|Tag:|Tags?:?)\s+(.+)$/i);
+            if (m) {
+              const key = m[1].trim();
+              const val = row[h];
+              additional_info[key] = val === true || val === 1 || (typeof val === 'string' && val.trim().toLowerCase() === 'yes');
+            }
+          }
+          const fn   = String(row['Function'] || '').trim();
+          const role = String(row['Role']     || '').trim();
+          if (!fn || !role) return null;
 
+          const rawPdm   = String(row['PDM Role']  || '').trim();
+          const rawTlg   = String(row['TLG Group'] || '').trim();
+          const naTraining = rawPdm.toUpperCase() === 'N/A';
+          const naTlg      = rawTlg.toUpperCase() === 'N/A';
+
+          const pdmParts = naTraining ? [] : rawPdm.split('+').map(s => s.trim()).filter(Boolean);
+          const tlgParts = naTlg      ? [] : rawTlg.split('+').map(s => s.trim()).filter(Boolean);
+
+          return {
+            function: fn,
+            role,
+            additional_info,
+            na_training:      naTraining,
+            recommended_name: pdmParts[0] || '',
+            complementary_names: pdmParts.slice(1),
+            na_tlg:           naTlg,
+            tlg_primary:      tlgParts[0] || '',
+            tlg_addon:        tlgParts.slice(1),
+          };
+        }).filter(Boolean);
+
+        if (!entries.length) { setImportError('No valid rows found.'); return; }
+
+        // Build the link modal queue for info keys that have at least one "Yes" row
+        const queue = buildInfoKeyQueue(infoKeys, entries, complementaryOptions);
         if (queue.length > 0) {
-          setPendingImport(parsed);
+          setPendingImport(entries);
           setLinkModalQueue(queue);
           setLinkModalIdx(0);
         } else {
-          importMutation.mutate({ entries: parsed });
+          importMutation.mutate({ entries });
         }
-      } catch (err) { setImportError(err.message); }
+      } catch (err) {
+        setImportError(err.message || 'Failed to parse file');
+      }
     };
     reader.readAsArrayBuffer(file);
-    e.target.value = '';
   }
 
-  function handleClearAll() {
-    if (clearAllMutation.isPending) return;
-    if (window.confirm('Empty the entire role matrix including all dimensions? This cannot be undone.'))
-      clearAllMutation.mutate();
-  }
-
-  function handleSort(col) {
-    setSortState(prev => ({ col, dir: nextDir(prev, prev.col, col) }));
-  }
-
-  // Open the info-key link modal from the sidebar (edit existing link)
   function handleEditInfoKeyLink(key) {
     setLinkEditKey(key);
   }
 
-  const dimFilteredEntries = useMemo(() => {
-    let rows = safeEntries;
-    if (selectedFn)   rows = rows.filter(r => r.function === selectedFn);
-    if (selectedRole) rows = rows.filter(r => r.role === selectedRole);
-    for (const [k, v] of Object.entries(selectedInfo)) {
-      if (v === null) continue;
-      rows = rows.filter(r => {
-        const val = !!(r.additional_info && r.additional_info[k]);
-        return v === 'yes' ? val : !val;
-      });
-    }
-    return rows;
-  }, [safeEntries, selectedFn, selectedRole, selectedInfo]);
+  const safeEntries = Array.isArray(matrixEntries) ? matrixEntries : [];
 
-  const statusCounts = useMemo(() => {
-    const counts = {};
-    for (const e of dimFilteredEntries) {
-      const s = rowStatus(e);
-      counts[s] = (counts[s] || 0) + 1;
-    }
-    return counts;
-  }, [dimFilteredEntries]);
+  // Apply filters
+  let filtered = safeEntries;
+  if (selectedFn)   filtered = filtered.filter(e => e.function === selectedFn);
+  if (selectedRole) filtered = filtered.filter(e => e.role === selectedRole);
+  for (const [k, v] of Object.entries(selectedInfo)) {
+    if (v !== null) filtered = filtered.filter(e => (e.additional_info?.[k] === true) === v);
+  }
+  if (statusFilter) filtered = filtered.filter(e => getEntryStatus(e) === statusFilter);
 
-  const filteredEntries = useMemo(() => {
-    const base = statusFilter
-      ? dimFilteredEntries.filter(e => rowStatus(e) === statusFilter)
-      : dimFilteredEntries;
-    return sortEntries(base, sortState, profiles);
-  }, [dimFilteredEntries, statusFilter, sortState, profiles]);
+  // Sort
+  if (sortState.col) {
+    filtered = [...filtered].sort((a, b) => {
+      let va, vb;
+      if (sortState.col === 'function') { va = a.function; vb = b.function; }
+      else if (sortState.col === 'role') { va = a.role; vb = b.role; }
+      else if (sortState.col === 'status') { va = getEntryStatus(a); vb = getEntryStatus(b); }
+      else if (sortState.col === 'complementary') {
+        const ca = Array.isArray(a.complementary_items) ? a.complementary_items.map(i => i.title).join(' ') : '';
+        const cb = Array.isArray(b.complementary_items) ? b.complementary_items.map(i => i.title).join(' ') : '';
+        va = ca; vb = cb;
+      } else {
+        va = a.additional_info?.[sortState.col] ? '1' : '0';
+        vb = b.additional_info?.[sortState.col] ? '1' : '0';
+      }
+      const cmp = String(va ?? '').localeCompare(String(vb ?? ''));
+      return sortState.dir === 'asc' ? cmp : -cmp;
+    });
+  }
 
-  const isDimPending = addDimMutation.isPending || removeDimMutation.isPending;
+  function toggleSort(col) {
+    setSortState(prev => prev.col === col
+      ? { col, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+      : { col, dir: 'asc' }
+    );
+  }
 
-  const thBase = 'px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide overflow-hidden text-ellipsis whitespace-nowrap';
+  const statusCounts = {};
+  for (const e of safeEntries) {
+    const s = getEntryStatus(e);
+    statusCounts[s] = (statusCounts[s] ?? 0) + 1;
+  }
 
-  const minTableWidth =
-    COL.function + COL.role +
-    safeDimensions.info_keys.length * COL.info +
-    COL.primary + 180 + COL.tlgGroup + COL.tlgAddon + COL.action;
-
-  // Current item in the import-time link modal queue
-  const currentLinkItem = linkModalQueue.length > 0 ? linkModalQueue[linkModalIdx] : null;
+  const currentLinkItem = linkModalQueue[linkModalIdx] ?? null;
 
   // Current item for the sidebar edit link modal
   const editLinkItem = linkEditKey
@@ -1314,8 +1072,8 @@ export default function RoleMatrixPage() {
       {/* Add dimension modal */}
       {addModalType && (
         <AddDimModal
-          label={addModalType === 'function' ? 'Function' : addModalType === 'role' ? 'Role' : 'Info Key'}
-          badge={addModalType === 'function' ? 'FNC' : addModalType === 'role' ? 'ROL' : 'INF'}
+          label={addModalType === 'function' ? 'Function' : addModalType === 'role' ? 'Role' : 'Tag'}
+          badge={addModalType === 'function' ? 'FNC' : addModalType === 'role' ? 'ROL' : 'TAG'}
           existing={
             addModalType === 'function' ? safeDimensions.functions
             : addModalType === 'role'   ? safeDimensions.roles
@@ -1359,35 +1117,48 @@ export default function RoleMatrixPage() {
           <h1 className="text-xl font-bold text-slate-800">Role Matrix</h1>
           <p className="text-sm text-slate-500">{safeEntries.length} rules</p>
         </div>
-        <div className="flex gap-3 items-center flex-wrap justify-end">
-          {editMode && (
-            <button onClick={handleClearAll} disabled={clearAllMutation.isPending}
-              className="border border-red-200 text-red-600 px-3 py-1.5 rounded-lg text-sm hover:bg-red-50 disabled:opacity-40">
-              {clearAllMutation.isPending ? 'Emptying...' : 'Empty matrix'}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setEditMode(v => !v)}
+            className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${editMode ? 'bg-blue-600 text-white border-blue-600' : 'text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+          >
+            {editMode ? 'Done editing' : 'Edit'}
+          </button>
+          {editMode && safeEntries.length > 0 && (
+            <button
+              onClick={() => {
+                if (window.confirm('Empty the entire role matrix including all dimensions? This cannot be undone.'))
+                  clearAllMutation.mutate();
+              }}
+              className="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50"
+            >
+              Clear all
             </button>
           )}
-          <ToggleSwitch checked={editMode} onChange={setEditMode} label="Edit mode" />
-          <button onClick={() => fileRef.current.click()} disabled={importMutation.isPending || linkModalQueue.length > 0}
-            className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
-            {importMutation.isPending ? 'Importing...' : 'Import Excel'}
+          <button onClick={handleExport} className="text-xs px-3 py-1.5 rounded-lg border text-slate-600 hover:bg-slate-50">
+            Export
           </button>
-          <button onClick={handleExport} disabled={safeEntries.length === 0}
-            className="border px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">Export Excel</button>
-          <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleFileChange} />
+          <button onClick={() => fileRef.current?.click()} className="text-xs px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700">
+            Import
+          </button>
+          <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImport} />
         </div>
       </div>
 
-      {importError && <p className="text-sm text-red-500 mb-2">{importError}</p>}
-      {importStats && !importMutation.isPending && (
-        <p className="text-sm text-green-600 mb-2">
-          Import complete: {importStats.imported} rows, {importStats.dimensions_added} new dimensions,
-          {' '}{importStats.resolved} trainings resolved, {importStats.unresolved} unresolved.
-        </p>
+      {importError && (
+        <div className="mb-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg px-3 py-2 shrink-0">
+          {importError}
+        </div>
       )}
-      {isDimPending && <p className="text-xs text-blue-500 mb-2">Updating matrix...</p>}
 
-      {/* 3-panel selector */}
-      <div className="grid grid-cols-3 gap-3 mb-4 shrink-0" style={{ height: '11rem' }}>
+      {importStats && (
+        <div className="mb-3 bg-green-50 border border-green-200 text-green-700 text-xs rounded-lg px-3 py-2 shrink-0">
+          Imported {importStats.created} new + updated {importStats.updated} rows.
+          {importStats.unresolved > 0 && ` ${importStats.unresolved} complementary trainings unresolved.`}
+        </div>
+      )}
+
+      <div className="flex gap-3 mb-4 shrink-0 overflow-x-auto">
         <SelectorPanel title="Function" badge="FNC" items={safeDimensions.functions}
           selected={selectedFn} multi={false} onChange={v => { setSelectedFn(v); setStatusFilter(null); }}
           onAddNew={() => setAddModalType('function')}
@@ -1399,7 +1170,7 @@ export default function RoleMatrixPage() {
           onRemove={v => removeDimMutation.mutate({ type: 'role', value: v })}
           editMode={editMode} />
         <InfoFilterPanel
-          title="Additional Info"
+          title="Tags"
           infoKeys={safeDimensions.info_keys}
           selectedInfo={selectedInfo}
           onChange={v => { setSelectedInfo(v); setStatusFilter(null); }}
@@ -1413,122 +1184,112 @@ export default function RoleMatrixPage() {
       {/* Status bar */}
       <StatusBar
         counts={statusCounts}
-        activeStatus={statusFilter}
-        onToggle={s => setStatusFilter(prev => prev === s ? null : s)}
-        totalShown={filteredEntries.length}
+        active={statusFilter}
+        onFilter={v => { setStatusFilter(v); }}
       />
 
       {/* Table */}
-      <div className="overflow-y-auto overflow-x-auto rounded-xl border bg-white flex-1">
-        <table
-          className="w-full text-sm border-collapse"
-          style={{ tableLayout: 'fixed', minWidth: minTableWidth }}
-        >
-          <colgroup>
-            <col style={{ width: COL.function }} />
-            <col style={{ width: COL.role }} />
-            {safeDimensions.info_keys.map(k => <col key={k} style={{ width: COL.info }} />)}
-            <col style={{ width: COL.primary }} />
-            <col />
-            <col style={{ width: COL.tlgGroup }} />
-            <col style={{ width: COL.tlgAddon }} />
-            <col style={{ width: COL.action }} />
-          </colgroup>
-          <thead className="sticky top-0 z-10 bg-slate-50 border-b">
-            <tr>
-              <SortTh label="Function"     colKey="function"      sortState={sortState} onSort={handleSort} className={thBase} />
-              <SortTh label="Role"         colKey="role"          sortState={sortState} onSort={handleSort} className={thBase} />
-              {safeDimensions.info_keys.map(k => (
-                <SortTh key={k} label={k} colKey={k} sortState={sortState} onSort={handleSort} vertical />
-              ))}
-              <SortTh label="Primary Training"       colKey="primary"       sortState={sortState} onSort={handleSort} className={thBase} />
-              <SortTh label="Complementary Training" colKey="complementary"  sortState={sortState} onSort={handleSort} className={thBase} />
-              <SortTh label="TLG Group"              colKey="tlgGroup"       sortState={sortState} onSort={handleSort} className={thBase} />
-              <SortTh label="TLG Add-on"             colKey="tlgAddon"       sortState={sortState} onSort={handleSort} className={thBase} />
-              <th className="px-2 py-2" />
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading && (
-              <tr><td colSpan={6 + safeDimensions.info_keys.length} className="px-3 py-8 text-center text-slate-400">Loading...</td></tr>
-            )}
-            {!isLoading && filteredEntries.length === 0 && (
-              <tr><td colSpan={6 + safeDimensions.info_keys.length} className="px-3 py-8 text-center text-slate-400">
-                {safeEntries.length === 0
-                  ? safeDimensions.functions.length === 0 || safeDimensions.roles.length === 0
-                    ? 'Add at least one function and one role to generate matrix rows.'
-                    : 'Import an Excel file or add dimensions above to get started.'
-                  : 'No rows match the current selection.'}
-              </td></tr>
-            )}
-            {filteredEntries.map(entry => {
-              const status    = rowStatus(entry);
-              const rec       = profiles.find(p => p.id === entry.recommended_training_id);
-              const compItems = Array.isArray(entry.complementary_items) ? entry.complementary_items : [];
-              return (
-                <tr key={entry.id} className={`border-b ${ROW_BG[status]} ${ROW_HOVER[status]}`}>
-                  <td className="px-3 py-2 text-xs font-medium text-slate-700 overflow-hidden text-ellipsis whitespace-nowrap">{entry.function}</td>
-                  <td className="px-3 py-2 text-xs text-slate-600 overflow-hidden text-ellipsis whitespace-nowrap">{entry.role}</td>
-                  {safeDimensions.info_keys.map(k => (
-                    <td key={k} className="py-2 text-center">
-                      <span className={`text-xs font-medium ${entry.additional_info?.[k] ? 'text-blue-600' : 'text-slate-300'}`}>
-                        {entry.additional_info?.[k] ? 'Y' : 'N'}
+      <div className="flex-1 overflow-auto rounded-xl border bg-white min-h-0">
+        {filtered.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full py-16 text-slate-400">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mb-3 opacity-40">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <path d="M3 9h18M9 21V9"/>
+            </svg>
+            <p className="text-sm font-medium">No entries</p>
+            <p className="text-xs mt-1">Import a spreadsheet or adjust your filters</p>
+          </div>
+        ) : (
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-slate-50 border-b">
+              <tr>
+                {['function', 'role'].map(col => (
+                  <th key={col}
+                    onClick={() => toggleSort(col)}
+                    className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide cursor-pointer hover:bg-slate-100 select-none whitespace-nowrap">
+                    {col === 'function' ? 'Function' : 'Role'}
+                    {sortState.col === col && <span className="ml-1">{sortState.dir === 'asc' ? '↑' : '↓'}</span>}
+                  </th>
+                ))}
+                {safeDimensions.info_keys.map(k => (
+                  <th key={k}
+                    onClick={() => toggleSort(k)}
+                    className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide cursor-pointer hover:bg-slate-100 select-none whitespace-nowrap">
+                    {k}
+                    {sortState.col === k && <span className="ml-1">{sortState.dir === 'asc' ? '↑' : '↓'}</span>}
+                  </th>
+                ))}
+                <th className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap">TLG</th>
+                <th onClick={() => toggleSort('status')}
+                  className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide cursor-pointer hover:bg-slate-100 select-none whitespace-nowrap">
+                  Status
+                  {sortState.col === 'status' && <span className="ml-1">{sortState.dir === 'asc' ? '↑' : '↓'}</span>}
+                </th>
+                <th className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide">Primary</th>
+                <th onClick={() => toggleSort('complementary')}
+                  className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide cursor-pointer hover:bg-slate-100 select-none">
+                  Complementary
+                  {sortState.col === 'complementary' && <span className="ml-1">{sortState.dir === 'asc' ? '↑' : '↓'}</span>}
+                </th>
+                <th className="px-3 py-2" />
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {filtered.map(entry => {
+                const status = getEntryStatus(entry);
+                const cfg = STATUS_CONFIGS.find(c => c.status === status);
+                const rec = profiles.find(p => p.id === entry.recommended_training_id);
+                return (
+                  <tr key={entry.id} className="hover:bg-slate-50 transition-colors">
+                    <td className="px-3 py-2 font-medium text-slate-700 whitespace-nowrap">{entry.function}</td>
+                    <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{entry.role}</td>
+                    {safeDimensions.info_keys.map(k => (
+                      <td key={k} className="px-3 py-2 text-center">
+                        {entry.additional_info?.[k]
+                          ? <span className="inline-block w-2 h-2 rounded-full bg-blue-500" title="Yes" />
+                          : <span className="inline-block w-2 h-2 rounded-full bg-slate-200" title="No" />
+                        }
+                      </td>
+                    ))}
+                    <td className="px-3 py-2 text-slate-500 whitespace-nowrap">
+                      {entry.na_tlg ? (
+                        <Badge color="slate">N/A</Badge>
+                      ) : (
+                        <span>{[entry.tlg_primary, ...(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : [])].filter(Boolean).join(' + ') || '—'}</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">
+                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold ${cfg?.bg} ${cfg?.border} ${cfg?.text}`}>
+                        {cfg?.label ?? status}
                       </span>
                     </td>
-                  ))}
-                  <td className="px-3 py-2 overflow-hidden text-ellipsis whitespace-nowrap">
-                    {entry.na_training
-                      ? <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>
-                      : rec
-                        ? <span className="text-xs text-indigo-700 font-medium">{rec.profile_name}</span>
-                        : entry.primary_training_name
-                          ? <span className="text-xs text-amber-600 font-medium" title="Not yet matched">{entry.primary_training_name}</span>
-                          : <span className="text-xs text-slate-300">-</span>}
-                  </td>
-                  <td className="px-2 py-2" style={{ overflow: 'hidden' }}>
-                    {entry.na_training || compItems.length === 0
-                      ? <span className="text-xs text-slate-300">-</span>
-                      : (
-                        <div style={{ overflowX: 'auto', whiteSpace: 'nowrap' }} className="flex gap-1 items-center">
-                          {compItems.filter(i => i.type !== 'unresolved').map(i => (
-                            <span key={`${i.type}-${i.id}`} className="inline-flex shrink-0 items-center text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">
-                              {i.title}
-                            </span>
-                          ))}
-                          {compItems.filter(i => i.type === 'unresolved').map((i, idx) => (
-                            <span key={`unresolved-${idx}`} title="Not matched"
-                              className="inline-flex shrink-0 items-center text-[10px] bg-amber-50 text-amber-600 border border-amber-200 rounded px-1.5 py-0.5">
-                              {i.title}
-                            </span>
-                          ))}
-                        </div>
-                      )
-                    }
-                  </td>
-                  <td className="px-3 py-2 overflow-hidden text-ellipsis whitespace-nowrap">
-                    {entry.na_tlg
-                      ? <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">N/A</span>
-                      : entry.tlg_primary
-                        ? <span className="text-xs font-medium text-slate-800">{entry.tlg_primary}</span>
-                        : <span className="text-xs text-slate-300">-</span>}
-                  </td>
-                  <td className="px-3 py-2 overflow-hidden">
-                    {entry.na_tlg
-                      ? <span className="text-xs text-slate-300">-</span>
-                      : <div className="flex gap-1 overflow-x-auto">
-                          {(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []).map(a => (
-                            <span key={a} className="text-[10px] bg-teal-50 text-teal-700 border border-teal-100 rounded px-1.5 py-0.5 whitespace-nowrap shrink-0">{a}</span>
-                          ))}
-                        </div>}
-                  </td>
-                  <td className="px-2 py-2">
-                    <button onClick={() => setModalEntry(entry)} className="text-xs text-slate-400 hover:text-blue-600">Fill</button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                    <td className="px-3 py-2 text-slate-600 whitespace-nowrap">
+                      {entry.na_training ? <Badge color="slate">N/A</Badge> : (rec ? rec.profile_name : <span className="text-slate-300">—</span>)}
+                    </td>
+                    <td className="px-3 py-2">
+                      {entry.na_training ? null : (
+                        Array.isArray(entry.complementary_items) && entry.complementary_items.length > 0
+                          ? <div className="flex flex-wrap gap-1">
+                              {entry.complementary_items.map(i => (
+                                <span key={`${i.type}-${i.id}`}
+                                  className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase ${i.id ? 'bg-amber-50 border-amber-200 text-amber-700' : 'bg-red-50 border-red-200 text-red-600'}`}>
+                                  {i.type === 'curriculum' ? 'CUR' : 'MOD'} {i.title}
+                                  {!i.id && <span className="ml-1 text-red-400" title="Unresolved">!</span>}
+                                </span>
+                              ))}
+                            </div>
+                          : <span className="text-slate-300">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right whitespace-nowrap">
+                      <button onClick={() => setModalEntry(entry)} className="text-xs text-slate-400 hover:text-blue-600">Fill</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );
