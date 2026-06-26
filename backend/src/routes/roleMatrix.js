@@ -265,14 +265,15 @@ router.delete('/:projectId/role-matrix/dimensions', authenticate, requireMember(
         [req.params.projectId, value]
       );
     }
-    const afterResult = await client.query(
-      'SELECT type, value FROM role_matrix_dimensions WHERE project_id=$1', [req.params.projectId]
-    );
     await client.query('COMMIT');
+    const dimResult = await pool.query(
+      'SELECT type, value FROM role_matrix_dimensions WHERE project_id=$1 ORDER BY type, value',
+      [req.params.projectId]
+    );
     res.json({
-      functions: afterResult.rows.filter(r => r.type === 'function').map(r => r.value),
-      roles:     afterResult.rows.filter(r => r.type === 'role').map(r => r.value),
-      info_keys: afterResult.rows.filter(r => r.type === 'info_key').map(r => r.value),
+      functions: dimResult.rows.filter(r => r.type === 'function').map(r => r.value),
+      roles:     dimResult.rows.filter(r => r.type === 'role').map(r => r.value),
+      info_keys: dimResult.rows.filter(r => r.type === 'info_key').map(r => r.value),
     });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -281,10 +282,12 @@ router.delete('/:projectId/role-matrix/dimensions', authenticate, requireMember(
   } finally { client.release(); }
 });
 
+// -- Matrix rows ------------------------------------------------------------
+
 router.get('/:projectId/role-matrix', authenticate, requireMember(), async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT * FROM role_matrix WHERE project_id=$1 ORDER BY function, role',
+      `SELECT * FROM role_matrix WHERE project_id=$1 ORDER BY function, role`,
       [req.params.projectId]
     );
     res.json(result.rows.map(normalizeRow));
@@ -297,17 +300,18 @@ router.get('/:projectId/role-matrix', authenticate, requireMember(), async (req,
 router.get('/:projectId/role-matrix/training-profiles', authenticate, requireMember(), async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, title AS profile_name FROM playlists WHERE project_id=$1 ORDER BY title`,
+      `SELECT DISTINCT primary_training_name FROM role_matrix
+       WHERE project_id=$1 AND primary_training_name != ''
+       ORDER BY primary_training_name`,
       [req.params.projectId]
     );
-    res.json(result.rows);
+    res.json(result.rows.map(r => r.primary_training_name));
   } catch (err) {
     console.error('[GET role-matrix/training-profiles]', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Returns modules + curricula + playlists for complementary selection
 router.get('/:projectId/role-matrix/complementary-options', authenticate, requireMember(), async (req, res) => {
   try {
     const [mods, currs, plays] = await Promise.all([
@@ -346,62 +350,62 @@ router.get('/:projectId/role-matrix/info-key-links', authenticate, requireMember
 });
 
 router.put('/:projectId/role-matrix/info-key-links/:infoKey', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
-  const { infoKey } = req.params;
   const { complementary_items } = req.body;
-  if (!Array.isArray(complementary_items))
-    return res.status(400).json({ error: 'complementary_items must be an array' });
+  const { projectId, infoKey } = req.params;
   try {
     await pool.query(
-      `INSERT INTO role_matrix_info_key_links (project_id, info_key, complementary_items, updated_at)
-       VALUES ($1, $2, $3, NOW())
-       ON CONFLICT (project_id, info_key) DO UPDATE SET
-         complementary_items = EXCLUDED.complementary_items,
-         updated_at          = NOW()`,
-      [req.params.projectId, infoKey, JSON.stringify(complementary_items)]
+      `INSERT INTO role_matrix_info_key_links (project_id, info_key, complementary_items)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (project_id, info_key)
+       DO UPDATE SET complementary_items = EXCLUDED.complementary_items, updated_at = NOW()`,
+      [projectId, infoKey, JSON.stringify(complementary_items)]
     );
-    res.json({ info_key: infoKey, complementary_items });
+    res.json({ ok: true });
   } catch (err) {
-    console.error('[PUT role-matrix/info-key-links/:infoKey]', err);
+    console.error('[PUT role-matrix/info-key-links]', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// -- Role matrix CRUD ------------------------------------------------------
-
 router.put('/:projectId/role-matrix/:id', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
-  const { tlg_primary, tlg_addon, na_tlg, na_training, recommended_training_id, complementary_items } = req.body;
-  const isNaTlg = toBoolean(na_tlg);
-  const isNaTraining = toBoolean(na_training);
-  const client = await pool.connect();
+  const { na_training, na_tlg, tlg_primary, tlg_addon, recommended_training_id,
+          primary_training_name, complementary_items, complementary_names } = req.body;
   try {
-    await client.query('BEGIN');
-    const result = await client.query(
+    const result = await pool.query(
       `UPDATE role_matrix SET
-         tlg_primary=$1, tlg_addon=$2, na_tlg=$3,
-         na_training=$4, recommended_training_id=$5, complementary_items=$6,
-         updated_at=NOW()
-       WHERE id=$7 AND project_id=$8
+         na_training             = $1,
+         na_tlg                  = $2,
+         tlg_primary             = $3,
+         tlg_addon               = $4,
+         recommended_training_id = $5,
+         primary_training_name   = $6,
+         complementary_items     = $7,
+         complementary_names     = $8,
+         updated_at              = NOW()
+       WHERE id=$9 AND project_id=$10
        RETURNING *`,
       [
-        isNaTlg ? '' : (tlg_primary || ''),
-        JSON.stringify(isNaTlg ? [] : (tlg_addon || [])),
-        isNaTlg,
-        isNaTraining,
-        isNaTraining ? null : (recommended_training_id || null),
-        JSON.stringify(isNaTraining ? [] : (complementary_items || [])),
-        req.params.id, req.params.projectId,
+        toBoolean(na_training),
+        toBoolean(na_tlg),
+        tlg_primary ?? '',
+        JSON.stringify(Array.isArray(tlg_addon) ? tlg_addon : []),
+        recommended_training_id ?? null,
+        primary_training_name ?? '',
+        JSON.stringify(Array.isArray(complementary_items) ? complementary_items : []),
+        JSON.stringify(Array.isArray(complementary_names) ? complementary_names : []),
+        req.params.id,
+        req.params.projectId,
       ]
     );
-    await client.query('COMMIT');
+    if (!result.rows[0]) return res.status(404).json({ error: 'Not found' });
     res.json(normalizeRow(result.rows[0]));
   } catch (err) {
-    await client.query('ROLLBACK');
     console.error('[PUT role-matrix/:id]', err);
     res.status(500).json({ error: 'Internal server error' });
-  } finally { client.release(); }
+  }
 });
 
-router.delete('/:projectId/role-matrix', authenticate, requireMember(['owner']), async (req, res) => {
+router.delete('/:projectId/role-matrix', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -420,69 +424,86 @@ router.delete('/:projectId/role-matrix', authenticate, requireMember(['owner']),
 router.post('/:projectId/role-matrix/import', authenticate, requireMember(['owner', 'editor']), async (req, res) => {
   const { entries } = req.body;
   if (!Array.isArray(entries) || entries.length === 0)
-    return res.status(400).json({ error: 'No entries provided' });
-  if (entries.length > 10000)
-    return res.status(400).json({ error: 'Maximum 10000 entries per import' });
+    return res.status(400).json({ error: 'entries must be a non-empty array' });
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const fnSet = new Set();
-    const roleSet = new Set();
-    const infoKeySet = new Set();
+
+    // 1. Collect unique dimension values
+    const functions = [...new Set(entries.map(e => e.function))];
+    const roles     = [...new Set(entries.map(e => e.role))];
+    const infoKeys  = entries.length > 0 ? Object.keys(entries[0].additional_info ?? {}) : [];
+
+    // 2. Upsert dimensions
+    for (const fn of functions)
+      await client.query(`INSERT INTO role_matrix_dimensions (project_id, type, value) VALUES ($1,'function',$2) ON CONFLICT DO NOTHING`, [req.params.projectId, fn]);
+    for (const role of roles)
+      await client.query(`INSERT INTO role_matrix_dimensions (project_id, type, value) VALUES ($1,'role',$2) ON CONFLICT DO NOTHING`, [req.params.projectId, role]);
+    for (const key of infoKeys)
+      await client.query(`INSERT INTO role_matrix_dimensions (project_id, type, value) VALUES ($1,'info_key',$2) ON CONFLICT DO NOTHING`, [req.params.projectId, key]);
+
+    let created = 0; let updated = 0; let skipped = 0;
+
     for (const e of entries) {
-      if (e.function) fnSet.add(String(e.function).trim());
-      if (e.role)     roleSet.add(String(e.role).trim());
-      if (e.additional_info && typeof e.additional_info === 'object')
-        Object.keys(e.additional_info).forEach(k => infoKeySet.add(k));
-    }
-    let dimensionsAdded = 0;
-    for (const value of fnSet) {
-      const r = await client.query(
-        `INSERT INTO role_matrix_dimensions (project_id, type, value) VALUES ($1, 'function', $2) ON CONFLICT DO NOTHING RETURNING id`,
-        [req.params.projectId, value]
+      const additionalInfo = e.additional_info ?? {};
+      const concatenate    = buildConcatenate(e.function, e.role, additionalInfo);
+
+      const existing = await client.query(
+        'SELECT id FROM role_matrix WHERE project_id=$1 AND concatenate=$2',
+        [req.params.projectId, concatenate]
       );
-      dimensionsAdded += r.rowCount;
+
+      if (existing.rows.length > 0) {
+        const id = existing.rows[0].id;
+        await client.query(
+          `UPDATE role_matrix SET
+             na_training           = $1,
+             na_tlg                = $2,
+             tlg_primary           = $3,
+             tlg_addon             = $4,
+             primary_training_name = $5,
+             complementary_names   = $6,
+             updated_at            = NOW()
+           WHERE id = $7`,
+          [
+            toBoolean(e.na_training),
+            toBoolean(e.na_tlg),
+            e.tlg_primary ?? '',
+            JSON.stringify(Array.isArray(e.tlg_addon) ? e.tlg_addon : []),
+            e.recommended_name ?? '',
+            JSON.stringify(Array.isArray(e.complementary_names) ? e.complementary_names : []),
+            id,
+          ]
+        );
+        updated++;
+      } else {
+        await client.query(
+          `INSERT INTO role_matrix
+             (project_id, function, role, additional_info, concatenate,
+              na_training, na_tlg, tlg_primary, tlg_addon,
+              primary_training_name, complementary_names,
+              recommended_training_id, complementary_items)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULL,'[]')`,
+          [
+            req.params.projectId, e.function, e.role,
+            JSON.stringify(additionalInfo), concatenate,
+            toBoolean(e.na_training), toBoolean(e.na_tlg),
+            e.tlg_primary ?? '',
+            JSON.stringify(Array.isArray(e.tlg_addon) ? e.tlg_addon : []),
+            e.recommended_name ?? '',
+            JSON.stringify(Array.isArray(e.complementary_names) ? e.complementary_names : []),
+          ]
+        );
+        created++;
+      }
     }
-    for (const value of roleSet) {
-      const r = await client.query(
-        `INSERT INTO role_matrix_dimensions (project_id, type, value) VALUES ($1, 'role', $2) ON CONFLICT DO NOTHING RETURNING id`,
-        [req.params.projectId, value]
-      );
-      dimensionsAdded += r.rowCount;
-    }
-    for (const value of infoKeySet) {
-      const r = await client.query(
-        `INSERT INTO role_matrix_dimensions (project_id, type, value) VALUES ($1, 'info_key', $2) ON CONFLICT DO NOTHING RETURNING id`,
-        [req.params.projectId, value]
-      );
-      dimensionsAdded += r.rowCount;
-    }
-    for (const e of entries) {
-      const additional_info = (e.additional_info && typeof e.additional_info === 'object') ? e.additional_info : {};
-      const concatenate = buildConcatenate(e.function, e.role, additional_info);
-      const isNaTlg = toBoolean(e.na_tlg) || String(e.tlg_primary || '').trim() === 'N/A';
-      const isNaTrn = toBoolean(e.na_training) || String(e.primary_training_name || '').trim() === 'N/A';
-      await client.query(
-        `INSERT INTO role_matrix
-           (project_id, function, role, additional_info, concatenate,
-            tlg_primary, tlg_addon, na_tlg,
-            recommended_training_id, complementary_items, na_training,
-            primary_training_name, complementary_names)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, '[]', $9, $10, $11)
-         ON CONFLICT (project_id, concatenate) DO UPDATE SET
-           tlg_primary=EXCLUDED.tlg_primary, tlg_addon=EXCLUDED.tlg_addon, na_tlg=EXCLUDED.na_tlg,
-           primary_training_name=EXCLUDED.primary_training_name, complementary_names=EXCLUDED.complementary_names,
-           na_training=EXCLUDED.na_training, recommended_training_id=NULL, complementary_items='[]', updated_at=NOW()`,
-        [
-          req.params.projectId, e.function, e.role, JSON.stringify(additional_info), concatenate,
-          isNaTlg ? '' : (e.tlg_primary || ''), JSON.stringify(isNaTlg ? [] : (e.tlg_addon || [])), isNaTlg,
-          isNaTrn, isNaTrn ? '' : (e.primary_training_name || ''), JSON.stringify(isNaTrn ? [] : (e.complementary_names || [])),
-        ]
-      );
-    }
-    const { resolved, unresolved } = await resolveRoleMatrixTrainings(client, req.params.projectId);
+
+    // 3. Re-resolve trainings
+    const resolveStats = await resolveRoleMatrixTrainings(client, req.params.projectId);
+
     await client.query('COMMIT');
-    res.json({ imported: entries.length, dimensions_added: dimensionsAdded, resolved, unresolved });
+    res.json({ created, updated, skipped, ...resolveStats });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('[POST role-matrix/import]', err);
@@ -505,16 +526,17 @@ router.post('/:projectId/role-matrix/re-resolve', authenticate, requireMember(['
 });
 
 router.post('/:projectId/role-matrix/lookup', authenticate, requireMember(), async (req, res) => {
-  const { function: fn, role, additional_info: rawInfo } = req.body;
-  const additional_info = parseAdditionalInfo(rawInfo);
-  const concatenate = buildConcatenate(fn, role, additional_info);
+  const { function: fn, role, additional_info } = req.body;
+  if (!fn || !role) return res.status(400).json({ error: 'function and role are required' });
   try {
+    const info = additional_info ?? {};
+    const concatenate = buildConcatenate(fn, role, info);
     const result = await pool.query(
       'SELECT * FROM role_matrix WHERE project_id=$1 AND concatenate=$2',
       [req.params.projectId, concatenate]
     );
-    if (result.rows.length === 0) return res.json({ found: false });
-    res.json({ ...normalizeRow(result.rows[0]), found: true });
+    if (!result.rows[0]) return res.status(404).json({ error: 'Not found' });
+    res.json(normalizeRow(result.rows[0]));
   } catch (err) {
     console.error('[POST role-matrix/lookup]', err);
     res.status(500).json({ error: 'Internal server error' });

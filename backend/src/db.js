@@ -6,10 +6,10 @@ const pool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  max: 25,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
-  statement_timeout: 30000,
+  max: 50,
+  idleTimeoutMillis: 60000,
+  connectionTimeoutMillis: 8000,
+  statement_timeout: 60000,
 });
 
 module.exports = pool;

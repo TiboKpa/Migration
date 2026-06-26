@@ -132,7 +132,7 @@ function InfoStateButton({ label, value, onChange }) {
 //
 // Props:
 //   infoKey               string   name of the info key (e.g. "PDM Champion")
-//   complementaryOptions  { modules, curricula }
+//   complementaryOptions  { modules, curricula, playlists }
 //   initialItems          ComplementaryItem[]  already-saved items (pre-selected)
 //   autoMatchedNames      string[]             names auto-matched from Training Matrix
 //   onSave(items)         fn
@@ -142,6 +142,7 @@ function InfoKeyLinkModal({ infoKey, complementaryOptions, initialItems, autoMat
   const allItems = [
     ...complementaryOptions.curricula.map(c => ({ ...c, type: 'curriculum' })),
     ...complementaryOptions.modules.map(m => ({ ...m, type: 'module' })),
+    ...(complementaryOptions.playlists ?? []).map(p => ({ ...p, type: 'playlist' })),
   ];
 
   const [selected, setSelected] = useState(() => {
@@ -214,7 +215,7 @@ function InfoKeyLinkModal({ infoKey, complementaryOptions, initialItems, autoMat
             {selected.map(i => (
               <span key={`${i.type}-${i.id}`}
                 className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5 text-xs">
-                <span className="text-blue-400 uppercase text-[10px] font-semibold">{i.type === 'curriculum' ? 'CUR' : 'MOD'}</span>
+                <span className="text-blue-400 uppercase text-[10px] font-semibold">{i.type === 'curriculum' ? 'CUR' : i.type === 'playlist' ? 'PLA' : 'MOD'}</span>
                 {i.title}
                 <button onClick={() => toggle(i)} className="ml-0.5 text-blue-400 hover:text-blue-700 leading-none">&times;</button>
               </span>
@@ -224,7 +225,7 @@ function InfoKeyLinkModal({ infoKey, complementaryOptions, initialItems, autoMat
 
         <input
           className="border rounded-lg px-3 py-1.5 text-xs w-full mb-1"
-          placeholder="Search modules or curricula..."
+          placeholder="Search modules, curricula or playlists..."
           value={search}
           onChange={e => setSearch(e.target.value)}
           autoFocus
@@ -232,7 +233,7 @@ function InfoKeyLinkModal({ infoKey, complementaryOptions, initialItems, autoMat
 
         <div className="border rounded-lg overflow-y-auto mb-4" style={{ maxHeight: '12rem' }}>
           {filtered.length === 0 && (
-            <p className="text-xs text-slate-400 text-center py-3">No modules or curricula found</p>
+            <p className="text-xs text-slate-400 text-center py-3">No items found</p>
           )}
           {filtered.map(item => {
             const checked = selected.some(s => s.type === item.type && s.id === item.id);
@@ -241,7 +242,7 @@ function InfoKeyLinkModal({ infoKey, complementaryOptions, initialItems, autoMat
                 className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 cursor-pointer hover:bg-slate-50 ${checked ? 'bg-blue-50' : ''}`}>
                 <input type="checkbox" checked={checked} onChange={() => toggle(item)} className="rounded" />
                 <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">
-                  {item.type === 'curriculum' ? 'CUR' : 'MOD'}
+                  {item.type === 'curriculum' ? 'CUR' : item.type === 'playlist' ? 'PLA' : 'MOD'}
                 </span>
                 <span className="text-xs text-slate-700">{item.title}</span>
               </label>
@@ -318,76 +319,58 @@ function AddDimModal({ label, badge, existing, onAdd, onClose }) {
 // ---------------------------------------------------------------------------
 // Selector panel (Function / Role)
 // ---------------------------------------------------------------------------
-
 function SelectorPanel({ title, badge, items, selected, multi, onChange, onAddNew, onRemove, editMode }) {
-  const [search, setSearch] = useState('');
-  const filtered = items.filter(i => i.toLowerCase().includes(search.toLowerCase()));
-
-  function handleClick(item) {
-    if (multi) {
-      if (Array.isArray(selected)) {
-        onChange(selected.includes(item) ? selected.filter(x => x !== item) : [...selected, item]);
-      } else {
-        onChange([item]);
-      }
-    } else {
-      onChange(selected === item ? null : item);
-    }
-  }
-
-  const isSelected = item => multi
-    ? (Array.isArray(selected) && selected.includes(item))
-    : selected === item;
+  function handleClear() { onChange(multi ? [] : null); }
+  const hasSelection = multi ? selected.length > 0 : selected !== null;
 
   return (
     <div className="bg-white border rounded-xl p-3 flex flex-col gap-2 min-w-0">
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{title}</span>
-        {editMode && (
-          <button onClick={onAddNew} className="text-[11px] text-blue-600 hover:underline">+ Add</button>
-        )}
+        <div className="flex items-center gap-2">
+          {hasSelection && (
+            <button onClick={handleClear} className="text-[11px] text-slate-400 hover:text-slate-600">Clear</button>
+          )}
+          {editMode && (
+            <button onClick={onAddNew} className="text-[11px] text-blue-600 hover:underline">+ Add</button>
+          )}
+        </div>
       </div>
-      {items.length > 6 && (
-        <input
-          className="border rounded px-2 py-1 text-xs"
-          placeholder="Search..."
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
+      {items.length === 0 && (
+        <p className="text-[11px] text-slate-400 text-center py-3">No {title.toLowerCase()} yet</p>
       )}
-      <div className="flex flex-col gap-0.5 overflow-y-auto" style={{ maxHeight: '10rem' }}>
-        {filtered.length === 0 && (
-          <p className="text-[11px] text-slate-400 text-center py-2">Nothing here yet</p>
-        )}
-        {filtered.map(item => (
-          <div key={item} className="flex items-center gap-1 group">
+      {items.map(item => {
+        const isSelected = multi ? selected.includes(item) : selected === item;
+        return (
+          <div key={item} className="flex items-center gap-1.5 group">
             <button
-              onClick={() => handleClick(item)}
-              className={`flex-1 text-left text-xs px-2 py-1 rounded-lg transition-colors ${
-                isSelected(item) ? 'bg-blue-600 text-white' : 'hover:bg-slate-100 text-slate-700'
+              onClick={() => {
+                if (multi) onChange(isSelected ? selected.filter(x => x !== item) : [...selected, item]);
+                else onChange(isSelected ? null : item);
+              }}
+              className={`flex-1 text-left text-xs rounded-lg px-2 py-1 border transition-colors ${
+                isSelected ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-700 border-slate-200 hover:border-blue-300'
               }`}
             >
-              <span className={`inline-block mr-1.5 text-[9px] font-bold uppercase ${isSelected(item) ? 'text-blue-300' : 'text-slate-400'}`}>{badge}</span>
               {item}
             </button>
             {editMode && (
               <button
                 onClick={() => onRemove(item)}
-                className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 text-xs px-1 transition-opacity"
+                className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 text-xs px-0.5 transition-opacity"
                 title={`Remove ${item}`}
               >×</button>
             )}
           </div>
-        ))}
-      </div>
+        );
+      })}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Tags filter panel (three-state per key)
+// Info key filter panel (Tags)
 // ---------------------------------------------------------------------------
-
 function InfoFilterPanel({ title, infoKeys, selectedInfo, onChange, onAddNew, onRemove, editMode, onEditLink }) {
   function clearAll() {
     const cleared = {};
@@ -446,179 +429,204 @@ function InfoFilterPanel({ title, infoKeys, selectedInfo, onChange, onAddNew, on
 }
 
 // ---------------------------------------------------------------------------
-// Edit-entry modal
+// Edit modal (fill a single matrix cell)
 // ---------------------------------------------------------------------------
-
 function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
   const allItems = [
     ...complementaryOptions.curricula.map(c => ({ ...c, type: 'curriculum' })),
     ...complementaryOptions.modules.map(m => ({ ...m, type: 'module' })),
+    ...(complementaryOptions.playlists ?? []).map(p => ({ ...p, type: 'playlist' })),
   ];
 
-  const [naTlg,              setNaTlg]              = useState(entry.na_tlg === true);
-  const [tlgPrimary,         setTlgPrimary]         = useState(entry.tlg_primary || '');
-  const [tlgAddon,           setTlgAddon]           = useState(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []);
-  const [naTraining,         setNaTraining]         = useState(entry.na_training === true);
-  const [recommendedId,      setRecommendedId]      = useState(entry.recommended_training_id ? String(entry.recommended_training_id) : '');
-  const [complementaryItems, setComplementaryItems] = useState(Array.isArray(entry.complementary_items) ? entry.complementary_items : []);
-  const [primarySearch,      setPrimarySearch]      = useState('');
-  const [itemSearch,         setItemSearch]         = useState('');
+  const [naTraining, setNaTraining]   = useState(entry.na_training ?? false);
+  const [naTlg,      setNaTlg]        = useState(entry.na_tlg ?? false);
+  const [tlgPrimary, setTlgPrimary]   = useState(entry.tlg_primary ?? '');
+  const [tlgAddon,   setTlgAddon]     = useState(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : []);
+  const [search,     setSearch]       = useState('');
+  const [selected,   setSelected]     = useState(
+    Array.isArray(entry.complementary_items) ? entry.complementary_items : []
+  );
 
-  function handleNaTlg(val) {
-    setNaTlg(val);
-    if (val) { setTlgPrimary(''); setTlgAddon([]); }
-  }
+  // Primary training: start from recommended_training_id if present, else search by name
+  const [primarySearch,   setPrimarySearch]   = useState(entry.primary_training_name ?? '');
+  const [primarySelected, setPrimarySelected] = useState(
+    allItems.find(i => i.id === entry.recommended_training_id) ?? null
+  );
+  const [primaryOpen, setPrimaryOpen] = useState(false);
+  const primaryRef = useRef(null);
 
-  function handleNaTraining(val) {
-    setNaTraining(val);
-    if (val) { setRecommendedId(''); setComplementaryItems([]); }
-  }
+  useEffect(() => {
+    function onKey(e) { if (e.key === 'Escape') onClose(); }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
-  const filteredProfiles = profiles.filter(p => p.profile_name.toLowerCase().includes(primarySearch.toLowerCase()));
-  const filteredItems    = allItems.filter(i => i.title.toLowerCase().includes(itemSearch.toLowerCase()));
-  const selectedProfile  = profiles.find(p => String(p.id) === recommendedId) || null;
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (primaryRef.current && !primaryRef.current.contains(e.target)) setPrimaryOpen(false);
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
-  function toggleComp(item) {
-    setComplementaryItems(prev => {
-      const exists = prev.some(i => i.type === item.type && i.id === item.id);
+  const filteredPrimary = allItems.filter(i =>
+    i.title.toLowerCase().includes(primarySearch.toLowerCase())
+  );
+  const filteredComplementary = allItems
+    .filter(i => !(primarySelected && i.type === primarySelected.type && i.id === primarySelected.id))
+    .filter(i => i.title.toLowerCase().includes(search.toLowerCase()));
+
+  function toggleComplementary(item) {
+    setSelected(prev => {
+      const exists = prev.some(s => s.type === item.type && s.id === item.id);
       return exists
-        ? prev.filter(i => !(i.type === item.type && i.id === item.id))
+        ? prev.filter(s => !(s.type === item.type && s.id === item.id))
         : [...prev, { type: item.type, id: item.id, title: item.title }];
     });
   }
 
-  const infoKeys = Object.keys(entry.additional_info || {});
+  function handleSave() {
+    const compItems = selected.map(i => ({ type: i.type, id: i.id, title: i.title }));
+    onSave({
+      na_training:             naTraining,
+      na_tlg:                  naTlg,
+      tlg_primary:             naTlg ? '' : tlgPrimary,
+      tlg_addon:               naTlg ? [] : tlgAddon,
+      recommended_training_id: naTraining ? null : (primarySelected?.id ?? null),
+      primary_training_name:   naTraining ? '' : (primarySelected?.title ?? primarySearch),
+      complementary_items:     naTraining ? [] : compItems,
+      complementary_names:     naTraining ? [] : compItems.map(i => i.title),
+    });
+    onClose();
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[92vh] overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col" style={{ maxHeight: '90vh' }} onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-start justify-between p-5 pb-3 shrink-0">
           <div>
-            <h2 className="text-base font-semibold text-slate-800">{entry.function} / {entry.role}</h2>
-            {infoKeys.length > 0 && (
-              <div className="flex flex-wrap gap-1 mt-1">
-                {infoKeys.map(k => (
-                  <span key={k} className={`text-[10px] rounded px-1.5 py-0.5 font-medium border ${
-                    entry.additional_info[k] ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-slate-50 text-slate-400 border-slate-200'
-                  }`}>{k}: {entry.additional_info[k] ? 'Yes' : 'No'}</span>
-                ))}
-              </div>
-            )}
-          </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
-        </div>
-
-        <div className="border rounded-xl p-4 mb-4 bg-slate-50">
-          <TlgGroupSelector
-            naTlg={naTlg}
-            onNaTlgChange={handleNaTlg}
-            tlgPrimary={tlgPrimary}
-            tlgAddon={tlgAddon}
-            onChange={({ tlgPrimary: p, tlgAddon: a }) => { setTlgPrimary(p); setTlgAddon(a); }}
-          />
-          {naTlg && (
-            <p className="text-xs text-slate-400 mt-2">TLG is marked as not applicable. No TLG will be saved.</p>
-          )}
-        </div>
-
-        <div className="mb-5">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Trainings</p>
-            <ToggleSwitch checked={naTraining} onChange={handleNaTraining} label="N/A (not applicable)" />
-          </div>
-
-          <div className={`grid grid-cols-2 gap-4 transition-opacity ${
-            naTraining ? 'opacity-40 pointer-events-none select-none' : ''
-          }`}>
-            {/* Primary training */}
-            <div>
-              <label className="text-xs text-slate-500 block mb-1">Primary Training</label>
-              {selectedProfile && (
-                <div className="flex items-center gap-1.5 bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5 mb-1.5">
-                  <span className="text-xs text-blue-700 flex-1">{selectedProfile.profile_name}</span>
-                  <button onClick={() => setRecommendedId('')} className="text-blue-400 hover:text-blue-700 text-sm leading-none">&times;</button>
-                </div>
-              )}
-              <input
-                className="border rounded-lg px-2 py-1 text-xs w-full mb-1"
-                placeholder="Search profiles..."
-                value={primarySearch}
-                onChange={e => setPrimarySearch(e.target.value)}
-              />
-              <div className="border rounded-lg overflow-y-auto" style={{ maxHeight: '9rem' }}>
-                {filteredProfiles.length === 0 && <p className="text-xs text-slate-400 text-center py-2">No profiles</p>}
-                {filteredProfiles.map(p => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => setRecommendedId(String(p.id))}
-                    className={`w-full text-left text-xs px-3 py-1.5 border-b last:border-0 transition-colors ${
-                      String(p.id) === recommendedId ? 'bg-blue-50 text-blue-700' : 'hover:bg-slate-50 text-slate-700'
-                    }`}
-                  >
-                    {p.profile_name}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Complementary trainings */}
-            <div>
-              <label className="text-xs text-slate-500 block mb-1">Complementary Trainings</label>
-              {complementaryItems.length > 0 && !naTraining && (
-                <div className="flex flex-wrap gap-1 mb-1.5">
-                  {complementaryItems.map(i => (
-                    <span key={`${i.type}-${i.id}`}
-                      className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5 text-xs">
-                      <span className="text-blue-400 uppercase text-[10px] font-semibold">{i.type === 'curriculum' ? 'CUR' : 'MOD'}</span>
-                      {i.title}
-                      <button onClick={() => toggleComp(i)} className="ml-0.5 text-blue-400 hover:text-blue-700 leading-none">&times;</button>
-                    </span>
+            <h3 className="text-sm font-semibold text-slate-800">Edit training assignment</h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              <span className="font-medium">{entry.function}</span> · <span className="font-medium">{entry.role}</span>
+              {entry.additional_info && Object.keys(entry.additional_info).length > 0 && (
+                <span className="ml-1">
+                  {Object.entries(entry.additional_info).map(([k,v]) => (
+                    <span key={k} className={`inline-block ml-1 rounded px-1 text-[10px] ${
+                      v ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-400'
+                    }`}>{k}: {v ? 'Yes' : 'No'}</span>
                   ))}
-                </div>
+                </span>
               )}
-              <input
-                className="border rounded-lg px-2 py-1 text-xs w-full mb-1"
-                placeholder="Search items..."
-                value={itemSearch}
-                onChange={e => setItemSearch(e.target.value)}
-              />
-              <div className="border rounded-lg overflow-y-auto" style={{ maxHeight: '9rem' }}>
-                {filteredItems.length === 0 && <p className="text-xs text-slate-400 text-center py-2">No items</p>}
-                {filteredItems.map(item => (
-                  <label key={`${item.type}-${item.id}`}
-                    className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 cursor-pointer hover:bg-slate-50 ${ complementaryItems.some(i => i.type === item.type && i.id === item.id) ? 'bg-blue-50' : ''}`}>
-                    <input
-                      type="checkbox"
-                      checked={complementaryItems.some(i => i.type === item.type && i.id === item.id)}
-                      onChange={() => toggleComp(item)}
-                      className="rounded"
-                    />
-                    <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">{item.type === 'curriculum' ? 'CUR' : 'MOD'}</span>
-                    <span className="text-xs text-slate-700">{item.title}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
+            </p>
           </div>
-          {naTraining && (
-            <p className="text-xs text-slate-400 mt-2">Training is marked as not applicable. No primary or complementary training will be saved.</p>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none ml-4">&times;</button>
+        </div>
+
+        <div className="overflow-y-auto px-5 pb-5 flex flex-col gap-4">
+          {/* N/A toggle */}
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Training</p>
+            <ToggleSwitch checked={naTraining} onChange={setNaTraining} label="N/A (not applicable)" />
+          </div>
+
+          {!naTraining && (
+            <>
+              {/* Primary training */}
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Primary training</label>
+                <div className="relative" ref={primaryRef}>
+                  <input
+                    className="border rounded-lg px-3 py-1.5 text-xs w-full"
+                    placeholder="Search or type training name..."
+                    value={primarySelected ? primarySelected.title : primarySearch}
+                    onChange={e => {
+                      setPrimarySearch(e.target.value);
+                      setPrimarySelected(null);
+                      setPrimaryOpen(true);
+                    }}
+                    onFocus={() => setPrimaryOpen(true)}
+                  />
+                  {primarySelected && (
+                    <button
+                      onClick={() => { setPrimarySelected(null); setPrimarySearch(''); }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-sm"
+                    >&times;</button>
+                  )}
+                  {primaryOpen && filteredPrimary.length > 0 && (
+                    <div className="absolute z-10 top-full left-0 right-0 bg-white border rounded-lg shadow-lg mt-1 max-h-40 overflow-y-auto">
+                      {filteredPrimary.map(item => (
+                        <button key={`${item.type}-${item.id}`}
+                          className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 flex items-center gap-2"
+                          onClick={() => { setPrimarySelected(item); setPrimaryOpen(false); setPrimarySearch(''); }}
+                        >
+                          <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">
+                            {item.type === 'curriculum' ? 'CUR' : item.type === 'playlist' ? 'PLA' : 'MOD'}
+                          </span>
+                          {item.title}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Complementary trainings */}
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Complementary trainings</label>
+                {selected.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mb-2">
+                    {selected.map(i => (
+                      <span key={`${i.type}-${i.id}`}
+                        className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5 text-xs">
+                        <span className="text-blue-400 uppercase text-[10px] font-semibold">{i.type === 'curriculum' ? 'CUR' : i.type === 'playlist' ? 'PLA' : 'MOD'}</span>
+                        {i.title}
+                        <button onClick={() => toggleComplementary(i)} className="ml-0.5 text-blue-400 hover:text-blue-700 leading-none">&times;</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <input
+                  className="border rounded-lg px-3 py-1.5 text-xs w-full mb-1"
+                  placeholder="Search complementary trainings..."
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                />
+                <div className="border rounded-lg overflow-y-auto" style={{ maxHeight: '8rem' }}>
+                  {filteredComplementary.length === 0 && (
+                    <p className="text-xs text-slate-400 text-center py-3">No items found</p>
+                  )}
+                  {filteredComplementary.map(item => {
+                    const checked = selected.some(s => s.type === item.type && s.id === item.id);
+                    return (
+                      <label key={`${item.type}-${item.id}`}
+                        className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-0 cursor-pointer hover:bg-slate-50 ${checked ? 'bg-blue-50' : ''}`}>
+                        <input type="checkbox" checked={checked} onChange={() => toggleComplementary(item)} className="rounded" />
+                        <span className="text-[10px] font-semibold uppercase text-slate-400 w-8 shrink-0">
+                          {item.type === 'curriculum' ? 'CUR' : item.type === 'playlist' ? 'PLA' : 'MOD'}
+                        </span>
+                        <span className="text-xs text-slate-700">{item.title}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* TLG Group */}
+              <TlgGroupSelector
+                naTlg={naTlg}
+                onNaTlgChange={setNaTlg}
+                tlgPrimary={tlgPrimary}
+                tlgAddon={tlgAddon}
+                onChange={({ tlgPrimary: p, tlgAddon: a }) => { setTlgPrimary(p); setTlgAddon(a); }}
+              />
+            </>
           )}
         </div>
 
-        <div className="flex justify-end gap-2 pt-2 border-t">
-          <button onClick={onClose} className="border px-4 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
-          <button
-            onClick={() => onSave({
-              na_tlg: naTlg,
-              tlg_primary: naTlg ? '' : tlgPrimary,
-              tlg_addon: naTlg ? [] : tlgAddon,
-              na_training: naTraining,
-              recommended_training_id: naTraining ? null : (recommendedId ? parseInt(recommendedId) : null),
-              complementary_items: naTraining ? [] : complementaryItems,
-            })}
-            className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700"
-          >Save</button>
+        <div className="flex gap-2 justify-end px-5 pb-5 shrink-0">
+          <button onClick={onClose} className="border px-3 py-1.5 rounded-lg text-xs text-slate-600 hover:bg-slate-50">Cancel</button>
+          <button onClick={handleSave} className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-700">Save</button>
         </div>
       </div>
     </div>
@@ -626,184 +634,139 @@ function EditModal({ entry, profiles, complementaryOptions, onSave, onClose }) {
 }
 
 // ---------------------------------------------------------------------------
-// Status legend
+// Status helpers
 // ---------------------------------------------------------------------------
-
-const STATUS_CONFIGS = [
-  { status: 'complete',        bg: 'bg-green-50',  border: 'border-green-200',  text: 'text-green-700',  activeBg: 'bg-green-100',  label: 'Complete' },
-  { status: 'primary-only',    bg: 'bg-blue-50',   border: 'border-blue-200',   text: 'text-blue-700',   activeBg: 'bg-blue-100',   label: 'Primary only' },
-  { status: 'comp-unresolved', bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', activeBg: 'bg-yellow-100', label: 'Complementary training not matched' },
-  { status: 'partial',         bg: 'bg-amber-50',  border: 'border-amber-200',  text: 'text-amber-700',  activeBg: 'bg-amber-100',  label: 'Partially filled' },
-  { status: 'empty',           bg: 'bg-slate-50',  border: 'border-slate-200',  text: 'text-slate-500',  activeBg: 'bg-slate-100',  label: 'Empty' },
-  { status: 'na',              bg: 'bg-slate-50',  border: 'border-slate-200',  text: 'text-slate-400',  activeBg: 'bg-slate-100',  label: 'N/A' },
-];
-
 function getEntryStatus(entry) {
   if (entry.na_training) return 'na';
-  const hasRec  = !!entry.recommended_training_id;
-  const hasComp = Array.isArray(entry.complementary_items) && entry.complementary_items.length > 0;
-  const hasUnresolved = Array.isArray(entry.complementary_items) && entry.complementary_items.some(i => !i.id);
-  if (hasUnresolved) return 'comp-unresolved';
-  if (hasRec && hasComp) return 'complete';
-  if (hasRec) return 'primary-only';
-  if (hasComp) return 'partial';
+  if (entry.recommended_training_id) return 'complete';
+  if (entry.primary_training_name) return 'unresolved';
   return 'empty';
 }
 
-function StatusBar({ counts, active, onFilter }) {
-  return (
-    <div className="flex flex-wrap gap-1.5 mb-3">
-      {STATUS_CONFIGS.map(cfg => {
-        const count = counts[cfg.status] ?? 0;
-        if (count === 0) return null;
-        const isActive = active === cfg.status;
-        return (
-          <button
-            key={cfg.status}
-            onClick={() => onFilter(isActive ? null : cfg.status)}
-            className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors
-              ${isActive ? `${cfg.activeBg} ${cfg.border} ${cfg.text}` : `${cfg.bg} ${cfg.border} ${cfg.text} opacity-70 hover:opacity-100`}`}
-          >
-            <span className={`inline-block w-1.5 h-1.5 rounded-full ${cfg.bg.replace('bg-', 'bg-').replace('-50', '-400')}`} />
-            {cfg.label}
-            <span className="font-bold">{count}</span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
+const STATUS_LABELS = { complete: 'Complete', unresolved: 'Unresolved', empty: 'Empty', na: 'N/A' };
+const STATUS_COLORS = {
+  complete:   'bg-green-50  text-green-700  border-green-200',
+  unresolved: 'bg-amber-50  text-amber-700  border-amber-200',
+  empty:      'bg-slate-50  text-slate-500  border-slate-200',
+  na:         'bg-slate-100 text-slate-400  border-slate-200',
+};
 
 // ---------------------------------------------------------------------------
-// Helpers for normalizing API data
-// ---------------------------------------------------------------------------
-
-function normalizeDimensions(data) {
-  if (!data || typeof data !== 'object') return { functions: [], roles: [], info_keys: [] };
-  return {
-    functions: Array.isArray(data.functions) ? data.functions : [],
-    roles:     Array.isArray(data.roles)     ? data.roles     : [],
-    info_keys: Array.isArray(data.info_keys) ? data.info_keys : [],
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Build the list of info keys that need a link modal during import.
-//
-// Matching logic:
-//   The column header "Additional Info PDM Champion" produces the info key
-//   "PDM Champion". The modal is shown for every info key where at least one
-//   row has that key = true with a non-N/A primary column.
-//
-//   The name used for auto-matching in the Training Matrix is the info key
-//   name itself (e.g. "PDM Champion"). If a module, curriculum, or training
-//   exists in the Training Matrix with that exact name (case-insensitive), it
-//   is pre-selected in the modal and shown in the green auto-matched banner.
-//
-//   The user can keep the pre-selection, deselect it, or add more items.
+// Export helper
 // ---------------------------------------------------------------------------
 function buildInfoKeyQueue(infoKeys, entries, complementaryOptions) {
   const allItems = [
     ...complementaryOptions.curricula.map(c => ({ ...c, type: 'curriculum' })),
     ...complementaryOptions.modules.map(m => ({ ...m, type: 'module' })),
+    ...(complementaryOptions.playlists ?? []).map(p => ({ ...p, type: 'playlist' })),
   ];
-
-  const titleMap = new Map();
-  for (const item of allItems) {
-    titleMap.set(item.title.trim().toLowerCase(), item);
-  }
-
   const queue = [];
-
   for (const key of infoKeys) {
-    // Only show modal when at least one row has this key = true with non-N/A primary
-    const hasRelevantRow = entries.some(e =>
-      e.additional_info?.[key] === true && !e.na_training
+    const yesEntries = entries.filter(e => e.additional_info?.[key] === true);
+    if (yesEntries.length === 0) continue;
+    const allCompNames = yesEntries.flatMap(e => e.complementary_names ?? []);
+    const uniqueNames  = [...new Set(allCompNames)];
+    const autoMatchedNames = uniqueNames.filter(n =>
+      allItems.some(i => i.title.toLowerCase() === n.toLowerCase())
     );
-    if (!hasRelevantRow) continue;
-
-    // Auto-match: search the Training Matrix for an item whose title matches
-    // the info key name exactly (case-insensitive).
-    const matchedItem = titleMap.get(key.trim().toLowerCase()) || null;
-    const autoMatchedNames = matchedItem ? [matchedItem.title] : [];
-    const initialItems     = matchedItem
-      ? [{ type: matchedItem.type, id: matchedItem.id, title: matchedItem.title }]
-      : [];
-
-    queue.push({ key, autoMatchedNames, initialItems });
+    queue.push({ key, autoMatchedNames, initialItems: [] });
   }
-
   return queue;
 }
 
 // ---------------------------------------------------------------------------
-// Main page
+// Main page component
 // ---------------------------------------------------------------------------
 export default function RoleMatrixPage() {
   const { projectId } = useParams();
   const qc = useQueryClient();
-  const fileRef = useRef();
+
+  const dimKey    = ['role-matrix-dimensions', projectId];
+  const matrixKey = ['role-matrix', projectId];
+  const linksKey  = ['role-matrix-links', projectId];
+
+  const { data: dimensions = { functions: [], roles: [], info_keys: [] } } = useQuery({
+    queryKey: dimKey,
+    queryFn:  () => client.get(`/projects/${projectId}/role-matrix/dimensions`).then(r => r.data),
+  });
+
+  const { data: matrixEntries = [], isLoading: matrixLoading } = useQuery({
+    queryKey: matrixKey,
+    queryFn:  () => client.get(`/projects/${projectId}/role-matrix`).then(r => r.data),
+  });
+
+  const { data: profiles = [] } = useQuery({
+    queryKey: ['role-matrix-profiles', projectId],
+    queryFn:  () => client.get(`/projects/${projectId}/role-matrix/training-profiles`).then(r => r.data),
+  });
+
+  const { data: complementaryOptions = { modules: [], curricula: [], playlists: [] } } = useQuery({
+    queryKey: ['role-matrix-complementary', projectId],
+    queryFn:  () => client.get(`/projects/${projectId}/role-matrix/complementary-options`).then(r => r.data),
+  });
+
+  const { data: infoKeyLinks = {} } = useQuery({
+    queryKey: linksKey,
+    queryFn:  () => client.get(`/projects/${projectId}/role-matrix/info-key-links`).then(r => r.data),
+  });
 
   const [editMode,      setEditMode]      = useState(false);
   const [selectedFn,    setSelectedFn]    = useState(null);
   const [selectedRole,  setSelectedRole]  = useState(null);
   const [selectedInfo,  setSelectedInfo]  = useState({});
-  const [statusFilter,  setStatusFilter]  = useState(null);
   const [modalEntry,    setModalEntry]    = useState(null);
-  const [importError,   setImportError]   = useState('');
-  const [importStats,   setImportStats]   = useState(null);
   const [addModalType,  setAddModalType]  = useState(null);
+  const [statusFilter,  setStatusFilter]  = useState(null);
   const [sortState,     setSortState]     = useState({ col: null, dir: 'asc' });
+  const [importError,   setImportError]   = useState(null);
+  const [importStats,   setImportStats]   = useState(null);
+  const fileInputRef = useRef(null);
 
-  // Info-key link modal state
   // linkModalQueue: array of { key, autoMatchedNames, initialItems }
   // linkModalIdx:   current index in the queue
-  // linkEditKey:    non-null when editing an existing link from the sidebar
+  const [pendingImport,  setPendingImport]  = useState(null);
   const [linkModalQueue, setLinkModalQueue] = useState([]);
   const [linkModalIdx,   setLinkModalIdx]   = useState(0);
-  const [linkEditKey,    setLinkEditKey]    = useState(null);
-  // Pending entries to import after the queue is done
-  const [pendingImport,  setPendingImport]  = useState(null);
 
-  const dimKey    = ['role-matrix-dimensions', projectId];
-  const matrixKey = ['role-matrix', projectId];
-  const linksKey  = ['role-matrix-info-key-links', projectId];
+  // Sidebar edit link key
+  const [linkEditKey, setLinkEditKey] = useState(null);
 
-  const { data: dimensions } = useQuery({
-    queryKey: dimKey,
-    queryFn: () => client.get(`/projects/${projectId}/role-matrix/dimensions`).then(r => normalizeDimensions(r.data)),
-  });
+  const safeDimensions = {
+    functions: Array.isArray(dimensions.functions) ? dimensions.functions : [],
+    roles:     Array.isArray(dimensions.roles)     ? dimensions.roles     : [],
+    info_keys: Array.isArray(dimensions.info_keys) ? dimensions.info_keys : [],
+  };
 
-  const safeDimensions = dimensions ?? { functions: [], roles: [], info_keys: [] };
-
-  // Keep selectedInfo keys in sync with info_keys dimension
+  // Sync selectedInfo keys when info_keys change
   useEffect(() => {
     setSelectedInfo(prev => {
       const next = {};
       for (const k of safeDimensions.info_keys) next[k] = prev[k] ?? null;
       return next;
     });
-  }, [JSON.stringify(safeDimensions.info_keys)]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [safeDimensions.info_keys.join(',')]); // stable dep
 
-  const { data: matrixEntries = [] } = useQuery({
-    queryKey: matrixKey,
-    queryFn: () => client.get(`/projects/${projectId}/role-matrix`).then(r => r.data),
+  const addDimMutation = useMutation({
+    mutationFn: ({ type, value }) =>
+      client.post(`/projects/${projectId}/role-matrix/dimensions`, { type, value }).then(r => r.data),
+    onSuccess: data => qc.setQueryData(dimKey, data),
   });
 
-  const { data: profiles = [] } = useQuery({
-    queryKey: ['role-matrix-profiles', projectId],
-    queryFn: () => client.get(`/projects/${projectId}/role-matrix/profiles`).then(r => r.data),
+  const removeDimMutation = useMutation({
+    mutationFn: ({ type, value }) =>
+      client.delete(`/projects/${projectId}/role-matrix/dimensions`, { data: { type, value } }).then(r => r.data),
+    onSuccess: data => qc.setQueryData(dimKey, data),
   });
 
-  const { data: complementaryOptions = { modules: [], curricula: [] } } = useQuery({
-    queryKey: ['role-matrix-complementary', projectId],
-    queryFn: () => client.get(`/projects/${projectId}/role-matrix/complementary-options`).then(r => r.data),
-  });
-
-  // Saved info-key links: Record<infoKey, ComplementaryItem[]>
-  const { data: infoKeyLinks = {} } = useQuery({
-    queryKey: linksKey,
-    queryFn: () => client.get(`/projects/${projectId}/role-matrix/info-key-links`).then(r => r.data),
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }) =>
+      client.put(`/projects/${projectId}/role-matrix/${id}`, data).then(r => r.data),
+    onSuccess: updated => {
+      qc.setQueryData(matrixKey, prev =>
+        Array.isArray(prev) ? prev.map(e => e.id === updated.id ? updated : e) : prev
+      );
+    },
   });
 
   const saveInfoKeyLinkMutation = useMutation({
@@ -812,44 +775,6 @@ export default function RoleMatrixPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: linksKey });
       qc.invalidateQueries({ queryKey: matrixKey });
-    },
-  });
-
-  const addDimMutation = useMutation({
-    mutationFn: ({ type, value }) =>
-      client.post(`/projects/${projectId}/role-matrix/dimensions`, { type, value }).then(r => r.data),
-    onSuccess: (data, variables) => {
-      qc.setQueryData(dimKey, normalizeDimensions(data));
-      qc.refetchQueries({ queryKey: matrixKey, exact: true });
-      if (variables.type === 'function') setSelectedFn(variables.value);
-      if (variables.type === 'role')     setSelectedRole(variables.value);
-      if (variables.type === 'info_key') setSelectedInfo(prev => ({ ...prev, [variables.value]: null }));
-    },
-    onError: err => console.error('Failed to add dimension:', err),
-  });
-
-  const removeDimMutation = useMutation({
-    mutationFn: ({ type, value }) =>
-      client.delete(`/projects/${projectId}/role-matrix/dimensions`, { data: { type, value } }).then(r => r.data),
-    onSuccess: (data, variables) => {
-      qc.setQueryData(dimKey, normalizeDimensions(data));
-      qc.refetchQueries({ queryKey: matrixKey, exact: true });
-      if (variables.type === 'function') setSelectedFn(null);
-      if (variables.type === 'role')     setSelectedRole(null);
-      if (variables.type === 'info_key') setSelectedInfo(prev => { const next = { ...prev }; delete next[variables.value]; return next; });
-    },
-    onError: err => console.error('Failed to remove dimension:', err),
-  });
-
-  const updateMutation = useMutation({
-    mutationFn: ({ id, data }) =>
-      client.put(`/projects/${projectId}/role-matrix/${id}`, data).then(r => r.data),
-    onSuccess: updated => {
-      qc.setQueryData(matrixKey, old => {
-        if (!Array.isArray(old)) return [updated];
-        return old.map(row => row.id === updated.id ? updated : row);
-      });
-      setModalEntry(null);
     },
   });
 
@@ -866,6 +791,9 @@ export default function RoleMatrixPage() {
       setStatusFilter(null);
       setSortState({ col: null, dir: 'asc' });
     },
+    onError: (err) => {
+      alert(err?.response?.data?.error ?? 'Failed to clear the matrix. You may not have permission.');
+    },
   });
 
   const importMutation = useMutation({
@@ -873,46 +801,60 @@ export default function RoleMatrixPage() {
       client.post(`/projects/${projectId}/role-matrix/import`, { entries }).then(r => r.data),
     onSuccess: data => {
       setImportStats(data);
-      setImportError('');
-      qc.refetchQueries({ queryKey: dimKey, exact: true });
-      qc.refetchQueries({ queryKey: matrixKey, exact: true });
+      qc.invalidateQueries({ queryKey: dimKey });
+      qc.invalidateQueries({ queryKey: matrixKey });
+      qc.invalidateQueries({ queryKey: linksKey });
+      setPendingImport(null);
     },
-    onError: err => setImportError(err?.response?.data?.error || err.message || 'Import failed'),
   });
 
-  // After the link modal queue is resolved, run the actual import
-  const runPendingImport = useCallback((entries) => {
-    importMutation.mutate({ entries });
-    setPendingImport(null);
-  }, [importMutation]);
+  const reResolveMutation = useMutation({
+    mutationFn: () =>
+      client.post(`/projects/${projectId}/role-matrix/re-resolve`).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: matrixKey });
+    },
+  });
 
-  // Advance through the link modal queue.
-  // Called on each "Confirm" or "Skip" click.
-  const advanceLinkQueue = useCallback((savedItems) => {
+  const runPendingImport = useCallback((links) => {
+    if (!pendingImport) return;
+    importMutation.mutate({ entries: pendingImport, links });
+  }, [pendingImport, importMutation]);
+
+  const advanceLinkQueue = useCallback((items) => {
     const current = linkModalQueue[linkModalIdx];
-    if (current && savedItems !== null) {
-      saveInfoKeyLinkMutation.mutate({ infoKey: current.key, complementary_items: savedItems });
+    if (current && items !== null) {
+      saveInfoKeyLinkMutation.mutate({ infoKey: current.key, complementary_items: items });
     }
     const nextIdx = linkModalIdx + 1;
     if (nextIdx < linkModalQueue.length) {
       setLinkModalIdx(nextIdx);
     } else {
-      // Queue exhausted -- now run the import
       setLinkModalQueue([]);
       setLinkModalIdx(0);
-      if (pendingImport) runPendingImport(pendingImport);
+      runPendingImport(null);
     }
   }, [linkModalQueue, linkModalIdx, pendingImport, runPendingImport, saveInfoKeyLinkMutation]);
 
   function handleExport() {
+    const infoKeys = safeDimensions.info_keys;
     const data = safeEntries.map(e => {
-      const row = { Function: e.function, Role: e.role };
-      for (const k of safeDimensions.info_keys) row[`Tag: ${k}`] = e.additional_info?.[k] ? 'Yes' : 'No';
-      row['Concatenate'] = '';
-      const rec = profiles.find(p => p.id === e.recommended_training_id);
-      const compTitles = Array.isArray(e.complementary_items) ? e.complementary_items.map(i => i.title) : [];
-      row['PDM Role']  = e.na_training ? 'N/A' : [rec ? rec.profile_name : '', ...compTitles].filter(Boolean).join(' + ');
-      row['TLG Group'] = e.na_tlg ? 'N/A' : [e.tlg_primary || '', ...(Array.isArray(e.tlg_addon) ? e.tlg_addon : [])].filter(Boolean).join(' + ');
+      const row = {
+        Function:   e.function,
+        Role:       e.role,
+        Status:     STATUS_LABELS[getEntryStatus(e)],
+        'Primary Training': e.primary_training_name || '',
+        'Complementary Trainings': Array.isArray(e.complementary_items)
+          ? e.complementary_items.map(i => i.title).join(', ')
+          : '',
+        'TLG Primary': e.tlg_primary || '',
+        'TLG Add-ons': Array.isArray(e.tlg_addon) ? e.tlg_addon.join(', ') : '',
+        'N/A Training': e.na_training ? 'Yes' : 'No',
+        'N/A TLG':      e.na_tlg     ? 'Yes' : 'No',
+      };
+      for (const k of infoKeys) {
+        row[`Tag: ${k}`] = e.additional_info?.[k] === true ? 'Yes' : e.additional_info?.[k] === false ? 'No' : '';
+      }
       return row;
     });
     const ws = XLSX.utils.json_to_sheet(data);
@@ -921,57 +863,41 @@ export default function RoleMatrixPage() {
     XLSX.writeFile(wb, 'role-matrix.xlsx');
   }
 
-  function handleImport(e) {
+  function handleImportFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    e.target.value = '';
-    setImportError('');
+    setImportError(null);
     setImportStats(null);
-
     const reader = new FileReader();
     reader.onload = evt => {
       try {
-        const wb   = XLSX.read(evt.target.result, { type: 'array' });
-        const ws   = wb.Sheets[wb.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        const wb    = XLSX.read(evt.target.result, { type: 'array' });
+        const ws    = wb.Sheets[wb.SheetNames[0]];
+        const rows  = XLSX.utils.sheet_to_json(ws, { defval: '' });
 
-        if (!rows.length) { setImportError('No rows found in spreadsheet.'); return; }
-
-        const headers = Object.keys(rows[0]);
-
-        // Collect info keys directly from the parsed header structure.
-        // A header like "Additional Info PDM Champion" -> info key "PDM Champion"
-        const infoKeySet = new Set();
-        for (const h of headers) {
-          const m = h.match(/^(?:Additional Info|Tag:|Tags?:?)\s+(.+)$/i);
-          if (m) infoKeySet.add(m[1].trim());
-        }
-        const infoKeys = [...infoKeySet];
+        const infoKeys = safeDimensions.info_keys;
 
         const entries = rows.map(row => {
-          const additional_info = {};
-          for (const h of headers) {
-            const m = h.match(/^(?:Additional Info|Tag:|Tags?:?)\s+(.+)$/i);
-            if (m) {
-              const key = m[1].trim();
-              const val = row[h];
-              additional_info[key] = val === true || val === 1 || (typeof val === 'string' && val.trim().toLowerCase() === 'yes');
-            }
-          }
-          const fn   = String(row['Function'] || '').trim();
-          const role = String(row['Role']     || '').trim();
+          const fn   = String(row['Function']   ?? row['function']   ?? '').trim();
+          const role = String(row['Role']       ?? row['role']       ?? '').trim();
           if (!fn || !role) return null;
 
-          const rawPdm   = String(row['PDM Role']  || '').trim();
-          const rawTlg   = String(row['TLG Group'] || '').trim();
-          const naTraining = rawPdm.toUpperCase() === 'N/A';
-          const naTlg      = rawTlg.toUpperCase() === 'N/A';
+          const naTraining = String(row['N/A Training'] ?? row['na_training'] ?? '').toLowerCase() === 'yes';
+          const naTlg      = String(row['N/A TLG']     ?? row['na_tlg']     ?? '').toLowerCase() === 'yes';
+          const tlgParts   = String(row['TLG Group'] ?? row['tlg_group'] ?? '').split(',').map(s => s.trim()).filter(Boolean);
+          const pdmParts   = String(row['Training']  ?? row['Primary Training'] ?? row['primary_training_name'] ?? '')
+            .split(',')
+            .map(s => s.trim())
+            .filter(Boolean);
 
-          const pdmParts = naTraining ? [] : rawPdm.split('+').map(s => s.trim()).filter(Boolean);
-          const tlgParts = naTlg      ? [] : rawTlg.split('+').map(s => s.trim()).filter(Boolean);
+          const additional_info = {};
+          for (const k of infoKeys) {
+            const raw = row[`Tag: ${k}`] ?? row[k] ?? '';
+            additional_info[k] = String(raw).toLowerCase() === 'yes';
+          }
 
           return {
-            function: fn,
+            function:         fn,
             role,
             additional_info,
             na_training:      naTraining,
@@ -986,8 +912,9 @@ export default function RoleMatrixPage() {
         if (!entries.length) { setImportError('No valid rows found.'); return; }
 
         // Build the link modal queue for info keys that have at least one "Yes" row
+        // Only show the modal queue when edit mode is active
         const queue = buildInfoKeyQueue(infoKeys, entries, complementaryOptions);
-        if (queue.length > 0) {
+        if (queue.length > 0 && editMode) {
           setPendingImport(entries);
           setLinkModalQueue(queue);
           setLinkModalIdx(0);
@@ -1114,12 +1041,12 @@ export default function RoleMatrixPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-4 shrink-0">
         <div>
-          <h1 className="text-xl font-bold text-slate-800">Role Matrix</h1>
+          <h1 className="text-base font-semibold text-slate-800">Role Matrix</h1>
           <p className="text-sm text-slate-500">{safeEntries.length} rules</p>
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setEditMode(v => !v)}
+            onClick={() => setEditMode(e => !e)}
             className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${editMode ? 'bg-blue-600 text-white border-blue-600' : 'text-slate-600 border-slate-200 hover:bg-slate-50'}`}
           >
             {editMode ? 'Done editing' : 'Edit'}
@@ -1138,158 +1065,165 @@ export default function RoleMatrixPage() {
           <button onClick={handleExport} className="text-xs px-3 py-1.5 rounded-lg border text-slate-600 hover:bg-slate-50">
             Export
           </button>
-          <button onClick={() => fileRef.current?.click()} className="text-xs px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700">
-            Import
-          </button>
-          <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImport} />
+          {editMode && (
+            <>
+              <label className="text-xs px-3 py-1.5 rounded-lg border text-slate-600 hover:bg-slate-50 cursor-pointer">
+                Import
+                <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleImportFile} />
+              </label>
+              <button
+                onClick={() => reResolveMutation.mutate()}
+                disabled={reResolveMutation.isPending}
+                className="text-xs px-3 py-1.5 rounded-lg border text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Re-resolve
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       {importError && (
-        <div className="mb-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg px-3 py-2 shrink-0">
-          {importError}
-        </div>
+        <div className="mb-3 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">{importError}</div>
       )}
-
       {importStats && (
-        <div className="mb-3 bg-green-50 border border-green-200 text-green-700 text-xs rounded-lg px-3 py-2 shrink-0">
-          Imported {importStats.created} new + updated {importStats.updated} rows.
-          {importStats.unresolved > 0 && ` ${importStats.unresolved} complementary trainings unresolved.`}
+        <div className="mb-3 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-700">
+          Import complete: {importStats.created} created, {importStats.updated} updated, {importStats.skipped} skipped.
+          {importStats.resolved !== undefined && (
+            <> Resolved: {importStats.resolved} / {importStats.total}.</>
+          )}
         </div>
       )}
-
-      <div className="flex gap-3 mb-4 shrink-0 overflow-x-auto">
-        <SelectorPanel title="Function" badge="FNC" items={safeDimensions.functions}
-          selected={selectedFn} multi={false} onChange={v => { setSelectedFn(v); setStatusFilter(null); }}
-          onAddNew={() => setAddModalType('function')}
-          onRemove={v => removeDimMutation.mutate({ type: 'function', value: v })}
-          editMode={editMode} />
-        <SelectorPanel title="Role" badge="ROL" items={safeDimensions.roles}
-          selected={selectedRole} multi={false} onChange={v => { setSelectedRole(v); setStatusFilter(null); }}
-          onAddNew={() => setAddModalType('role')}
-          onRemove={v => removeDimMutation.mutate({ type: 'role', value: v })}
-          editMode={editMode} />
-        <InfoFilterPanel
-          title="Tags"
-          infoKeys={safeDimensions.info_keys}
-          selectedInfo={selectedInfo}
-          onChange={v => { setSelectedInfo(v); setStatusFilter(null); }}
-          onAddNew={() => setAddModalType('info_key')}
-          onRemove={v => removeDimMutation.mutate({ type: 'info_key', value: v })}
-          editMode={editMode}
-          onEditLink={handleEditInfoKeyLink}
-        />
-      </div>
 
       {/* Status bar */}
-      <StatusBar
-        counts={statusCounts}
-        active={statusFilter}
-        onFilter={v => { setStatusFilter(v); }}
-      />
+      <div className="flex items-center gap-2 mb-3 shrink-0">
+        {Object.entries(STATUS_LABELS).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setStatusFilter(prev => prev === k ? null : k)}
+            className={`text-xs rounded-full px-2.5 py-1 border transition-colors ${
+              statusFilter === k
+                ? STATUS_COLORS[k] + ' font-semibold'
+                : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'
+            }`}
+          >
+            {label} {statusCounts[k] ?? 0}
+          </button>
+        ))}
+      </div>
 
-      {/* Table */}
-      <div className="flex-1 overflow-auto rounded-xl border bg-white min-h-0">
-        {filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full py-16 text-slate-400">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mb-3 opacity-40">
-              <rect x="3" y="3" width="18" height="18" rx="2"/>
-              <path d="M3 9h18M9 21V9"/>
-            </svg>
-            <p className="text-sm font-medium">No entries</p>
-            <p className="text-xs mt-1">Import a spreadsheet or adjust your filters</p>
-          </div>
-        ) : (
-          <table className="w-full text-xs">
-            <thead className="sticky top-0 bg-slate-50 border-b">
-              <tr>
-                {['function', 'role'].map(col => (
-                  <th key={col}
-                    onClick={() => toggleSort(col)}
-                    className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide cursor-pointer hover:bg-slate-100 select-none whitespace-nowrap">
-                    {col === 'function' ? 'Function' : 'Role'}
-                    {sortState.col === col && <span className="ml-1">{sortState.dir === 'asc' ? '↑' : '↓'}</span>}
-                  </th>
-                ))}
-                {safeDimensions.info_keys.map(k => (
-                  <th key={k}
-                    onClick={() => toggleSort(k)}
-                    className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide cursor-pointer hover:bg-slate-100 select-none whitespace-nowrap">
-                    {k}
-                    {sortState.col === k && <span className="ml-1">{sortState.dir === 'asc' ? '↑' : '↓'}</span>}
-                  </th>
-                ))}
-                <th className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap">TLG</th>
-                <th onClick={() => toggleSort('status')}
-                  className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide cursor-pointer hover:bg-slate-100 select-none whitespace-nowrap">
-                  Status
-                  {sortState.col === 'status' && <span className="ml-1">{sortState.dir === 'asc' ? '↑' : '↓'}</span>}
-                </th>
-                <th className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide">Primary</th>
-                <th onClick={() => toggleSort('complementary')}
-                  className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide cursor-pointer hover:bg-slate-100 select-none">
-                  Complementary
-                  {sortState.col === 'complementary' && <span className="ml-1">{sortState.dir === 'asc' ? '↑' : '↓'}</span>}
-                </th>
-                <th className="px-3 py-2" />
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {filtered.map(entry => {
-                const status = getEntryStatus(entry);
-                const cfg = STATUS_CONFIGS.find(c => c.status === status);
-                const rec = profiles.find(p => p.id === entry.recommended_training_id);
-                return (
-                  <tr key={entry.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="px-3 py-2 font-medium text-slate-700 whitespace-nowrap">{entry.function}</td>
-                    <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{entry.role}</td>
-                    {safeDimensions.info_keys.map(k => (
-                      <td key={k} className="px-3 py-2 text-center">
-                        {entry.additional_info?.[k]
-                          ? <span className="inline-block w-2 h-2 rounded-full bg-blue-500" title="Yes" />
-                          : <span className="inline-block w-2 h-2 rounded-full bg-slate-200" title="No" />
-                        }
+      <div className="flex gap-3 flex-1 min-h-0">
+        {/* Sidebar */}
+        <div className="flex flex-col gap-3 w-48 shrink-0 overflow-y-auto">
+          <SelectorPanel
+            title="Functions"
+            badge="FNC"
+            items={safeDimensions.functions}
+            selected={selectedFn}
+            multi={false}
+            onChange={setSelectedFn}
+            onAddNew={() => setAddModalType('function')}
+            onRemove={value => removeDimMutation.mutate({ type: 'function', value })}
+            editMode={editMode} />
+          <SelectorPanel
+            title="Roles"
+            badge="ROL"
+            items={safeDimensions.roles}
+            selected={selectedRole}
+            multi={false}
+            onChange={setSelectedRole}
+            onAddNew={() => setAddModalType('role')}
+            onRemove={value => removeDimMutation.mutate({ type: 'role', value })}
+            editMode={editMode} />
+          <InfoFilterPanel
+            title="Tags"
+            infoKeys={safeDimensions.info_keys}
+            selectedInfo={selectedInfo}
+            onChange={setSelectedInfo}
+            onAddNew={() => setAddModalType('info_key')}
+            onRemove={value => removeDimMutation.mutate({ type: 'info_key', value })}
+            editMode={editMode}
+            onEditLink={handleEditInfoKeyLink}
+          />
+        </div>
+
+        {/* Matrix table */}
+        <div className="flex-1 overflow-auto">
+          {matrixLoading ? (
+            <div className="flex items-center justify-center h-32 text-sm text-slate-400">Loading...</div>
+          ) : filtered.length === 0 ? (
+            <div className="flex items-center justify-center h-32 text-sm text-slate-400">No entries match filters.</div>
+          ) : (
+            <table className="w-full text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b">
+                  {[['function','Function'],['role','Role'],['status','Status'],['complementary','Complementary']].map(([col,label]) => (
+                    <th key={col}
+                      className="text-left px-3 py-2 font-semibold text-slate-500 cursor-pointer hover:bg-slate-100 select-none"
+                      onClick={() => toggleSort(col)}
+                    >
+                      {label}{sortState.col === col ? (sortState.dir === 'asc' ? ' ↑' : ' ↓') : ''}
+                    </th>
+                  ))}
+                  {safeDimensions.info_keys.map(k => (
+                    <th key={k} className="text-left px-3 py-2 font-semibold text-slate-500 cursor-pointer hover:bg-slate-100 select-none"
+                      onClick={() => toggleSort(k)}
+                    >
+                      {k}{sortState.col === k ? (sortState.dir === 'asc' ? ' ↑' : ' ↓') : ''}
+                    </th>
+                  ))}
+                  <th className="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(entry => {
+                  const status = getEntryStatus(entry);
+                  return (
+                    <tr key={entry.id} className="border-b hover:bg-slate-50 transition-colors">
+                      <td className="px-3 py-2 font-medium text-slate-700">{entry.function}</td>
+                      <td className="px-3 py-2 text-slate-600">{entry.role}</td>
+                      <td className="px-3 py-2">
+                        <Badge color={status === 'complete' ? 'green' : status === 'unresolved' ? 'amber' : status === 'na' ? 'slate' : 'slate'}>
+                          {STATUS_LABELS[status]}
+                        </Badge>
                       </td>
-                    ))}
-                    <td className="px-3 py-2 text-slate-500 whitespace-nowrap">
-                      {entry.na_tlg ? (
-                        <Badge color="slate">N/A</Badge>
-                      ) : (
-                        <span>{[entry.tlg_primary, ...(Array.isArray(entry.tlg_addon) ? entry.tlg_addon : [])].filter(Boolean).join(' + ') || '—'}</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold ${cfg?.bg} ${cfg?.border} ${cfg?.text}`}>
-                        {cfg?.label ?? status}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-slate-600 whitespace-nowrap">
-                      {entry.na_training ? <Badge color="slate">N/A</Badge> : (rec ? rec.profile_name : <span className="text-slate-300">—</span>)}
-                    </td>
-                    <td className="px-3 py-2">
-                      {entry.na_training ? null : (
-                        Array.isArray(entry.complementary_items) && entry.complementary_items.length > 0
-                          ? <div className="flex flex-wrap gap-1">
-                              {entry.complementary_items.map(i => (
-                                <span key={`${i.type}-${i.id}`}
-                                  className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase ${i.id ? 'bg-amber-50 border-amber-200 text-amber-700' : 'bg-red-50 border-red-200 text-red-600'}`}>
-                                  {i.type === 'curriculum' ? 'CUR' : 'MOD'} {i.title}
-                                  {!i.id && <span className="ml-1 text-red-400" title="Unresolved">!</span>}
-                                </span>
-                              ))}
-                            </div>
-                          : <span className="text-slate-300">—</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right whitespace-nowrap">
-                      <button onClick={() => setModalEntry(entry)} className="text-xs text-slate-400 hover:text-blue-600">Fill</button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+                      <td className="px-3 py-2">
+                        {Array.isArray(entry.complementary_items) && entry.complementary_items.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {entry.complementary_items.map(i => (
+                              <span key={`${i.type}-${i.id}`} className="inline-block bg-blue-50 text-blue-700 border border-blue-200 rounded px-1.5 py-0.5 text-[10px]">{i.title}</span>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      {safeDimensions.info_keys.map(k => (
+                        <td key={k} className="px-3 py-2 text-center">
+                          {entry.additional_info?.[k] === true
+                            ? <span className="text-blue-600 font-semibold">Yes</span>
+                            : entry.additional_info?.[k] === false
+                              ? <span className="text-slate-400">No</span>
+                              : <span className="text-slate-300">—</span>
+                          }
+                        </td>
+                      ))}
+                      <td className="px-3 py-2">
+                        <button
+                          onClick={() => setModalEntry(entry)}
+                          className="text-slate-400 hover:text-blue-600 transition-colors"
+                          title="Edit"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M11.5 2.5a1.414 1.414 0 0 1 2 2L5 13l-3 1 1-3 8.5-8.5z"/>
+                          </svg>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
     </div>
   );
